@@ -160,7 +160,13 @@ namespace Noggit
       _image_mask_group->setBrushModeVisible(parent == map_view);
       _mask_image = _image_mask_group->getPixmap()->toImage();
       _image_mask_group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-      tool_layout->addWidget(_image_mask_group);
+      // tool_layout->addWidget(_image_mask_group);
+      auto* customBrushBox = new ExpanderWidget(this);
+      customBrushBox->setExpanderTitle("Custom Brush");
+      customBrushBox->addPage(_image_mask_group);
+      customBrushBox->setExpanded(false);
+      tool_layout->addWidget(customBrushBox);
+
       tool_layout->setAlignment(_image_mask_group, Qt::AlignTop);
 
       auto quick_palette_btn (new QPushButton("Quick Palette", this));
@@ -298,13 +304,13 @@ namespace Noggit
                 }
               );
 
-      connect ( quick_palette_btn, &QPushButton::pressed
+      connect ( quick_palette_btn, &QPushButton::clicked
               , [=] ()
                 {
-                  show_quick_palette->set(!show_quick_palette);
+              _map_view->getTexturePalette()->setVisible(_map_view->getTexturePalette()->isHidden());
+                  // show_quick_palette->set(!show_quick_palette);
                 }
               );
-
 
       connect ( _radius_slider, &Noggit::Ui::Tools::UiCommon::ExtendedSlider::valueChanged
           , [&] (double v)

@@ -398,7 +398,7 @@ void MapView::snap_selected_models_to_the_ground()
 }
 
 
-void MapView::DeleteSelectedObject()
+void MapView::DeleteSelectedObjects()
 {
   if (terrainMode != editing_mode::object)
   {
@@ -603,7 +603,7 @@ void MapView::setupTexturePainterUi()
   /* Texture Browser */
 
   // Dock
-  _texture_browser_dock = new QDockWidget("Texture palette", this);
+  _texture_browser_dock = new QDockWidget("Texture Browser", this);
   _texture_browser_dock->setFeatures(QDockWidget::DockWidgetMovable
                                      | QDockWidget::DockWidgetFloatable
                                      | QDockWidget::DockWidgetClosable);
@@ -662,7 +662,7 @@ void MapView::setupTexturePainterUi()
 
 
   /* Texture Palette Small */
-  _texture_palette_small = new Noggit::Ui::texture_palette_small(this);
+  _texture_palette_small = new Noggit::Ui::texture_palette_small(_project, _world->getMapID(), this);
 
   // Dock
   _texture_palette_dock = new QDockWidget("Texture Palette", this);
@@ -855,7 +855,7 @@ void MapView::setupObjectEditorUi()
   _area_selection = new QRubberBand(QRubberBand::Rectangle, this);
 
   /* Object Palette */
-  _object_palette = new Noggit::Ui::ObjectPalette(this, this);
+  _object_palette = new Noggit::Ui::ObjectPalette(this, _project, this);
   _object_palette->hide();
 
   // Dock
@@ -1202,7 +1202,6 @@ void MapView::setupFileMenu()
                  QClipboard* clipboard = QGuiApplication::clipboard();
                  clipboard->setText(port_command.str().c_str(), QClipboard::Clipboard);
                }
-
   );
 
 }
@@ -1218,7 +1217,7 @@ void MapView::setupEditMenu()
   ADD_ACTION (edit_menu, "Delete", Qt::Key_Delete, [this]
   {
     NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eOBJECTS_REMOVED);
-    DeleteSelectedObject();
+    DeleteSelectedObjects();
     NOGGIT_ACTION_MGR->endAction();
   });
 
@@ -2046,9 +2045,9 @@ void MapView::setupViewMenu()
 
   ADD_TOGGLE (view_menu, "Detail infos", Qt::Key_F8, _show_detail_info_window);
 
-  ADD_TOGGLE (view_menu, "Texture palette", Qt::Key_X, _show_texture_palette_window);
+  ADD_TOGGLE (view_menu, "Texture Browser", Qt::Key_X, _show_texture_palette_window);
 
-  ADD_TOGGLE_NS(view_menu, "Small texture palette", _show_texture_palette_small_window);
+  ADD_TOGGLE_NS(view_menu, "Texture palette", _show_texture_palette_small_window);
 
   addHotkey( Qt::Key_H
     , MOD_none
@@ -2105,12 +2104,12 @@ void MapView::setupHelpMenu()
 
 #if defined(_WIN32) || defined(WIN32)
   ADD_ACTION_NS ( help_menu
-                , "Forum"
+                , "WoW Modding Discord"
                 , []
                   {
                     ShellExecute ( nullptr
                                  , "open"
-                                 , "http://www.modcraft.io/index.php?board=48.0"
+                                 , "https://discord.gg/Dnrztg7dCZ"
                                  , nullptr
                                  , nullptr
                                  , SW_SHOWNORMAL
@@ -2118,12 +2117,12 @@ void MapView::setupHelpMenu()
                   }
                 );
   ADD_ACTION_NS ( help_menu
-                , "Homepage"
+                , "Noggit Red Repository"
                 , []
                   {
                     ShellExecute ( nullptr
                                  , "open"
-                                 , "https://bitbucket.org/berndloerwald/noggit3/"
+                                 , "https://gitlab.com/prophecy-rp/noggit-red/-/tree/noggit-shadowlands?ref_type=heads"
                                  , nullptr
                                  , nullptr
                                  , SW_SHOWNORMAL
@@ -2132,12 +2131,12 @@ void MapView::setupHelpMenu()
                 );
 
   ADD_ACTION_NS ( help_menu
-                , "Discord"
+                , "Noggit Red Discord"
                 , []
                   {
                     ShellExecute ( nullptr
                                  , "open"
-                                 , "https://discord.gg/UbdFHyM"
+                                 , "https://discord.gg/Tk2TpN8CaF"
                                  , nullptr
                                  , nullptr
                                  , SW_SHOWNORMAL
@@ -2201,6 +2200,7 @@ void MapView::setupHotkeys()
               }
     , [this] { return terrainMode == editing_mode::object && !NOGGIT_CUR_ACTION; }
   );
+  /*
   addHotkey ( Qt::Key_C
     , MOD_none
     , [this]
@@ -2208,7 +2208,7 @@ void MapView::setupHotkeys()
                 objectEditor->copy_current_selection(_world.get());
               }
     , [this] { return terrainMode == editing_mode::object && !NOGGIT_CUR_ACTION; }
-  );
+  );*/
 
   addHotkey ( Qt::Key_V
     , MOD_ctrl
@@ -2221,6 +2221,7 @@ void MapView::setupHotkeys()
               }
     , [this] { return terrainMode == editing_mode::object && !NOGGIT_CUR_ACTION; }
   );
+  /*
   addHotkey ( Qt::Key_V
     , MOD_none
     , [this]
@@ -2230,7 +2231,7 @@ void MapView::setupHotkeys()
                 NOGGIT_ACTION_MGR->endAction();
               }
     , [this] { return terrainMode == editing_mode::object && !NOGGIT_CUR_ACTION; }
-  );
+  );*/
   addHotkey ( Qt::Key_V
     , MOD_shift
     , [this] { objectEditor->import_last_model_from_wmv(eMODEL); }
@@ -2709,13 +2710,15 @@ MapView::MapView( math::degrees camera_yaw0
   , _tablet_manager(Noggit::TabletManager::instance()),
     _project(Project)
 {
-  setWindowTitle ("Noggit Studio - " STRPRODUCTVER);
+  setWindowTitle ("Noggit Studio Red - " STRPRODUCTVER);
   setFocusPolicy (Qt::StrongFocus);
   setMouseTracking (true);
   setMinimumHeight(200);
   setMaximumHeight(10000);
   setAttribute(Qt::WA_OpaquePaintEvent, true);
   setUpdateBehavior(QOpenGLWidget::NoPartialUpdate);
+
+  _world->LoadSavedSelectionGroups(); // not doing this in world constructor because noggit loads world twice
 
   _context = Noggit::NoggitRenderContext::MAP_VIEW;
   _transform_gizmo.setWorld(_world.get());
@@ -2767,6 +2770,11 @@ MapView::MapView( math::degrees camera_yaw0
       , _main_window
       , [=] { _main_window->statusBar()->removeWidget(_status_database); }
   );
+
+  setContextMenuPolicy(Qt::CustomContextMenu);
+
+  connect(this, SIGNAL(customContextMenuRequested(const QPoint&)),
+      this, SLOT(ShowContextMenu(const QPoint&)));
 
   moving = strafing = updown = lookat = turn = 0.0f;
 
@@ -4186,6 +4194,8 @@ void MapView::tick (float dt)
 
   _status_culling->setText ( "Loaded tiles: " + QString::number(_world->getNumLoadedTiles())
                          + " Rendered tiles: " + QString::number(_world->getNumRenderedTiles())
+                         + " Loaded objects: " + QString::number(_world->getModelInstanceStorage().getTotalModelsCount())
+                         + " Rendered objects: " + QString::number(_world->getNumRenderedObjects())
   );
 
   guiWater->updatePos (_camera.position);
@@ -4337,8 +4347,7 @@ void MapView::doSelection (bool selectTerrainOnly, bool mouseMove)
   }
 
   _rotation_editor_need_update = true;
-  objectEditor->update_selection(_world.get()); 
-
+  objectEditor->update_selection_ui(_world.get()); 
 }
 
 void MapView::update_cursor_pos()
@@ -4454,7 +4463,7 @@ void MapView::draw_map()
   case editing_mode::ground:
     radius = terrainTool->brushRadius();
     inner_radius = terrainTool->innerRadius();
-    if((terrainTool->_edit_type != eTerrainType_Vertex || terrainTool->_edit_type != eTerrainType_Script) && terrainTool->getImageMaskSelector()->isEnabled())
+    if ((terrainTool->_edit_type != eTerrainType_Vertex || terrainTool->_edit_type != eTerrainType_Script) && terrainTool->getImageMaskSelector()->isEnabled())
       _cursorType = CursorType::STAMP;
     break;
   case editing_mode::flatten_blur:
@@ -4740,7 +4749,7 @@ void MapView::keyPressEvent (QKeyEvent *event)
 
   }
 
-  if (_gizmo_on.get())
+  if (_gizmo_on.get() && !_transform_gizmo.isUsing())
   {
     if (!_change_operation_mode && event->key() == Qt::Key_Space)
     {
@@ -5229,6 +5238,7 @@ void MapView::mousePressEvent(QMouseEvent* event)
 
   if (rightMouse)
   {
+    _right_click_pos = event->pos();
     look = true;
   }
 }
@@ -5352,6 +5362,13 @@ void MapView::mouseReleaseEvent (QMouseEvent* event)
 
     if (_display_mode == display_mode::in_2D)
       updown = 0;
+
+    // // may need to be done in constructor of widget
+    // this->setContextMenuPolicy(Qt::CustomContextMenu); 
+    // connect(this, SIGNAL(customContextMenuRequested(const QPoint&)),
+    //     this, SLOT(ShowContextMenu(const QPoint&)));
+
+
 
     break;
 
@@ -5580,4 +5597,417 @@ void MapView::onSettingsSave()
   params->wireframe_color = wireframe_color;
 
   _world->renderer()->markTerrainParamsUniformBlockDirty();
+}
+
+void MapView::ShowContextMenu(QPoint pos) 
+{
+    // QApplication::startDragDistance() is 10
+    auto mouse_moved = QApplication::startDragDistance() < (_right_click_pos - pos).manhattanLength();;
+
+    // don't show context menu if dragging mouse
+    if (mouse_moved || ImGuizmo::IsUsing())
+        return;
+
+    // TODO : build the menu only once, store it and instead use setVisible ?
+
+    QMenu* menu = new QMenu(this);
+
+    // Undo
+    QAction action_undo("Undo", this);
+    menu->addAction(&action_undo);
+    action_undo.setShortcut(QKeySequence::Undo);
+    QObject::connect(&action_undo, &QAction::triggered, [=]()
+        {
+            NOGGIT_ACTION_MGR->undo();
+        });
+    // Redo
+    QAction action_redo("Redo", this);
+    menu->addAction(&action_redo);
+    action_redo.setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z));
+    QObject::connect(&action_redo, &QAction::triggered, [=]()
+        {
+            NOGGIT_ACTION_MGR->redo();
+        });
+
+    menu->addSeparator();
+
+    if (terrainMode == editing_mode::object)
+    {
+        bool has_selected_objects = _world->get_selected_model_count();
+        bool has_copied_objects = objectEditor->clipboardSize();
+
+        // Copy
+        QAction action_8("Copy Object(s)", this);
+        menu->addAction(&action_8);
+        action_8.setEnabled(has_selected_objects);
+        action_8.setShortcut(QKeySequence::Copy);
+        QObject::connect(&action_8, &QAction::triggered, [=]()
+            {
+                if (terrainMode == editing_mode::object && !NOGGIT_CUR_ACTION)
+                    objectEditor->copy_current_selection(_world.get());
+            });
+
+        // Paste
+        QAction action_9("Paste Object(s)", this);
+        menu->addAction(&action_9);
+        action_9.setEnabled(has_copied_objects);
+        action_9.setShortcut(QKeySequence::Paste); // (Qt::CTRL | Qt::Key_P)
+        QObject::connect(&action_9, &QAction::triggered, [=]()
+            {
+                if (terrainMode == editing_mode::object && !NOGGIT_CUR_ACTION)
+                {
+                    NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eOBJECTS_ADDED);
+                    objectEditor->pasteObject(_cursor_pos, _camera.position, _world.get(), &_object_paste_params);
+                    NOGGIT_ACTION_MGR->endAction();
+                }
+            });
+
+        // Delete
+        QAction action_10("Delete Object(s)", this);
+        menu->addAction(&action_10);
+        action_10.setEnabled(has_selected_objects);
+        action_10.setShortcut(QKeySequence::Delete); // (Qt::CTRL | Qt::Key_P)
+        QObject::connect(&action_10, &QAction::triggered, [=]()
+            {
+                if (terrainMode == editing_mode::object && !NOGGIT_CUR_ACTION)
+                {
+                    NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eOBJECTS_REMOVED);
+                    DeleteSelectedObjects();
+                    NOGGIT_ACTION_MGR->endAction();
+                }
+            });
+
+        // Duplicate
+        QAction action_11("Duplicate Object(s)", this);
+        menu->addAction(&action_11);
+        action_11.setEnabled(has_copied_objects);
+        action_11.setShortcut(QKeySequence(Qt::CTRL | Qt::Key_B)); // (Qt::CTRL | Qt::Key_P)
+        QObject::connect(&action_11, &QAction::triggered, [=]()
+            {
+                if (terrainMode == editing_mode::object && !NOGGIT_CUR_ACTION)
+                {
+                    NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eOBJECTS_ADDED);
+                    objectEditor->copy_current_selection(_world.get());
+                    objectEditor->pasteObject(_cursor_pos, _camera.position, _world.get(), &_object_paste_params);
+                    NOGGIT_ACTION_MGR->endAction();
+                }
+            });
+
+        menu->addSeparator();
+
+        // selection stuff
+        QAction action_1("Select all Like Selected", this); // select all objects with the same model
+        action_1.setToolTip("Warning : Doing actions on models overlapping unloaded tiles can cause crash");
+        menu->addAction(&action_1);
+        action_1.setEnabled(_world->get_selected_model_count() == 1);
+        QObject::connect(&action_1, &QAction::triggered, [=]()
+            {
+                auto last_entry = _world->get_last_selected_model();
+                if (last_entry)
+                {
+                    if (!last_entry.value().index() == eEntry_Object)
+                        return;
+
+                    auto obj = std::get<selected_object_type>(last_entry.value());
+                    auto model_name = obj->instance_model()->file_key().filepath();
+                    // auto models = _world->get_models_by_filename()[model_name];
+
+                    _world->reset_selection();
+
+                    if (obj->which() == eMODEL)
+                    {
+                        _world->getModelInstanceStorage().for_each_m2_instance([&](ModelInstance& model_instance)
+                            {
+                                if (model_instance.instance_model()->file_key().filepath() == model_name)
+                                {
+                                    // objects_to_select.push_back(model_instance.uid);
+                                    _world->add_to_selection(&model_instance);
+                                }
+                            });
+                    }
+                    else if (obj->which() == eWMO)
+                        _world->getModelInstanceStorage().for_each_wmo_instance([&](WMOInstance& wmo_instance)
+                            {
+                                if (wmo_instance.instance_model()->file_key().filepath() == model_name)
+                                {
+                                    // objects_to_select.push_back(wmo_instance.uid);
+                                    _world->add_to_selection(&wmo_instance);
+                                }
+                            });
+
+                    // for (auto uid_it = objects_to_select.begin(); uid_it != objects_to_select.end(); uid_it++)
+                    // {
+                    //     auto instance = _world->getObjectInstance(*uid_it);
+                    //     // if (!_world->is_selected(instance))
+                    //         _world->add_to_selection(instance);
+                    // }
+                }
+            });
+
+        QAction action_2("Hide Selected Objects", this);
+        menu->addAction(&action_2);
+        action_2.setEnabled(has_selected_objects);
+        action_2.setShortcut(Qt::Key_H);
+        QObject::connect(&action_2, &QAction::triggered, [=]()
+            {
+                if (_world->has_selection())
+                {
+                    for (auto& obj : _world->get_selected_objects())
+                    {
+                        if (obj->which() == eMODEL)
+                            static_cast<ModelInstance*>(obj)->model->hide();
+                        else if (obj->which() == eWMO)
+                            static_cast<WMOInstance*>(obj)->wmo->hide();
+                    }
+                }
+            });
+
+        QAction action_3("Hide Unselected Objects", this);
+
+
+        // QAction action_2("Show Hidden", this);
+
+        QAction action_palette_add("Add Object To Palette", this);
+        menu->addAction(&action_palette_add);
+        action_palette_add.setEnabled(_world->get_selected_model_count() == 1);
+        QObject::connect(&action_palette_add, &QAction::triggered, [=]()
+            {
+                auto last_entry = _world->get_last_selected_model();
+                if (last_entry)
+                {
+                    if (!last_entry.value().index() == eEntry_Object)
+                        return;
+
+                    getObjectPalette()->setVisible(true);
+                    auto obj = std::get<selected_object_type>(last_entry.value());
+                    auto model_name = obj->instance_model()->file_key().filepath();
+                    _object_palette->addObjectByFilename(model_name.c_str());
+                }
+
+            });
+
+        menu->addSeparator();
+
+        // allow replacing all selected?
+        QAction action_replace("Replace Models (By Clipboard)", this);
+        menu->addAction(&action_replace);
+        action_replace.setEnabled(has_selected_objects && objectEditor->clipboardSize() == 1);
+        action_replace.setToolTip("Replace the currently selected objects by the object in the clipboard (There must only be one!). M2s can only be replaced by m2s");
+        QObject::connect(&action_replace, &QAction::triggered, [=]()
+            {
+                if (terrainMode != editing_mode::object && NOGGIT_CUR_ACTION)
+                    return;
+
+                // verify this
+                NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eOBJECTS_ADDED | Noggit::ActionFlags::eOBJECTS_REMOVED); // Noggit::ActionFlags::eOBJECTS_TRANSFORMED
+                // NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+
+                // get the model to replace by
+                auto replace_select = objectEditor->getClipboard().front();
+                auto replace_obj = std::get<selected_object_type>(replace_select);
+                // bool replace_is_wmo = replace_obj->which() == eWMO;
+                auto replace_path = replace_obj->instance_model()->file_key();
+
+                // iterate selection (objects to replace)
+                for (auto& source_obj : _world->get_selected_objects())
+                {
+
+                        math::degrees::vec3 source_rot(math::degrees(0)._, math::degrees(0)._, math::degrees(0)._);
+                        source_rot = source_obj->dir;
+                        float source_scale = source_obj->scale;
+                        auto source_pos = source_obj->pos;
+
+                        if (source_obj->instance_model()->file_key().filepath() == replace_path)
+                            continue;
+
+                        // TODO : Test if this breaks if clipboard is empty
+
+                        if (replace_obj->which() == eWMO)
+                        {
+                            // if (!replace_is_wmo)
+                            //     continue;
+
+                            // auto replace_wmo = static_cast<WMOInstance*>(replace_obj);
+                            // auto source_wmo = static_cast<WMOInstance*>(source_obj);
+
+                            auto new_obj = _world->addWMOAndGetInstance(replace_path, source_pos, source_rot);
+                            new_obj->wmo->wait_until_loaded();
+                            new_obj->wmo->waitForChildrenLoaded();
+                            new_obj->recalcExtents();
+
+                        }
+                        else if (replace_obj->which() == eMODEL)
+                        {
+                            // if (replace_is_wmo)
+                            //     continue;
+
+                            // auto replace_m2 = static_cast<ModelInstance*>(replace_obj);
+                            // auto source_m2 = static_cast<ModelInstance*>(source_obj);
+
+                            // Just swapping model
+                            // Issue : doesn't work with actions
+                            // _world->updateTilesEntry(entry, model_update::remove);
+                            // source_m2->model = scoped_model_reference(replace_path, _context);
+                            // source_m2->recalcExtents();
+                            // _world->updateTilesEntry(entry, model_update::add);
+                            
+
+                            auto new_obj = _world->addM2AndGetInstance(replace_path
+                                , source_pos
+                                , source_scale
+                                , source_rot
+                                , &_object_paste_params
+                                , true
+                            );
+                            new_obj->model->wait_until_loaded();
+                            new_obj->model->waitForChildrenLoaded();
+                            new_obj->recalcExtents();
+                        }
+                }
+                // can cause the usual crash of deleting models overlapping unloaded tiles.
+                DeleteSelectedObjects();
+                // NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eOBJECTS_REMOVED);
+                NOGGIT_ACTION_MGR->endAction();
+            });
+
+        QAction action_snap("Snap Selected To Ground", this);
+        menu->addAction(&action_snap);
+        action_snap.setEnabled(has_selected_objects);
+        action_snap.setShortcut(Qt::Key_PageDown); // (Qt::CTRL | Qt::Key_P)
+        QObject::connect(&action_snap, &QAction::triggered, [=]()
+            {
+                if (terrainMode == editing_mode::object && !NOGGIT_CUR_ACTION)
+                {
+                    NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+                    snap_selected_models_to_the_ground();
+                    NOGGIT_ACTION_MGR->endAction();
+                }
+            });
+
+        QAction action_save_obj_coords("Save objects coords(to file)", this);
+        menu->addAction(&action_save_obj_coords);
+        action_save_obj_coords.setEnabled(has_selected_objects);
+        QObject::connect(&action_save_obj_coords, &QAction::triggered, [=]()
+            {
+                if (terrainMode == editing_mode::object)
+                {
+                    if (_world->has_selection() && _world->get_selected_model_count())
+                    {
+                        std::stringstream obj_data;
+                        for (auto& obj : _world->get_selected_objects())
+                        {
+                            obj_data << "\"Object : " << obj->instance_model()->file_key().filepath() << "(UID :" << obj->uid << ")\"," << std::endl;
+                            obj_data << "\"Scale : " << obj->scale << "\"," << std::endl;
+                            // coords string in ts-wow format
+                            obj_data << "\"Coords(server): {map:" << _world->getMapID() << ",x:" << (ZEROPOINT - obj->pos.z) << ",y:" << (ZEROPOINT - obj->pos.x)
+                                << ",z:" << obj->pos.y << ",o:";
+
+                            float server_rot = 2 * glm::pi<float>() - glm::pi<float>() / 180.0 * (float(obj->dir.y) < 0 ? fabs(float(obj->dir.y)) + 180.0 : fabs(float(obj->dir.y) - 180.0));
+                            // float server_rot = glm::radians(obj->dir.y) + glm::radians(180.f);
+
+                            obj_data << server_rot << "}\"," << std::endl;
+
+                            /// converting db gobject rotation to noggit. Keep commented for later usage
+                            /*
+                            glm::quat test_db_quat = glm::quat(1.0, 1.0, 1.0, 1.0);
+                            test_db_quat.x = 0.607692, test_db_quat.y = -0.361538, test_db_quat.z = 0.607693, test_db_quat.w = 0.361539;
+                            glm::vec3 rot_euler = glm::eulerAngles(test_db_quat);
+                            glm::vec3 rot_degrees = glm::degrees(rot_euler); 
+                            rot_degrees = glm::vec3(rot_degrees.y, rot_degrees.z - 180.f, rot_degrees.x); // final noggit coords
+                            */
+
+                            glm::quat rot_quat = glm::quat(glm::vec3(glm::radians(obj->dir.z), glm::radians(obj->dir.x), server_rot));
+                            auto normalized_quat = glm::normalize(rot_quat);
+
+                            obj_data << "\"Rotation (server quaternion): {x:" << normalized_quat.x << ",y:" << normalized_quat.y << ",z:" << normalized_quat.z
+                                << ",w:" << normalized_quat.w << "}\"," <<  std::endl << "\n";
+                        }
+
+                        std::ofstream f("saved_objects_data.txt", std::ios_base::app);
+                        f << "\"Saved " << _world->get_selected_model_count() << " objects at : " << QDateTime::currentDateTime().toString("dd MMMM yyyy hh:mm:ss").toStdString() << "\"" << std::endl;
+                        f << obj_data.str();
+                        f.close();
+                    }
+                }
+            });
+
+        menu->addSeparator();
+        // TODO
+        QAction action_group("Group Selected Objects", this);
+        menu->addAction(&action_group);
+        // check if all selected objects are already grouped
+        bool groupable = false; 
+        if ( _world->has_multiple_model_selected())
+        {
+            // if there's no existing groups, that means it's always groupable
+            if (!_world->_selection_groups.size())
+                groupable = true;
+
+            if (!groupable)
+            {
+                // check if there's any ungrouped object
+                for (auto obj : _world->get_selected_objects())
+                {
+                    bool obj_ungrouped = true;
+                    for (auto& group : _world->_selection_groups)
+                    {
+                        if (group.contains_object(obj))
+                            obj_ungrouped = false;
+                    }
+                    if (obj_ungrouped)
+                    {
+                        groupable = true;
+                        break;
+                    }
+                }
+            }
+        }
+        action_group.setEnabled(groupable);
+        QObject::connect(&action_group, &QAction::triggered, [=]()
+            {
+                // remove all groups the objects are already in and create a new one
+                // for (auto obj : _world->get_selected_objects())
+                // {
+                //     for (auto& group : _world->_selection_groups)
+                //     {
+                //         if (group.contains_object(obj))
+                //         {
+                //             group.remove_group();
+                //         }
+                //     }
+                // }
+                for (auto& group : _world->_selection_groups)
+                {
+                    if (group.isSelected())
+                    {
+                        group.remove_group();
+                    }
+                }
+
+                _world->add_object_group_from_selection();
+            });
+
+
+        QAction action_ungroup("Ungroup Selected Objects", this);
+        menu->addAction(&action_ungroup);
+        bool group_selected = false;
+        for (auto& group : _world->_selection_groups)
+        {
+            if (group.isSelected())
+            {
+                group_selected = true;
+                break;
+            }
+        }
+        action_ungroup.setEnabled(group_selected);
+        QObject::connect(&action_ungroup, &QAction::triggered, [=]()
+            {
+                _world->clear_selection_groups();
+            });
+
+
+        menu->exec(mapToGlobal(pos)); // synch
+        // menu->popup(mapToGlobal(pos)); // asynch, needs to be preloaded to work
+    };
+
 }

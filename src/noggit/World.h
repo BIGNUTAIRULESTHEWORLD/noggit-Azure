@@ -58,11 +58,12 @@ class World
 
 protected:
   std::vector<selection_type> _current_selection;
-  std::unordered_map<std::string, std::vector<ModelInstance*>> _models_by_filename;
+  // std::unordered_map<std::string, std::vector<ModelInstance*>> _models_by_filename;
   Noggit::world_model_instances_storage _model_instance_storage;
   Noggit::world_tile_update_queue _tile_update_queue;
-
 public:
+  std::vector<selection_group> _selection_groups;
+
   MapIndex mapIndex;
   Noggit::map_horizon horizon;
 
@@ -80,6 +81,10 @@ public:
   std::string basename;
 
   explicit World(const std::string& name, int map_id, Noggit::NoggitRenderContext context, bool create_empty = false);
+
+  void LoadSavedSelectionGroups();
+
+  void saveSelectionGroups();
 
   void setBasename(const std::string& name);
 
@@ -122,14 +127,17 @@ public:
   bool is_selected(selection_type selection) const;
   bool is_selected(std::uint32_t uid) const;
   std::vector<selection_type> const& current_selection() const { return _current_selection; }
+  std::vector<selected_object_type> const get_selected_objects() const;
   std::optional<selection_type> get_last_selected_model() const;
   bool has_selection() const { return !_current_selection.empty(); }
   bool has_multiple_model_selected() const { return _selected_model_count > 1; }
   int get_selected_model_count() const { return _selected_model_count; }
+  // Unused in Red, models are now iterated by adt because of the occlusion check
+  // std::unordered_map<std::string, std::vector<ModelInstance*>> get_models_by_filename() const& { return _models_by_filename;  } 
   void set_current_selection(selection_type entry);
-  void add_to_selection(selection_type entry);
-  void remove_from_selection(selection_type entry);
-  void remove_from_selection(std::uint32_t uid);
+  void add_to_selection(selection_type entry, bool skip_group = false);
+  void remove_from_selection(selection_type entry, bool skip_group = false);
+  void remove_from_selection(std::uint32_t uid, bool skip_group = false);
   void reset_selection();
   void delete_selected_models();
   glm::vec3 get_ground_height(glm::vec3 pos);
@@ -160,6 +168,8 @@ public:
   void rotate_selected_models(math::degrees rx, math::degrees ry, math::degrees rz, bool use_pivot);
   void rotate_selected_models_randomly(float minX, float maxX, float minY, float maxY, float minZ, float maxZ);
   void set_selected_models_rotation(math::degrees rx, math::degrees ry, math::degrees rz);
+
+  void update_selected_model_groups();
 
   // Checks the normal of the terrain on model origin and rotates to that spot.
   void rotate_selected_models_to_ground_normal(bool smoothNormals);
@@ -279,6 +289,7 @@ public:
       , glm::vec3 newPos
       , float scale, math::degrees::vec3 rotation
       , Noggit::object_paste_params*
+      , bool ignore_params = false
   );
 
   WMOInstance* addWMOAndGetInstance ( BlizzardArchive::Listfile::FileKey const& file_key
@@ -373,6 +384,7 @@ public:
   void loadAllTiles();
   unsigned getNumLoadedTiles() const { return _n_loaded_tiles; };
   unsigned getNumRenderedTiles() const { return _n_rendered_tiles; };
+  unsigned getNumRenderedObjects() const { return _n_rendered_objects; };
 
   void select_objects_in_area(
       const std::array<glm::vec2, 2> selection_box, 
@@ -385,8 +397,13 @@ public:
       glm::vec3 camera_position
   );
 
+  void add_object_group_from_selection();
+  void remove_selection_group(selection_group* group);
+
+  void clear_selection_groups();
+
 protected:
-  void update_models_by_filename();
+  // void update_models_by_filename();
 
   std::unordered_set<MapChunk*>& vertexBorderChunks();
 
@@ -409,5 +426,8 @@ protected:
   // Debug metrics
   unsigned _n_loaded_tiles;
   unsigned _n_rendered_tiles;
+
+  // unsigned _n_loaded_objects; // done from instance storage size currently
+  unsigned _n_rendered_objects;
 
 };

@@ -242,6 +242,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
   //gl.disable(GL_CULL_FACE);
 
   _world->_n_rendered_tiles = 0;
+  _world->_n_rendered_objects = 0;
 
   if (draw_terrain)
   {
@@ -378,6 +379,9 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     {
       if (pair.second[0]->which() == eMODEL)
       {
+        if (!draw_models && !(minimap_render && minimap_render_settings->use_filters))
+          continue;
+
         auto& instances = models_to_draw[reinterpret_cast<Model*>(pair.first)];
 
         // memory allocation heuristic. all objects will pass if tile is entirely in frustum.
@@ -413,8 +417,11 @@ void WorldRender::draw (glm::mat4x4 const& model_view
         }
 
       }
-      else
+      else if (pair.second[0]->which() == eWMO)
       {
+        if (!draw_wmo)
+            continue;
+
         // memory allocation heuristic. all objects will pass if tile is entirely in frustum.
         // otherwise we only allocate for a half
 
@@ -541,6 +548,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }
   }
 
+
   // occlusion culling
   // terrain tiles act as occluders for each other, water and M2/WMOs.
   // occlusion culling is not performed on per model instance basis
@@ -613,11 +621,11 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     {
       ModelManager::resetAnim();
     }
-
+    /*
     if (_world->need_model_updates)
     {
       _world->update_models_by_filename();
-    }
+    }*/
 
     std::unordered_map<Model*, std::size_t> model_boxes_to_draw;
 
@@ -684,6 +692,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
                 , model_boxes_to_draw
                 , display
             );
+            _world->_n_rendered_objects += pair.second.size();
           }
         }
 
@@ -731,6 +740,10 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     gl.depthMask(GL_TRUE);
 
 
+    // unsigned int wmos_todraw_count = wmos_to_draw.size();
+    // unsigned int models_todraw_count = models_to_draw.size();
+    _world->_n_rendered_objects += wmos_to_draw.size();
+
     models_to_draw.clear();
     wmos_to_draw.clear();
 
@@ -766,12 +779,44 @@ void WorldRender::draw (glm::mat4x4 const& model_view
           continue;
 
         auto model = static_cast<ModelInstance*>(obj);
+
+
+
         if (model->isInFrustum(frustum) && model->isInRenderDist(_cull_distance, camera_pos, display))
         {
-          model->draw_box(model_view, projection, false); // make optional!
+          bool is_selected = false;
+          /*
+          auto id = model->uid;
+          bool const is_selected = _world->current_selection().size() > 0 &&
+              std::find_if(_world->current_selection().begin(), _world->current_selection().end(),
+                  [id](selection_type type)
+                  {
+                      return var_type(type) == typeid(selected_object_type)
+                          && std::get<selected_object_type>(type)->which() == SceneObjectTypes::eMODEL
+                          && static_cast<ModelInstance*>(std::get<selected_object_type>(type))->uid == id;
+                  }) != _world->current_selection().end();*/
+
+          model->draw_box(model_view, projection, is_selected); // make optional!
         }
       }
     }
+  }
+
+  // render selection group boxes
+  for (auto& selection_group : _world->_selection_groups)
+  {
+      if (!selection_group.isSelected())
+          continue;
+
+      glm::mat4x4 identity_mtx = glm::mat4x4{ 1 };
+      auto& extents = selection_group.getExtents();
+      Noggit::Rendering::Primitives::WireBox::getInstance(_world->_context).draw(model_view
+          , projection
+          , identity_mtx
+          , { 0.0f, 0.0f, 1.0f, 1.0f } // blue
+          , extents[0]
+          , extents[1]
+      );
   }
 
   // set anim time only once per frame

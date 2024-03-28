@@ -114,6 +114,37 @@ World::World(const std::string& name, int map_id, Noggit::NoggitRenderContext co
   _loaded_tiles_buffer[0] = std::make_pair<std::pair<int, int>, MapTile*>(std::make_pair(0, 0), nullptr);
 }
 
+void World::LoadSavedSelectionGroups()
+{
+  _selection_groups.clear();
+
+  auto& saved_map_groups = Noggit::Project::CurrentProject::get()->ObjectSelectionGroups;
+  for (auto& map_group : saved_map_groups)
+  {
+      if (map_group.MapId == mapIndex._map_id)
+      {
+          for (auto& group : map_group.SelectionGroups)
+          {
+              selection_group selectionGroup(group, this);
+              _selection_groups.push_back(selectionGroup);
+          }
+          return;
+      }
+  }
+}
+
+void World::saveSelectionGroups()
+{
+    auto proj_selection_map_group = Noggit::Project::NoggitProjectSelectionGroups();
+    proj_selection_map_group.MapId = mapIndex._map_id;
+    for (auto& selection_group : _selection_groups)
+    {
+        proj_selection_map_group.SelectionGroups.push_back(selection_group.getMembers());
+    }
+
+    Noggit::Project::CurrentProject::get()->saveObjectSelectionGroups(proj_selection_map_group);
+}
+
 void World::update_selection_pivot()
 {
   ZoneScoped;
@@ -232,6 +263,25 @@ std::optional<selection_type> World::get_last_selected_model() const
     ? std::optional<selection_type>() : std::optional<selection_type> (*it);
 }
 
+std::vector<selected_object_type> const World::get_selected_objects() const
+{
+    // std::vector<selected_object_type> objects(_selected_model_count);
+    std::vector<selected_object_type> objects;
+    objects.reserve(_selected_model_count);
+
+    ZoneScoped;
+    for (auto& entry : _current_selection)
+    {
+        if (entry.index() == eEntry_Object)
+        {
+            auto obj = std::get<selected_object_type>(entry);
+            objects.push_back(obj);
+        }
+    }
+
+    return objects;
+}
+
 glm::vec3 getBarycentricCoordinatesAt(
     const glm::vec3& a,
     const glm::vec3& b,
@@ -344,6 +394,8 @@ void World::rotate_selected_models_randomly(float minX, float maxX, float minY, 
 void World::rotate_selected_models_to_ground_normal(bool smoothNormals)
 {
   ZoneScoped;
+  if (!_selected_model_count)
+      return;
   for (auto& entry : _current_selection)
   {
     auto type = entry.index();
@@ -481,39 +533,66 @@ void World::rotate_selected_models_to_ground_normal(bool smoothNormals)
     double cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z);
     updateTilesEntry(entry, model_update::add);
   }
+  update_selected_model_groups();
 }
 
 void World::set_current_selection(selection_type entry)
 {
   ZoneScoped;
-  _current_selection.clear();
-  _current_selection.push_back(entry);
-  _multi_select_pivot = std::nullopt;
-
-  _selected_model_count = entry.index() == eEntry_MapChunk ? 0 : 1;
+  reset_selection();
+  add_to_selection(entry);
 }
 
-void World::add_to_selection(selection_type entry)
+void World::add_to_selection(selection_type entry, bool skip_group)
 {
   ZoneScoped;
-  if (entry.index() != eEntry_MapChunk)
+  if (entry.index() == eEntry_Object)
   {
     _selected_model_count++;
-  }
 
+    // check if it is in a group
+    if (!skip_group)
+    {
+        auto obj = std::get<selected_object_type>(entry);
+        for (auto& group : _selection_groups)
+        {
+            if (group.contains_object(obj))
+            {
+                // this then calls add_to_selection() with skip_group = true to avoid repetition
+                group.select_group();
+                break;
+            }
+        }
+    }
+  }
   _current_selection.push_back(entry);
   update_selection_pivot();
 }
 
-void World::remove_from_selection(selection_type entry)
+void World::remove_from_selection(selection_type entry, bool skip_group)
 {
   ZoneScoped;
   std::vector<selection_type>::iterator position = std::find(_current_selection.begin(), _current_selection.end(), entry);
   if (position != _current_selection.end())
   {
-    if (entry.index() != eEntry_MapChunk)
+    if (entry.index() == eEntry_Object)
     {
       _selected_model_count--;
+
+      // check if it is in a group
+      if (!skip_group)
+      {
+        auto obj = std::get<selected_object_type>(entry);
+        for (auto& group : _selection_groups)
+        {
+          if (group.contains_object(obj))
+          {
+              // this then calls remove_from_selection() with skip_group = true to avoid repetition
+              group.unselect_group();
+              break;
+          }
+        }
+      }
     }
 
     _current_selection.erase(position);
@@ -521,7 +600,7 @@ void World::remove_from_selection(selection_type entry)
   }
 }
 
-void World::remove_from_selection(std::uint32_t uid)
+void World::remove_from_selection(std::uint32_t uid, bool skip_group)
 {
   ZoneScoped;
   for (auto it = _current_selection.begin(); it != _current_selection.end(); ++it)
@@ -531,18 +610,30 @@ void World::remove_from_selection(std::uint32_t uid)
 
     auto obj = std::get<selected_object_type>(*it);
 
-    if (obj->which() == eMODEL && static_cast<ModelInstance*>(obj)->uid == uid)
+    if (obj->uid == uid)
     {
-      _current_selection.erase(it);
-      update_selection_pivot();
-      return;
+        _selected_model_count--;
+        _current_selection.erase(it);
+
+        // check if it is in a group
+        if (!skip_group)
+        {
+            for (auto& group : _selection_groups)
+            {
+                if (group.contains_object(obj))
+                {
+                    // this then calls remove_from_selection() with skip_group = true to avoid repetition
+                    group.unselect_group();
+                    break;
+                }
+            }
+        }
+
+        update_selection_pivot();
+        return;
     }
-    else if (obj->which() == eWMO && static_cast<WMOInstance*>(obj)->uid == uid)
-    {
-      _current_selection.erase(it);
-      update_selection_pivot();
-      return;
-    }
+
+
   }
 }
 
@@ -552,11 +643,28 @@ void World::reset_selection()
   _current_selection.clear();
   _multi_select_pivot = std::nullopt;
   _selected_model_count = 0;
+
+  for (auto& selection_group : _selection_groups)
+  {
+      selection_group.setUnselected();
+  }
 }
 
 void World::delete_selected_models()
 {
   ZoneScoped;
+  if (!_selected_model_count)
+      return;
+
+  // erase selected groups as well
+  for (auto& group : _selection_groups)
+  {
+      if (group.isSelected())
+      {
+          group.remove_group();
+      }
+  }
+
   _model_instance_storage.delete_instances(_current_selection);
   need_model_updates = true;
   reset_selection();
@@ -593,6 +701,8 @@ glm::vec3 World::get_ground_height(glm::vec3 pos)
 void World::snap_selected_models_to_the_ground()
 {
   ZoneScoped;
+  if (!_selected_model_count)
+      return;
   for (auto& entry : _current_selection)
   {
     auto type = entry.index();
@@ -614,11 +724,14 @@ void World::snap_selected_models_to_the_ground()
   }
 
   update_selection_pivot();
+  update_selected_model_groups();
 }
 
 void World::scale_selected_models(float v, m2_scaling_type type)
 {
   ZoneScoped;
+  if (!_selected_model_count)
+      return;
   for (auto& entry : _current_selection)
   {
     if (entry.index() == eEntry_Object)
@@ -659,11 +772,14 @@ void World::scale_selected_models(float v, m2_scaling_type type)
       updateTilesModel(mi, model_update::add);
     }
   }
+  update_selected_model_groups();
 }
 
 void World::move_selected_models(float dx, float dy, float dz)
 {
   ZoneScoped;
+  if (!_selected_model_count)
+      return;
   for (auto& entry : _current_selection)
   {
     auto type = entry.index();
@@ -688,6 +804,7 @@ void World::move_selected_models(float dx, float dy, float dz)
   }
 
   update_selection_pivot();
+  update_selected_model_groups();
 }
 
 void World::move_model(selection_type entry, float dx, float dy, float dz)
@@ -718,6 +835,8 @@ void World::move_model(selection_type entry, float dx, float dy, float dz)
 void World::set_selected_models_pos(glm::vec3 const& pos, bool change_height)
 {
   ZoneScoped;
+  if (!_selected_model_count)
+      return;
   // move models relative to the pivot when several are selected
   if (has_multiple_model_selected())
   {
@@ -754,6 +873,7 @@ void World::set_selected_models_pos(glm::vec3 const& pos, bool change_height)
   }
 
   update_selection_pivot();
+  update_selected_model_groups();
 }
 
 void World::set_model_pos(selection_type entry, glm::vec3 const& pos, bool change_height)
@@ -778,6 +898,9 @@ void World::set_model_pos(selection_type entry, glm::vec3 const& pos, bool chang
 void World::rotate_selected_models(math::degrees rx, math::degrees ry, math::degrees rz, bool use_pivot)
 {
   ZoneScoped;
+  if (!_selected_model_count)
+      return;
+
   math::degrees::vec3 dir_change(rx._, ry._, rz._);
   bool has_multi_select = has_multiple_model_selected();
 
@@ -815,17 +938,21 @@ void World::rotate_selected_models(math::degrees rx, math::degrees ry, math::deg
 
     updateTilesEntry(entry, model_update::add);
   }
+  update_selected_model_groups();
 }
 
 void World::set_selected_models_rotation(math::degrees rx, math::degrees ry, math::degrees rz)
 {
   ZoneScoped;
+  if (!_selected_model_count)
+      return;
+
   math::degrees::vec3 new_dir(rx._, ry._, rz._);
 
   for (auto& entry : _current_selection)
   {
     auto type = entry.index();
-    if (type == eEntry_MapChunk)
+    if (type != eEntry_Object)
     {
       continue;
     }
@@ -843,8 +970,17 @@ void World::set_selected_models_rotation(math::degrees rx, math::degrees ry, mat
 
     updateTilesEntry(entry, model_update::add);
   }
+  update_selected_model_groups();
 }
 
+void World::update_selected_model_groups()
+{
+  for (auto& selection_group : _selection_groups)
+  {
+      if (selection_group.isSelected())
+          selection_group.recalcExtents();
+  }
+}
 
 MapChunk* World::getChunkAt(glm::vec3 const& pos)
 {
@@ -1012,7 +1148,7 @@ void World::clearAllModelsOnADT(TileIndex const& tile)
 {
   ZoneScoped;
   _model_instance_storage.delete_instances_from_tile(tile);
-  update_models_by_filename();
+  // update_models_by_filename();
 }
 
 void World::CropWaterADT(const TileIndex& pos)
@@ -1638,7 +1774,7 @@ void World::unload_every_model_and_wmo_instance()
 
   _model_instance_storage.clear();
 
-  _models_by_filename.clear();
+  // _models_by_filename.clear();
 }
 
 void World::addM2 ( BlizzardArchive::Listfile::FileKey const& file_key
@@ -1687,7 +1823,7 @@ void World::addM2 ( BlizzardArchive::Listfile::FileKey const& file_key
 
   std::uint32_t uid = _model_instance_storage.add_model_instance(std::move(model_instance), true);
 
-  _models_by_filename[file_key.filepath()].push_back(_model_instance_storage.get_model_instance(uid).value());
+  // _models_by_filename[file_key.filepath()].push_back(_model_instance_storage.get_model_instance(uid).value());
 }
 
 ModelInstance* World::addM2AndGetInstance ( BlizzardArchive::Listfile::FileKey const& file_key
@@ -1695,6 +1831,7 @@ ModelInstance* World::addM2AndGetInstance ( BlizzardArchive::Listfile::FileKey c
     , float scale
     , math::degrees::vec3 rotation
     , Noggit::object_paste_params* paste_params
+    , bool ignore_params
 )
 {
   ZoneScoped;
@@ -1705,7 +1842,7 @@ ModelInstance* World::addM2AndGetInstance ( BlizzardArchive::Listfile::FileKey c
   model_instance.scale = scale;
   model_instance.dir = rotation;
 
-  if (paste_params)
+  if (paste_params && !ignore_params)
   {
     if (_settings->value("model/random_rotation", false).toBool())
     {
@@ -1737,7 +1874,7 @@ ModelInstance* World::addM2AndGetInstance ( BlizzardArchive::Listfile::FileKey c
   std::uint32_t uid = _model_instance_storage.add_model_instance(std::move(model_instance), true);
 
   auto instance = _model_instance_storage.get_model_instance(uid).value();
-  _models_by_filename[file_key.filepath()].push_back(instance);
+  // _models_by_filename[file_key.filepath()].push_back(instance);
 
   return instance;
 }
@@ -1823,11 +1960,11 @@ void World::remove_models_if_needed(std::vector<uint32_t> const& uids)
   {
     reset_selection();
   }
-
+  /*
   if (uids.size())
   {
     update_models_by_filename();
-  }
+  }*/
 }
 
 void World::reload_tile(TileIndex const& tile)
@@ -2715,7 +2852,7 @@ std::unordered_set<MapChunk*>& World::vertexBorderChunks()
   }
   return _vertex_border_chunks;
 }
-
+/*
 void World::update_models_by_filename()
 {
   ZoneScoped;
@@ -2730,7 +2867,7 @@ void World::update_models_by_filename()
 
   need_model_updates = false;
 }
-
+*/
 void World::range_add_to_selection(glm::vec3 const& pos, float radius, bool remove)
 {
   ZoneScoped;
@@ -3355,3 +3492,52 @@ void World::select_objects_in_area(
         }
     }
 }
+
+void World::add_object_group_from_selection()
+{
+    // create group from selected objects
+    selection_group selection_group(get_selected_objects(), this);
+    selection_group._is_selected = true;
+
+    _selection_groups.push_back(selection_group);
+
+    // write group to project
+    saveSelectionGroups();
+}
+
+void World::remove_selection_group(selection_group* group)
+{
+    // std::vector<selection_type>::iterator position = std::find(_selection_groups.begin(), _selection_groups.end(), group);
+    // if (position != _selection_groups.end())
+    // {
+    //     _selection_groups.erase(position);
+    // }
+
+    // for (auto it = _selection_groups.begin(); it != _selection_groups.end(); ++it)
+    // {
+    //     auto it_group = *it;
+    //     if (it_group.getMembers().size() == group->getMembers().size() && it_group.getExtents() == group->getExtents())
+    //     // if (it_group.isSelected())
+    //     {
+    //         _selection_groups.erase(it);
+    //         saveSelectionGroups();
+    //         return;
+    //     }
+    // }
+}
+
+void World::clear_selection_groups()
+{
+    // _selection_groups.clear();
+
+    // for (auto it = _selection_groups.begin(); it != _selection_groups.end(); ++it)
+    for (auto& group : _selection_groups)
+    {
+        // auto it_group = *it;
+        // it->remove_group();
+        group.remove_group(false);
+    }
+    _selection_groups.clear(); // in case it didn't properly clear
+    saveSelectionGroups(); // only save once
+}
+
