@@ -10,13 +10,14 @@ CMAKE_MINIMUM_REQUIRED(VERSION 3.3)
 CMAKE_POLICY(SET CMP0057 NEW) # "Support new IN_LIST if() operator."
 SET(CMAKE_CXX_STANDARD 20)
 SET(CMAKE_CXX_STANDARD_REQUIRED ON)
-SET(CMAKE_C_STANDARD  11)
-SET(CMAKE_C_STANDARD_REQUIRED  ON)
 
 #Including cmake dependencies
 INCLUDE(CheckCXXCompilerFlag)
 INCLUDE(cmake/cmake_function.cmake)
 INCLUDE(cmake/cmake_macro.cmake)
+option(FAST_BUILD_FETCHCONTENT "Skip FetchContent check when for existing source directories (WARNING: This means dependencies aren't updated)" OFF)
+INCLUDE(cmake/FetchContentFast.cmake)
+INCLUDE(FetchContent)
 
 #Project name
 PROJECT(Noggit)
@@ -84,6 +85,7 @@ SET(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/")
 SET(EXECUTABLE_OUTPUT_PATH bin)
 SET(LIBARY_OUTPUT_PATH bin)
 SET(EXTERNAL_SOURCE_DIR src/external)
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 OPTION(USE_SQL "Enable sql uid save ? (require mysql installed)" OFF)
 OPTION(VALIDATE_OPENGL_PROGRAMS "Validate Opengl programs" OFF)
@@ -96,11 +98,19 @@ IF(VALIDATE_OPENGL_PROGRAMS)
 ENDIF()
 
 includePlatform("prefind")
+FIND_PACKAGE(Lua REQUIRED)
+FIND_PACKAGE(StormLib REQUIRED)
+FIND_PACKAGE(CascLib REQUIRED)
+#External packages
+FIND_PACKAGE(OpenGL REQUIRED)
+FIND_PACKAGE(Json REQUIRED)
+FIND_PACKAGE(lodepng REQUIRED)
 
-FIND_PACKAGE(OpenGL REQUIRED )
-FIND_PACKAGE(Boost 1.60 COMPONENTS thread filesystem system unit_test_framework REQUIRED)
-FIND_PACKAGE(StormLib REQUIRED )
-FIND_PACKAGE(Qt5 COMPONENTS Widgets OpenGL OpenGLExtensions Network Xml REQUIRED)
+set(FASTNOISE2_NOISETOOL OFF CACHE BOOL "")
+FIND_PACKAGE(FastNoise2 REQUIRED)
+
+FIND_PACKAGE(Sol2 REQUIRED)
+FIND_PACKAGE(Qt5 COMPONENTS Widgets OpenGL OpenGLExtensions Network Xml Multimedia REQUIRED)
 
 IF(USE_SQL)
   FIND_LIBRARY(MYSQL_LIBRARY NAMES libmysql
@@ -125,8 +135,8 @@ ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/framelesshelper")
 ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/qtimgui")
 ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/QtAdvancedDockingSystem")
 ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/NodeEditor")
+option(BUILD_LIBNOISE_EXAMPLES "Build libnoise examples" OFF)
 ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/libnoise")
-ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/dbcd-cpp")
 ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/glm")
 
 # Add the found include directories to our include list.
@@ -138,7 +148,7 @@ IF(NOT NOGGIT_BUILD_NODE_DATAMODELS)
   ADD_DEFINITIONS(-DDO_NOT_BUILD_NODES )
 ENDIF(NOT NOGGIT_BUILD_NODE_DATAMODELS)
 
-OPTION(NOGGIT_ENABLE_TRACY_PROFILER "Enable tracy profiler" ON)
+OPTION(NOGGIT_ENABLE_TRACY_PROFILER "Enable tracy profiler" OFF)
 IF(NOGGIT_ENABLE_TRACY_PROFILER)
   MESSAGE(STATUS "Tracy profiler enabled." )
   ADD_DEFINITIONS(-DTRACY_ENABLE )
@@ -178,19 +188,18 @@ INCLUDE_DIRECTORIES("${CMAKE_SOURCE_DIR}/${EXTERNAL_SOURCE_DIR}/imguipiemenu")
 INCLUDE_DIRECTORIES("${CMAKE_SOURCE_DIR}/${EXTERNAL_SOURCE_DIR}/libnoise/src")
 INCLUDE_DIRECTORIES("${CMAKE_SOURCE_DIR}/${EXTERNAL_SOURCE_DIR}/qtgradienteditor")
 INCLUDE_DIRECTORIES("${CMAKE_SOURCE_DIR}/${EXTERNAL_SOURCE_DIR}/tracy")
-INCLUDE_DIRECTORIES("${CMAKE_SOURCE_DIR}/${EXTERNAL_SOURCE_DIR}/dbcd-cpp/include")
+INCLUDE_DIRECTORIES("${CMAKE_SOURCE_DIR}/${EXTERNAL_SOURCE_DIR}/blizzard-database-library/include")
+INCLUDE_DIRECTORIES("${CMAKE_SOURCE_DIR}/${EXTERNAL_SOURCE_DIR}/blizzard-archive-library/include")
 INCLUDE_DIRECTORIES(${Qt5Gui_PRIVATE_INCLUDE_DIRS})
 
-collect_files(noggit_root_sources src/noggit FALSE "*.cpp" "")
-collect_files(noggit_ui_sources src/noggit/ui TRUE "*.cpp" "")
-collect_files(noggit_scripting_sources src/noggit/scripting TRUE "*.cpp" "")
+#Load noggit source files
 collect_files(math_sources src/math FALSE "*.cpp" "")
 collect_files(opengl_sources src/opengl FALSE "*.cpp" "")
 
 IF(NOT NOGGIT_BUILD_NODE_DATAMODELS)
-  collect_files(red_sources src/noggit/Red TRUE "*.cpp" "NodeEditor/Nodes/Containers;NodeEditor/Nodes/Data;NodeEditor/Nodes/Functions;NodeEditor/Nodes/Math;NodeEditor/Nodes/World")
+  collect_files(noggit_root_sources src/noggit TRUE "*.cpp" "NodeEditor/Nodes/Containers;NodeEditor/Nodes/Data;NodeEditor/Nodes/Functions;NodeEditor/Nodes/Math;NodeEditor/Nodes/World")
 ELSE()
-  collect_files(red_sources src/noggit/Red TRUE "*.cpp" "")
+  collect_files(noggit_root_sources src/noggit TRUE "*.cpp" "")
 ENDIF()
 
 collect_files(png_blp_sources src/external/PNG2BLP TRUE "*.c;*.cpp;" "")
@@ -198,20 +207,20 @@ collect_files(imguizmo_sources src/external/imguizmo FALSE "*.c;*.cpp;" "")
 collect_files(imguipiemenu_sources src/external/imguipiemenu FALSE "*.c;*.cpp;" "")
 collect_files(gradienteditor_sources src/external/qtgradienteditor FALSE "*.c;*.cpp;" "")
 collect_files(tracy_sources src/external/tracy FALSE "*.c;*.cpp;" "")
+collect_files(archive_sources src/external/blizzard-archive-library/src FALSE "*.c;*.cpp;" "")
+collect_files(database_sources src/external/blizzard-database-library/src TRUE "*.c;*.cpp;" "")
+collect_files(util_sources src/util TRUE "*.c;*.cpp;" "")
+collect_files(util_headers src/util TRUE "*.h;*.hpp" "")
 
-SET(util_sources src/util/exception_to_string.cpp)
-
-collect_files(noggit_root_headers src/noggit FALSE "*.h;*.hpp;*.inl" "")
-collect_files(noggit_ui_headers src/noggit/ui TRUE "*.h;*.hpp" "")
-collect_files(noggit_scripting_headers src/noggit/scripting TRUE "*.h;*.hpp" "")
+collect_files(noggit_root_headers src/noggit TRUE "*.h;*.hpp;*.inl" "")
 collect_files(math_headers src/math FALSE "*.h;*.hpp" "")
 collect_files(opengl_headers src/opengl FALSE "*.h;*.hpp" "")
 collect_files(shaders src/glsl FALSE "*.glsl" "")
 
 IF(NOT NOGGIT_BUILD_NODE_DATAMODELS)
-  collect_files(red_headers src/noggit/Red TRUE "*.h;*.hpp" "NodeEditor/Nodes/Containers;NodeEditor/Nodes/Data;NodeEditor/Nodes/Functions;NodeEditor/Nodes/Math;NodeEditor/Nodes/World")
+  collect_files(red_headers src/noggit/ui/tools TRUE "*.h;*.hpp" "NodeEditor/Nodes/Containers;NodeEditor/Nodes/Data;NodeEditor/Nodes/Functions;NodeEditor/Nodes/Math;NodeEditor/Nodes/World")
 ELSE()
-  collect_files(red_headers src/noggit/Red TRUE "*.h;*.hpp" "")
+  collect_files(red_headers src/noggit/ui/tools TRUE "*.h;*.hpp" "")
 ENDIF()
 
 collect_files(png_blp_headers src/external/PNG2BLP TRUE "*.h;*.hpp" "")
@@ -219,34 +228,35 @@ collect_files(imguizmo_headers src/external/imguizmo FALSE "*.h;*.hpp" "")
 collect_files(imguipiemenu_headers src/external/imguipiemenu FALSE "*.h;*.hpp" "")
 collect_files(gradienteditor_headers src/external/qtgradienteditor FALSE "*.h;*.hpp" "")
 collect_files(tracy_headers src/external/tracy FALSE "*.h;*.hpp" "")
-collect_files(blizzard_database_headers src/external/dbcd-cpp/include FALSE "*.h;*.hpp" "")
+collect_files(archive_headers src/external/blizzard-archive-library/include FALSE "*.h;*.hpp" "")
+collect_files(database_headers src/external/blizzard-database-library/include TRUE "*.h;*.hpp" "")
 
 IF(WIN32)
-  SET(os_sources include/win/StackWalker.cpp)
-  SET(os_headers include/win/StackWalker.h)
+  collect_files(os_sources include/win FALSE "*.c;*.cpp;" "")
+  collect_files(os_headers include/win FALSE "*.h;*.hpp" "")
 ENDIF(WIN32)
 
 collect_files(resource_files resources FALSE "*.qrc" "")
-qt5_add_resources (compiled_resource_files ${resource_files})
+qt5_add_resources(compiled_resource_files ${resource_files})
 collect_files(ui_files src TRUE "*.ui" "")
 qt5_wrap_ui(compiled_ui_files ${ui_files})
+
+assign_specific_source_group("noggit/ui/generated" ${compiled_ui_files})
+assign_specific_source_group("util/win" ${os_sources} ${os_headers})
+assign_specific_source_group("resources" ${ResFiles})
+assign_specific_source_group("resources" ${compiled_resource_files})
 
 assign_source_group(
   ${noggit_root_sources} 
   ${noggit_root_headers}
-  ${noggit_ui_sources}
-  ${noggit_ui_headers}
-  ${noggit_scripting_sources} 
-  ${noggit_scripting_headers}
   ${opengl_sources} 
   ${opengl_headers}
   ${math_sources} 
   ${math_headers}
   ${external_sources} 
   ${external_headers}
-  ${os_sources} 
-  ${os_headers}
   ${util_sources}
+  ${util_headers}
   ${shaders}
   ${red_headers} 
   ${red_sources}
@@ -258,23 +268,26 @@ assign_source_group(
   ${gradienteditor_sources}
   ${resource_files}
   ${ui_files}
-  ${blizzard_database_headers}
   ${tracy_sources}
   ${tracy_headers}
+  ${imguipiemenu_sources}
+  ${imguipiemenu_headers}
 )
+
+
+MESSAGE(STATUS ${moced})
 
 ADD_EXECUTABLE(noggit
   WIN32
   MACOSX_BUNDLE
   ${noggit_root_sources}
-  ${noggit_ui_sources}
-  ${noggit_scripting_sources}
   ${opengl_sources}
   ${math_sources}
   ${external_sources}
   ${mysql_sources}
   ${os_sources}
   ${util_sources}
+  ${util_headers}
   ${red_sources}
   ${png_blp_sources}
   ${imguizmo_sources}
@@ -282,8 +295,6 @@ ADD_EXECUTABLE(noggit
   ${gradienteditor_sources}
   ${tracy_sources}
   ${noggit_root_headers}
-  ${noggit_ui_headers}
-  ${noggit_scripting_headers}
   ${opengl_headers}
   ${math_headers}
   ${external_headers}
@@ -291,7 +302,7 @@ ADD_EXECUTABLE(noggit
   ${os_headers}
   ${png_blp_headers}
   ${ResFiles}
-  ${moced}
+  #${moced}
   ${red_headers}
   ${imguizmo_headers}
   ${imguipiemenu_headers}
@@ -301,35 +312,87 @@ ADD_EXECUTABLE(noggit
   ${compiled_ui_files}
   ${shaders}
   ${force_update_file}
-  ${blizzard_database_headers}
 )
+
+add_library(blizzard-archive-library STATIC ${archive_sources} ${archive_headers})
+add_library(blizzard-database-library STATIC ${database_sources} ${database_headers})
+target_link_libraries(blizzard-archive-library StormLib CascLib)
+
+if (UNIX)
+  FIND_PACKAGE(BZip2 REQUIRED)
+
+  MESSAGE(-- ---------------------------------------------)
+  If(NOT BZIP2_FOUND)
+    MESSAGE("-- BZip2 was not found. Linking Stormlib is likely to fail.")
+  ELSE()
+    MESSAGE("-- Bzip2 found.")
+  ENDIF()
+
+  TARGET_LINK_LIBRARIES (noggit ${BZIP2_LIBRARIES})
+ENDIF()
+
 
 TARGET_LINK_LIBRARIES (noggit
   ${OPENGL_LIBRARIES}
   StormLib
-  Boost::thread
-  Boost::filesystem
-  Boost::system
+  CascLib
   Qt5::Widgets
   Qt5::OpenGL
   Qt5::OpenGLExtensions
   Qt5::Xml
+  Qt5::Network
+  Qt5::Multimedia
   ColorWidgets-qt5
   FramelessHelper
-  BlizzardDatabaseLib
   qt_imgui_widgets
   qtadvanceddocking
   nodes
   noise-static
   noiseutils-static
   glm
+  lodepng
+  FastNoise
+  nlohmann_json::nlohmann_json
+  sol2::sane
+  blizzard-archive-library
+  blizzard-database-library
 )
+
+#add distribution themes
+add_custom_command(TARGET noggit POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${PROJECT_SOURCE_DIR}/dist/themes"
+        $<TARGET_FILE_DIR:noggit>/themes
+        COMMAND ${CMAKE_COMMAND} -E remove -f 
+        $<TARGET_FILE_DIR:noggit>/themes/.git)
+
+#add distribution definitions
+add_custom_command(TARGET noggit POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${PROJECT_SOURCE_DIR}/dist/listfile"
+        $<TARGET_FILE_DIR:noggit>
+        COMMAND ${CMAKE_COMMAND} -E remove -f 
+        $<TARGET_FILE_DIR:noggit>/.git )
+
+#add distribution listfile
+add_custom_command(TARGET noggit POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${PROJECT_SOURCE_DIR}/dist/definitions"
+        $<TARGET_FILE_DIR:noggit>/definitions
+        COMMAND ${CMAKE_COMMAND} -E remove -f 
+        $<TARGET_FILE_DIR:noggit>/definitions/.git)
+
+# deploy for Qt on Windows
+IF(WIN32)
+  include(windeployqt)
+  windeployqt(noggit)
+ENDIF()
 
 SET_PROPERTY(TARGET noggit PROPERTY AUTOMOC ON)
 
 IF(APPLE)
-  TARGET_INCLUDE_DIRECTORIES(noggit PRIVATE /usr/local/Cellar/llvm/12.0.1/include/c++/v1/)
-  TARGET_LINK_LIBRARIES(noggit /usr/local/Cellar/llvm/12.0.1/lib/libc++.1.0.dylib)
+  TARGET_INCLUDE_DIRECTORIES(noggit PRIVATE /usr/local/Cellar/llvm/13.0.0_2/include/c++/v1/)
+  TARGET_LINK_LIBRARIES(noggit /usr/local/Cellar/llvm/13.0.0_2/lib/libc++.1.0.dylib)
 ENDIF()
 
 SET(_noggit_revision_output_dir "${CMAKE_BINARY_DIR}/revision_output")
@@ -341,7 +404,7 @@ SET(_noggit_revision_script_file "${CMAKE_SOURCE_DIR}/cmake/GenerateRevision.cma
 INCLUDE_DIRECTORIES("${_noggit_revision_output_dir}")
 
 FIND_PACKAGE(Git)
-IF(FALSE) # GIT_FOUND
+IF(GIT_FOUND) # GIT_FOUND
   ADD_CUSTOM_TARGET(update_git_revision
     ALL
     DEPENDS "${_noggit_revision_template_file}"
@@ -360,7 +423,7 @@ IF(FALSE) # GIT_FOUND
 ELSE()
   MESSAGE(WARNING "Failed to find a Git executable, will NOT produce a useful version string. Crash logs will be useless. Do NOT distribute.")
 
-  SET(NOGGIT_GIT_VERSION_STRING "UNKNOWN")
+  SET(NOGGIT_GIT_VERSION_STRING "1.00")
   CONFIGURE_FILE("${_noggit_revision_template_file}" "${_noggit_revision_output_file}" @ONLY)
 ENDIF()
 
@@ -380,78 +443,69 @@ ENDIF()
 
 includePlatform("pack")
 
-INCLUDE(FetchContent)
+# Disable warnings
+if(WIN32)
+  target_compile_options(lodepng PRIVATE /wd4334 /wd4267)
+  target_compile_options(FramelessHelper PRIVATE /wd4996)
+  target_compile_options(ColorWidgets-qt5 PRIVATE /wd4996)
+  target_compile_options(qtadvanceddocking PRIVATE /wd4996)
+  target_compile_options(nodes PRIVATE /wd4100 /wd4267 /wd4456 /wd4101 /wd5054 /wd4458 /wd4018 /wd4189)
+  target_compile_options(noiseutils-static PRIVATE /wd4244)
 
-# Dependency: json.hpp
-FetchContent_Declare (json
-  GIT_REPOSITORY https://github.com/ArthurSonzogni/nlohmann_json_cmake_fetchcontent
-  GIT_TAG v3.9.1
-)
-FetchContent_GetProperties (json)
-IF(NOT json_POPULATED)
-  MESSAGE(STATUS "Installing json.hpp...")
-  FetchContent_Populate(json)
-ENDIF()
-ADD_SUBDIRECTORY(${json_SOURCE_DIR} ${json_BINARY_DIR} EXCLUDE_FROM_ALL)
+  foreach(file ${png_blp_sources})
+    set_source_files_properties(${file} PROPERTIES COMPILE_FLAGS "/wd4244 /wd4819 /wd4018 /wd4996 /wd4267 /wd4305")
+  endforeach()
+endif()
 
-# Dependency: lodepng
-FetchContent_Declare (lodepng
-  GIT_REPOSITORY https://github.com/lvandeve/lodepng.git
-  GIT_TAG 7fdcc96a5e5864eee72911c3ca79b1d9f0d12292
-)
-FetchContent_GetProperties (lodepng)
-IF(NOT lodepng_POPULATED)
-  MESSAGE(STATUS "Installing lodepng...")
-  FetchContent_Populate (lodepng)
-ENDIF()
-ADD_LIBRARY(lodepng "${lodepng_SOURCE_DIR}/lodepng.cpp")
-TARGET_INCLUDE_DIRECTORIES(lodepng SYSTEM PUBLIC ${lodepng_SOURCE_DIR})
+option(FAST_BUILD_LIB_PCH "Use precompiled headers for libraries" OFF)
+option(FAST_BUILD_LIB_JUMBO "Use jumbo/unity builds for libraries" OFF)
 
-# Dependency: FastNoise2
-FetchContent_Declare (fastnoise2
-        GIT_REPOSITORY https://github.com/tswow/FastNoise2.git
-        GIT_TAG v0.0.1-heightmap
-        PATCH_COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/cmake/deps/patch_fastnoise2.cmake"
-        UPDATE_DISCONNECTED true
-        )
-FetchContent_GetProperties (fastnoise2)
-IF(NOT fastnoise2_POPULATED)
-  MESSAGE(STATUS "Installing FastNoise2... (big repo, large download)")
-  FetchContent_Populate (fastnoise2)
-ENDIF()
+option(FAST_BUILD_NOGGIT_PCH "Use precompiled headers for noggit" OFF)
+option(FAST_BUILD_NOGGIT_JUMBO "Use jumbo/unity builds for noggit" OFF)
 
-SET(FASTNOISE2_NOISETOOL OFF)
-SET(FASTNOISE2_TESTS:BOOL OFF)
+if(${FAST_BUILD_LIB_PCH})
+  target_precompile_headers(FastNoise PRIVATE
+    "${fastnoise2_SOURCE_DIR}/src/FastSIMD/Internal/AVX.h"
+    "${fastnoise2_SOURCE_DIR}/src/FastSIMD/Internal/SSE.h"
+  )
 
-IF(FASTNOISE2_NOISETOOL)
-  ADD_SUBDIRECTORY(${fastnoise2_SOURCE_DIR} ${fastnoise2_BINARY_DIR})
-ELSE()
-  ADD_SUBDIRECTORY(${fastnoise2_SOURCE_DIR} ${fastnoise2_BINARY_DIR} EXCLUDE_FROM_ALL)
-ENDIF()
+  file(GLOB_RECURSE NODE_EDITOR_HEADERS src/external/NodeEditor/include/nodes/internal/*.hpp)
+  target_precompile_headers(nodes PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:${NODE_EDITOR_HEADERS}>"
+  )
+endif()
 
-# Dependency: Lua
-FIND_PACKAGE(Lua REQUIRED)
-ADD_LIBRARY(Lua-Lua INTERFACE)
-ADD_LIBRARY(Lua::Lua ALIAS Lua-Lua)
-TARGET_LINK_LIBRARIES(Lua-Lua INTERFACE ${LUA_LIBRARIES})
-TARGET_INCLUDE_DIRECTORIES(Lua-Lua INTERFACE ${LUA_INCLUDE_DIR})
+if(${FAST_BUILD_LIB_JUMBO})
+  set_target_properties(noise-static PROPERTIES UNITY_BUILD ON)
+  set_target_properties(noiseutils-static PROPERTIES UNITY_BUILD ON)
+  set_target_properties(qt_imgui_quick PROPERTIES UNITY_BUILD ON)
+  set_target_properties(qt_imgui_widgets PROPERTIES UNITY_BUILD ON)
+  set_target_properties(qtadvanceddocking PROPERTIES UNITY_BUILD ON)
+  set_target_properties(FramelessHelper PROPERTIES UNITY_BUILD ON)
+  set_target_properties(imgui PROPERTIES UNITY_BUILD ON)
+  set_target_properties(ColorWidgets-qt5 PROPERTIES UNITY_BUILD ON)
+  set_target_properties(blizzard-archive-library PROPERTIES UNITY_BUILD ON)
+  set_target_properties(blizzard-database-library PROPERTIES UNITY_BUILD ON)
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/external/blizzard-archive-library/src/Listfile.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+endif()
 
-# Dependency: sol2
-FetchContent_Declare (sol2
-        GIT_REPOSITORY https://github.com/tswow/sol2
-        GIT_TAG b9c83d5ecf6bc9503dc66779f2395dc32dffb1e5
-        )
-FetchContent_MakeAvailable (sol2)
-# sol2::sol2 neither links lua nor sets include directories as system so will clobber us with
-# loads of warnings, sadly. It also wants to be install(EXPORT)ed which is not what we want.
-add_library (sane-sol2 INTERFACE)
-add_library (sol2::sane ALIAS sane-sol2)
-target_link_libraries (sane-sol2 INTERFACE Lua::Lua)
-target_include_directories (sane-sol2 SYSTEM INTERFACE "${sol2_SOURCE_DIR}/include")
+if(${FAST_BUILD_NOGGIT_PCH})
+  set(NOGGIT_ALL_PCH "${math_headers};${noggit_root_headers};${archive_headers};${database_headers}")
+  list(REMOVE_ITEM NOGGIT_ALL_PCH "${CMAKE_CURRENT_SOURCE_DIR}/src/noggit/ui/TextureList.hpp")
+  target_precompile_headers(noggit PUBLIC "$<$<COMPILE_LANGUAGE:CXX>:${NOGGIT_ALL_PCH}>")
+endif()
 
-target_link_libraries (noggit
-        lodepng
-        FastNoise
-        nlohmann_json::nlohmann_json
-        sol2::sane
-        )
+if(${FAST_BUILD_NOGGIT_JUMBO})
+  set_target_properties(noggit PROPERTIES UNITY_BUILD ON)
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/noggit/ui/tools/MapCreationWizard/ui/MapCreationWizard.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/noggit/ui/TexturingGUI.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/noggit/ui/TextureList.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/noggit/ui/tools/ViewToolbar/Ui/ViewToolbar.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/noggit/ui/tools/ViewportGizmo/ViewportGizmo.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/noggit/ui/tools/ViewportManager/ViewportManager.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/external/tracy/TracyClient.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/include/win/StackWalker.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/external/imguizmo/ImGuizmo.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/external/imguizmo/ImSequencer.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/noggit/rendering/WorldRender.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+endif()

@@ -1,19 +1,20 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/AsyncLoader.h>
-#include <noggit/MPQ.h>
-#include <noggit/MapChunk.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/Misc.h>
 #include <noggit/World.h>
 #include <noggit/ActionManager.hpp>
 #include <noggit/Action.hpp>
+#include <noggit/project/CurrentProject.hpp>
 #ifdef USE_MYSQL_UID_STORAGE
   #include <mysql/mysql.h>
 #endif
 #include <noggit/map_index.hpp>
 #include <noggit/uid_storage.hpp>
+#include <noggit/application/NoggitApplication.hpp>
+#include <ClientFile.hpp>
 
 #include <QtCore/QSettings>
 #include <QByteArray>
@@ -21,13 +22,11 @@
 #include <QRegExp>
 #include <QFile>
 
-#include <boost/range/adaptor/map.hpp>
-
 #include <forward_list>
 #include <cstdlib>
 
 MapIndex::MapIndex (const std::string &pBasename, int map_id, World* world,
-                    noggit::NoggitRenderContext context, bool create_empty)
+                    Noggit::NoggitRenderContext context, bool create_empty)
   : basename(pBasename)
   , _map_id (map_id)
   , _last_unload_time((clock() / CLOCKS_PER_SEC)) // to not try to unload right away
@@ -69,7 +68,7 @@ MapIndex::MapIndex (const std::string &pBasename, int map_id, World* world,
   std::stringstream filename;
   filename << "World\\Maps\\" << basename << "\\" << basename << ".wdt";
 
-  MPQFile theFile(filename.str());
+  BlizzardArchive::ClientFile theFile(filename.str(), Noggit::Application::NoggitApplication::instance()->clientData());
 
   uint32_t fourcc;
   uint32_t size;
@@ -94,9 +93,9 @@ MapIndex::MapIndex (const std::string &pBasename, int map_id, World* world,
 
   theFile.read(&mphd, sizeof(MPHD));
 
-  mHasAGlobalWMO = mphd.flags & 1;
-  mBigAlpha = (mphd.flags & 4) != 0;
-  _sort_models_by_size_class = mphd.flags & 0x8;
+  mHasAGlobalWMO = mphd.flags & FLAG_GLOBAL_OBJECT;
+  mBigAlpha = mphd.flags & FLAG_BIG_ALPHA;
+  _sort_models_by_size_class = mphd.flags & FLAG_DOODADS_SORT;
 
   if (!(mphd.flags & FLAG_SHADING))
   {
@@ -125,7 +124,7 @@ MapIndex::MapIndex (const std::string &pBasename, int map_id, World* world,
       adt_filename << "World\\Maps\\" << basename << "\\" << basename << "_" << i << "_" << j << ".adt";
 
       mTiles[j][i].tile = nullptr;
-      mTiles[j][i].onDisc = MPQFile::existsOnDisk(adt_filename.str());
+      mTiles[j][i].onDisc = Noggit::Application::NoggitApplication::instance()->clientData()->existsOnDisk(adt_filename.str());
 
 			if (mTiles[j][i].onDisc && !(mTiles[j][i].flags & 1))
 			{
@@ -141,7 +140,7 @@ MapIndex::MapIndex (const std::string &pBasename, int map_id, World* world,
     //! \bug MODF reads wrong. The assertion fails every time. Somehow, it keeps being MWMO. Or are there two blocks?
     //! \nofuckingbug  on eof read returns just without doing sth to the var and some wdts have a MWMO without having a MODF so only checking for eof above is not enough
 
-    mHasAGlobalWMO = false;
+    // mHasAGlobalWMO = false;
 
     // - MWMO ----------------------------------------------
 
@@ -178,6 +177,7 @@ void MapIndex::saveall (World* world)
 
   for (MapTile* tile : loaded_tiles())
   {
+    world->horizon.update_horizon_tile(tile);
     tile->saveTile(world);
     tile->changed = false;
   }
@@ -210,9 +210,19 @@ void MapIndex::save()
   SetChunkHeader(wdtFile, curPos, 'MPHD', sizeof(MPHD));
   curPos += 8;
 
+  mphd.flags = 0;
+  mphd.something = 0;
+  if (mHasAGlobalWMO)
+      mphd.flags |= FLAG_GLOBAL_OBJECT;
+  if (mBigAlpha)
+      mphd.flags |= FLAG_BIG_ALPHA;
+  if (_sort_models_by_size_class)
+      mphd.flags |= FLAG_DOODADS_SORT;
+
+  mphd.flags |= FLAG_SHADING;
+
   wdtFile.Insert(curPos, sizeof(MPHD), (char*)&mphd);
   curPos += sizeof(MPHD);
-  //  }
 
   // MAIN
   //  {
@@ -236,11 +246,11 @@ void MapIndex::save()
     // MWMO
     //  {
     wdtFile.Extend(8);
-    SetChunkHeader(wdtFile, curPos, 'MWMO', globalWMOName.size());
+    SetChunkHeader(wdtFile, curPos, 'MWMO', static_cast<int>(globalWMOName.size()));
     curPos += 8;
 
-    wdtFile.Insert(curPos, globalWMOName.size(), globalWMOName.data());
-    curPos += globalWMOName.size();
+    wdtFile.Insert(curPos, static_cast<unsigned long>(globalWMOName.size()), globalWMOName.data());
+    curPos += static_cast<int>(globalWMOName.size());
     //  }
 
     // MODF
@@ -254,15 +264,16 @@ void MapIndex::save()
     //  }
   }
 
-  MPQFile f(filename.str());
+  BlizzardArchive::ClientFile f(filename.str(), Noggit::Application::NoggitApplication::instance()->clientData(),
+                                BlizzardArchive::ClientFile::NEW_FILE);
   f.setBuffer(wdtFile.data);
-  f.SaveFile();
+  f.save();
   f.close();
 
   changed = false;
 }
 
-void MapIndex::enterTile(const tile_index& tile)
+void MapIndex::enterTile(const TileIndex& tile)
 {
   if (!hasTile(tile))
   {
@@ -271,19 +282,19 @@ void MapIndex::enterTile(const tile_index& tile)
   }
 
   noadt = false;
-  int cx = tile.x;
-  int cz = tile.z;
+  int cx = static_cast<int>(tile.x);
+  int cz = static_cast<int>(tile.z);
 
   for (int pz = std::max(cz - 1, 0); pz < std::min(cz + 2, 63); ++pz)
   {
     for (int px = std::max(cx - 1, 0); px < std::min(cx + 2, 63); ++px)
     {
-      loadTile(tile_index(px, pz));
+      loadTile(TileIndex(px, pz));
     }
   }
 }
 
-void MapIndex::update_model_tile(const tile_index& tile, model_update type, SceneObject* instance)
+void MapIndex::update_model_tile(const TileIndex& tile, model_update type, SceneObject* instance)
 {
   MapTile* adt = loadTile(tile);
 
@@ -303,7 +314,7 @@ void MapIndex::update_model_tile(const tile_index& tile, model_update type, Scen
   }
 }
 
-void MapIndex::setChanged(const tile_index& tile)
+void MapIndex::setChanged(const TileIndex& tile)
 {
   MapTile* mTile = loadTile(tile);
 
@@ -318,7 +329,7 @@ void MapIndex::setChanged(MapTile* tile)
   setChanged(tile->index);
 }
 
-void MapIndex::unsetChanged(const tile_index& tile)
+void MapIndex::unsetChanged(const TileIndex& tile)
 {
   // change the changed flag of the map tile
   if (hasTile(tile))
@@ -327,14 +338,14 @@ void MapIndex::unsetChanged(const tile_index& tile)
   }
 }
 
-bool MapIndex::has_unsaved_changes(const tile_index& tile) const
+bool MapIndex::has_unsaved_changes(const TileIndex& tile) const
 {
   return (tileLoaded(tile) ? getTile(tile)->changed.load() : false);
 }
 
 void MapIndex::setFlag(bool to, glm::vec3 const& pos, uint32_t flag)
 {
-  tile_index tile(pos);
+  TileIndex tile(pos);
 
   if (tileLoaded(tile))
   {
@@ -344,12 +355,12 @@ void MapIndex::setFlag(bool to, glm::vec3 const& pos, uint32_t flag)
     int cz = (pos.z - tile.z * TILESIZE) / CHUNKSIZE;
 
     MapChunk* chunk = getTile(tile)->getChunk(cx, cz);
-    noggit::ActionManager::instance()->getCurrentAction()->registerChunkFlagChange(chunk);
+    NOGGIT_CUR_ACTION->registerChunkFlagChange(chunk);
     chunk->setFlag(to, flag);
   }
 }
 
-MapTile* MapIndex::loadTile(const tile_index& tile, bool reloading)
+MapTile* MapIndex::loadTile(const TileIndex& tile, bool reloading, bool load_models, bool load_textures)
 {
   if (!hasTile(tile))
   {
@@ -364,14 +375,14 @@ MapTile* MapIndex::loadTile(const tile_index& tile, bool reloading)
   std::stringstream filename;
   filename << "World\\Maps\\" << basename << "\\" << basename << "_" << tile.x << "_" << tile.z << ".adt";
 
-  if (!MPQFile::exists(filename.str()))
+  if (!Noggit::Application::NoggitApplication::instance()->clientData()->exists(filename.str()))
   {
     LogError << "The requested tile \"" << filename.str() << "\" does not exist! Oo" << std::endl;
     return nullptr;
   }
 
-  mTiles[tile.z][tile.x].tile = std::make_unique<MapTile> (tile.x, tile.z, filename.str(),
-     mBigAlpha, true, use_mclq_green_lava(), reloading, _world, _context);
+  mTiles[tile.z][tile.x].tile = std::make_unique<MapTile> (static_cast<int>(tile.x), static_cast<int>(tile.z), filename.str(),
+     mBigAlpha, load_models, use_mclq_green_lava(), reloading, _world, _context, tile_mode::edit, load_textures);
 
   MapTile* adt = mTiles[tile.z][tile.x].tile.get();
 
@@ -381,7 +392,7 @@ MapTile* MapIndex::loadTile(const tile_index& tile, bool reloading)
   return adt;
 }
 
-void MapIndex::reloadTile(const tile_index& tile)
+void MapIndex::reloadTile(const TileIndex& tile)
 {
   if (tileLoaded(tile))
   {
@@ -390,7 +401,7 @@ void MapIndex::reloadTile(const tile_index& tile)
   }
 }
 
-void MapIndex::unloadTiles(const tile_index& tile)
+void MapIndex::unloadTiles(const TileIndex& tile)
 {
   if (((clock() / CLOCKS_PER_SEC) - _last_unload_time) > _unload_interval)
   {
@@ -410,18 +421,18 @@ void MapIndex::unloadTiles(const tile_index& tile)
   }
 }
 
-void MapIndex::unloadTile(const tile_index& tile)
+void MapIndex::unloadTile(const TileIndex& tile)
 {
   // unloads a tile with givn cords
   if (tileLoaded(tile))
   {
-    mTiles[tile.z][tile.x].tile = nullptr;
     Log << "Unload Tile " << tile.x << "-" << tile.z << std::endl;
+    mTiles[tile.z][tile.x].tile = nullptr;
     _n_loaded_tiles--;
   }
 }
 
-void MapIndex::markOnDisc(const tile_index& tile, bool mto)
+void MapIndex::markOnDisc(const TileIndex& tile, bool mto)
 {
   if(tile.is_valid())
   {
@@ -429,22 +440,21 @@ void MapIndex::markOnDisc(const tile_index& tile, bool mto)
   }
 }
 
-bool MapIndex::isTileExternal(const tile_index& tile) const
+bool MapIndex::isTileExternal(const TileIndex& tile) const
 {
   // is onDisc
   return tile.is_valid() && mTiles[tile.z][tile.x].onDisc;
 }
 
-void MapIndex::saveTile(const tile_index& tile, World* world, bool save_unloaded)
+void MapIndex::saveTile(const TileIndex& tile, World* world, bool save_unloaded)
 {
   world->wait_for_all_tile_updates();
 
 	// save given tile
 	if (save_unloaded)
   {
-    QSettings settings;
-    auto filepath = boost::filesystem::path (settings.value ("project/path").toString().toStdString())
-                    / noggit::mpq::normalized_filename (mTiles[tile.z][tile.x].tile->filename);
+    auto filepath = std::filesystem::path (Noggit::Project::CurrentProject::get()->ProjectPath)
+                    / BlizzardArchive::ClientData::normalizeFilenameInternal (mTiles[tile.z][tile.x].tile->file_key().filepath());
 
     QFile file(filepath.string().c_str());
     file.open(QIODevice::WriteOnly);
@@ -457,6 +467,7 @@ void MapIndex::saveTile(const tile_index& tile, World* world, bool save_unloaded
 	if (tileLoaded(tile))
 	{
     saveMaxUID();
+    world->horizon.update_horizon_tile(mTiles[tile.z][tile.x].tile.get());
 		mTiles[tile.z][tile.x].tile->saveTile(world);
 	}
 }
@@ -485,9 +496,8 @@ void MapIndex::saveChanged (World* world, bool save_unloaded)
           continue;
         }
 
-        QSettings settings;
-        auto filepath = boost::filesystem::path (settings.value ("project/path").toString().toStdString())
-                        / noggit::mpq::normalized_filename (mTiles[i][j].tile->filename);
+        auto filepath = std::filesystem::path (Noggit::Project::CurrentProject::get()->ProjectPath)
+                        / BlizzardArchive::ClientData::normalizeFilenameInternal (mTiles[i][j].tile->file_key().filepath());
 
         if (mTiles[i][j].flags & 0x1)
         {
@@ -512,6 +522,7 @@ void MapIndex::saveChanged (World* world, bool save_unloaded)
   {
     if (tile->changed.load())
     {
+      world->horizon.update_horizon_tile(tile);
       tile->saveTile(world);
       tile->changed = false;
     }
@@ -524,17 +535,17 @@ bool MapIndex::hasAGlobalWMO()
 }
 
 
-bool MapIndex::hasTile(const tile_index& tile) const
+bool MapIndex::hasTile(const TileIndex& tile) const
 {
   return tile.is_valid() && (mTiles[tile.z][tile.x].flags & 1);
 }
 
-bool MapIndex::tileAwaitingLoading(const tile_index& tile) const
+bool MapIndex::tileAwaitingLoading(const TileIndex& tile) const
 {
   return hasTile(tile) && mTiles[tile.z][tile.x].tile && !mTiles[tile.z][tile.x].tile->finishedLoading();
 }
 
-bool MapIndex::tileLoaded(const tile_index& tile) const
+bool MapIndex::tileLoaded(const TileIndex& tile) const
 {
   return hasTile(tile) && mTiles[tile.z][tile.x].tile && mTiles[tile.z][tile.x].tile->finishedLoading();
 }
@@ -549,14 +560,14 @@ void MapIndex::setAdt(bool value)
   noadt = value;
 }
 
-MapTile* MapIndex::getTile(const tile_index& tile) const
+MapTile* MapIndex::getTile(const TileIndex& tile) const
 {
   return (tile.is_valid() ? mTiles[tile.z][tile.x].tile.get() : nullptr);
 }
 
 MapTile* MapIndex::getTileAbove(MapTile* tile) const
 {
-  tile_index above(tile->index.x, tile->index.z - 1);
+  TileIndex above(tile->index.x, tile->index.z - 1);
   if (tile->index.z == 0 || (!tileLoaded(above) && !tileAwaitingLoading(above)))
   {
     return nullptr;
@@ -570,7 +581,7 @@ MapTile* MapIndex::getTileAbove(MapTile* tile) const
 
 MapTile* MapIndex::getTileLeft(MapTile* tile) const
 {
-  tile_index left(tile->index.x - 1, tile->index.z);
+  TileIndex left(tile->index.x - 1, tile->index.z);
   if (tile->index.x == 0 || (!tileLoaded(left) && !tileAwaitingLoading(left)))
   {
     return nullptr;
@@ -582,7 +593,7 @@ MapTile* MapIndex::getTileLeft(MapTile* tile) const
   return tile_left;
 }
 
-uint32_t MapIndex::getFlag(const tile_index& tile) const
+uint32_t MapIndex::getFlag(const TileIndex& tile) const
 {
   return (tile.is_valid() ? mTiles[tile.z][tile.x].flags : 0);
 }
@@ -605,7 +616,7 @@ uint32_t MapIndex::getHighestGUIDFromFile(const std::string& pFilename) const
 {
 	uint32_t highGUID = 0;
 
-    MPQFile theFile(pFilename);
+    BlizzardArchive::ClientFile theFile(pFilename, Noggit::Application::NoggitApplication::instance()->clientData());
     if (theFile.isEof())
     {
       return highGUID;
@@ -674,7 +685,7 @@ uint32_t MapIndex::newGUID()
 #ifdef USE_MYSQL_UID_STORAGE
   QSettings settings;
 
-  if (settings->value ("project/mysql/enabled", false).toBool())
+  if (settings.value ("project/mysql/enabled", false).toBool())
   {
     mysql::updateUIDinDB(_map_id, highestGUID + 1); // update the highest uid in db, note that if the user don't save these uid won't be used (not really a problem tho) 
   }
@@ -684,6 +695,10 @@ uint32_t MapIndex::newGUID()
 
 uid_fix_status MapIndex::fixUIDs (World* world, bool cancel_on_model_loading_error)
 {
+  // clear all selection groups since UIDs will change.
+  // TODO : update them instead.
+    _world->clear_selection_groups();
+
   // pre-cond: mTiles[z][x].flags are set
 
   // unload any previously loaded tile, although there shouldn't be as
@@ -720,7 +735,7 @@ uid_fix_status MapIndex::fixUIDs (World* world, bool cancel_on_model_loading_err
 
       std::stringstream filename;
       filename << "World\\Maps\\" << basename << "\\" << basename << "_" << x << "_" << z << ".adt";
-      MPQFile file(filename.str());
+      BlizzardArchive::ClientFile file(filename.str(), Noggit::Application::NoggitApplication::instance()->clientData());
 
       if (file.isEof())
       {
@@ -1018,7 +1033,7 @@ void MapIndex::saveMaxUID()
 #ifdef USE_MYSQL_UID_STORAGE
   QSettings settings;
 
-  if (settings->value ("project/mysql/enabled", false).toBool())
+  if (settings.value ("project/mysql/enabled", false).toBool())
   {
     if (mysql::hasMaxUIDStoredDB(_map_id))
     {
@@ -1040,9 +1055,9 @@ void MapIndex::loadMaxUID()
 #ifdef USE_MYSQL_UID_STORAGE
   QSettings settings;
 
-  if (settings->value ("project/mysql/enabled", false).toBool())
+  if (settings.value ("project/mysql/enabled", false).toBool())
   {
-    highestGUID = std::max(mysql::getGUIDFromDB(map_id), highestGUID);
+    highestGUID = std::max(mysql::getGUIDFromDB(_map_id), highestGUID);
     // save to make sure the db and disk uid are synced
     saveMaxUID();
   }
@@ -1051,20 +1066,20 @@ void MapIndex::loadMaxUID()
 
 void MapIndex::loadMinimapMD5translate()
 {
-  if (!MPQFile::exists("textures/minimap/md5translate.trs"))
+  if (!Noggit::Application::NoggitApplication::instance()->clientData()->exists("textures/minimap/md5translate.trs"))
   {
     LogError << "md5translate.trs was not found. "
                 "Noggit will generate a new one in the project directory on minimap save." << std::endl;
     return;
   }
 
-  MPQFile md5trs_file("textures/minimap/md5translate.trs");
+  BlizzardArchive::ClientFile md5trs_file("textures/minimap/md5translate.trs", Noggit::Application::NoggitApplication::instance()->clientData());
 
   size_t size = md5trs_file.getSize();
   void* buffer_raw = std::malloc(size);
   md5trs_file.read(buffer_raw, size);
 
-  QByteArray md5trs_bytes(static_cast<char*>(buffer_raw), size);
+  QByteArray md5trs_bytes(static_cast<char*>(buffer_raw), static_cast<int>(size));
 
   QTextStream md5trs_stream(md5trs_bytes, QIODevice::ReadOnly);
 
@@ -1087,6 +1102,13 @@ void MapIndex::loadMinimapMD5translate()
 
     QStringList line_split = line.split(QRegExp("[\t]"));
 
+    if (line_split.length() < 2)
+    {
+        std::string text = "Failed to read md5translate.trs.\nLine \"" + line.toStdString() + "\n has no tab spacing. Spacing must be only a tab character and not spaces.";
+        LogError << text << std::endl;
+        throw  std::logic_error(text);
+    }
+
     if (cur_dir.length())
     {
       _minimap_md5translate[cur_dir.toStdString()][line_split[0].toStdString()] = line_split[1].toStdString();
@@ -1098,8 +1120,7 @@ void MapIndex::loadMinimapMD5translate()
 
 void MapIndex::saveMinimapMD5translate()
 {
-  QSettings settings;
-  QString str = settings.value ("project/path").toString();
+  QString str = QString(Noggit::Project::CurrentProject::get()->ProjectPath.c_str());
   if (!(str.endsWith('\\') || str.endsWith('/')))
   {
     str += "/";
@@ -1134,31 +1155,35 @@ void MapIndex::saveMinimapMD5translate()
 
 }
 
-void MapIndex::addTile(const tile_index& tile)
+void MapIndex::addTile(const TileIndex& tile)
 {
   std::stringstream filename;
   filename << "World\\Maps\\" << basename << "\\" << basename << "_" << tile.x << "_" << tile.z << ".adt";
 
-  mTiles[tile.z][tile.x].tile = std::make_unique<MapTile> (tile.x, tile.z, filename.str(),
+  mTiles[tile.z][tile.x].tile = std::make_unique<MapTile> (static_cast<int>(tile.x), static_cast<int>(tile.z), filename.str(),
       mBigAlpha, true, use_mclq_green_lava(), false, _world, _context);
 
   mTiles[tile.z][tile.x].flags |= 0x1;
   mTiles[tile.z][tile.x].tile->changed = true;
 
+  _world->horizon.update_horizon_tile(mTiles[tile.z][tile.x].tile.get());
+
   changed = true;
 }
 
-void MapIndex::removeTile(const tile_index &tile)
+void MapIndex::removeTile(const TileIndex &tile)
 {
   mTiles[tile.z][tile.x].flags &= ~0x1;
 
   std::stringstream filename;
   filename << "World\\Maps\\" << basename << "\\" << basename << "_" << tile.x << "_" << tile.z << ".adt";
-  mTiles[tile.z][tile.x].tile = std::make_unique<MapTile> (tile.x, tile.z, filename.str(),
+  mTiles[tile.z][tile.x].tile = std::make_unique<MapTile> (static_cast<int>(tile.x), static_cast<int>(tile.z), filename.str(),
      mBigAlpha, true, use_mclq_green_lava(), false, _world, _context);
 
   mTiles[tile.z][tile.x].tile->changed = true;
   mTiles[tile.z][tile.x].onDisc = false;
+
+  _world->horizon.remove_horizon_tile(tile.z, tile.x);
 
   changed = true;
 }
@@ -1171,7 +1196,7 @@ unsigned MapIndex::getNumExistingTiles()
   _n_existing_tiles = 0;
   for (int i = 0; i < 4096; ++i)
   {
-    tile_index index(i / 64, i % 64);
+    TileIndex index(i / 64, i % 64);
 
     if (hasTile(index))
     {
@@ -1201,4 +1226,112 @@ void MapIndex::set_basename(const std::string &pBasename)
       mTiles[z][x].tile->setFilename(filename.str());
     }
   }
+}
+
+void MapIndex::create_empty_wdl()
+{
+    // for new map creation, creates a new WDL with all heights as 0
+    std::stringstream filename;
+    filename << "World\\Maps\\" << basename << "\\" << basename << ".wdl"; // mapIndex.basename ? 
+    //Log << "Saving WDL \"" << filename << "\"." << std::endl;
+
+    sExtendableArray wdlFile = sExtendableArray();
+    int curPos = 0;
+
+    // MVER
+    //  {
+    wdlFile.Extend(8 + 0x4);
+    SetChunkHeader(wdlFile, curPos, 'MVER', 4);
+
+    // MVER data
+    *(wdlFile.GetPointer<int>(8)) = 18; // write version 18
+    curPos += 8 + 0x4;
+    //  }
+
+    // MWMO
+    //  {
+    wdlFile.Extend(8);
+    SetChunkHeader(wdlFile, curPos, 'MWMO', 0);
+
+    curPos += 8;
+    //  }
+
+    // MWID
+    //  {
+    wdlFile.Extend(8);
+    SetChunkHeader(wdlFile, curPos, 'MWID', 0);
+
+    curPos += 8;
+    //  }
+
+    // MODF
+    //  {
+    wdlFile.Extend(8);
+    SetChunkHeader(wdlFile, curPos, 'MODF', 0);
+
+    curPos += 8;
+    //  }
+
+    uint32_t mare_offsets[4096] = { 0 }; // [64][64];
+    // MAOF
+    //  {
+    wdlFile.Extend(8);
+    SetChunkHeader(wdlFile, curPos, 'MAOF', 64 * 64 * 4);
+    curPos += 8;
+
+    uint32_t mareoffset = curPos + 64 * 64 * 4;
+
+    for (int y = 0; y < 64; ++y)
+    {
+        for (int x = 0; x < 64; ++x)
+        {
+            TileIndex index(x, y);
+
+            bool has_tile = hasTile(index);
+
+            // if (tile_exists)
+            if (has_tile) // TODO check if tile exists
+            {
+                // write offset in MAOF entry
+                wdlFile.Insert(curPos, 4, (char*)&mareoffset);
+                mare_offsets[y * 64 + x] = mareoffset;
+                mareoffset += 1138; // mare + maho
+            }
+            else
+                wdlFile.Extend(4);
+            curPos += 4;
+
+        }
+    }
+
+    for (auto offset : mare_offsets)
+    {
+        if (!offset)
+            continue;
+
+        // MARE
+        //  {
+        wdlFile.Extend(8);
+        SetChunkHeader(wdlFile, curPos, 'MARE', (2 * (17 * 17)) + (2 * (16 * 16))); // outer heights+inner heights
+        curPos += 8;
+
+        // write inner and outer heights
+        wdlFile.Extend((2 * (17 * 17)) + (2 * (16 * 16)));
+        curPos += (2 * (17 * 17)) + (2 * (16 * 16));
+        //  }
+
+        // MAHO (maparea holes)
+        //  {
+        wdlFile.Extend(8);
+        SetChunkHeader(wdlFile, curPos, 'MAHO', 2 * 16); // 1 hole mask for each chunk
+        curPos += 8;
+
+        wdlFile.Extend(32);
+        curPos += 32;
+    }
+    BlizzardArchive::ClientFile f(filename.str(), Noggit::Application::NoggitApplication::instance()->clientData(),
+    BlizzardArchive::ClientFile::NEW_FILE);
+    f.setBuffer(wdlFile.data);
+    f.save();
+    f.close();
 }

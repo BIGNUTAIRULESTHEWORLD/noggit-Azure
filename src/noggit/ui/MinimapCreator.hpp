@@ -9,7 +9,6 @@
 #include <QListWidget>
 #include <QApplication>
 #include <qt-color-widgets/color_selector.hpp>
-#include <boost/optional.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -65,10 +64,10 @@ struct MinimapRenderSettings
 };
 
 
-namespace noggit
+namespace Noggit
 {
 
-  namespace ui
+  namespace Ui
   {
 
     class MinimapCreator : public QWidget

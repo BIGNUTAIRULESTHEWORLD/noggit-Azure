@@ -6,7 +6,7 @@
 
 #include <utility>
 
-namespace opengl
+namespace OpenGL
 {
   texture::texture()
     : _id (0)
@@ -45,7 +45,7 @@ namespace opengl
 
   void texture::set_active_texture (size_t num)
   {
-    gl.activeTexture (GL_TEXTURE0 + num);
+    gl.activeTexture (static_cast<GLenum>(GL_TEXTURE0 + num));
   }
 
   void texture::unload()

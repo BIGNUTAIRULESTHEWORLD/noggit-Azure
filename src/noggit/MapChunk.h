@@ -13,13 +13,17 @@
 #include <opengl/scoped.hpp>
 #include <opengl/texture.hpp>
 #include <noggit/Misc.h>
-
+#include <optional>
 #include <map>
 #include <memory>
 #include <array>
 #include <QImage>
 
-class MPQFile;
+namespace BlizzardArchive
+{
+  class ClientFile;
+}
+
 namespace math
 {
   class frustum;
@@ -59,8 +63,8 @@ private:
 
 
 public:
-  MapChunk(MapTile* mt, MPQFile* f, bool bigAlpha, tile_mode mode, noggit::NoggitRenderContext context
-           , bool init_empty = false, int chunk_idx = 0);
+  MapChunk(MapTile* mt, BlizzardArchive::ClientFile* f, bool bigAlpha, tile_mode mode, Noggit::NoggitRenderContext context
+           , bool init_empty = false, int chunk_idx = 0, bool load_textures = true);
 
   auto getHoleMask(void) const -> unsigned { return static_cast<unsigned>(holes); }
   MapTile *mt;
@@ -98,14 +102,14 @@ private:
 
   unsigned _chunk_update_flags;
 
-  noggit::NoggitRenderContext _context;
+  Noggit::NoggitRenderContext _context;
 
 public:
 
   TextureSet* getTextureSet() { return texture_set.get(); };
 
   void draw ( math::frustum const& frustum
-            , opengl::scoped::use_program& mcnk_shader
+            , OpenGL::Scoped::use_program& mcnk_shader
             , const float& cull_distance
             , const glm::vec3& camera
             , bool need_visibility_update
@@ -139,7 +143,7 @@ public:
   bool changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius);
   bool flattenTerrain(glm::vec3 const& pos, float remain, float radius, int BrushType, flatten_mode const& mode, const glm::vec3& origin, math::degrees angle, math::degrees orientation);
   bool blurTerrain ( glm::vec3 const& pos, float remain, float radius, int BrushType, flatten_mode const& mode
-                   , std::function<boost::optional<float> (float, float)> height
+                   , std::function<std::optional<float> (float, float)> height
                    );
 
   bool changeTerrainProcessVertex(glm::vec3 const& pos, glm::vec3 const& vertex, float& dt, float radiusOuter, float radiusInner, int brushType);
@@ -153,11 +157,12 @@ public:
   //! \todo implement Action stack for these
   bool paintTexture(glm::vec3 const& pos, Brush *brush, float strength, float pressure, scoped_blp_texture_reference texture);
   bool stampTexture(glm::vec3 const& pos, Brush *brush, float strength, float pressure, scoped_blp_texture_reference texture, QImage* img, bool paint);
-  bool replaceTexture(glm::vec3 const& pos, float radius, scoped_blp_texture_reference const& old_texture, scoped_blp_texture_reference new_texture);
+  bool replaceTexture(glm::vec3 const& pos, float radius, scoped_blp_texture_reference const& old_texture, scoped_blp_texture_reference new_texture, bool entire_chunk = false);
   bool canPaintTexture(scoped_blp_texture_reference texture);
   int addTexture(scoped_blp_texture_reference texture);
-  void switchTexture(scoped_blp_texture_reference const& oldTexture, scoped_blp_texture_reference newTexture);
+  bool switchTexture(scoped_blp_texture_reference const& oldTexture, scoped_blp_texture_reference newTexture);
   void eraseTextures();
+  void eraseTexture(scoped_blp_texture_reference const& tex);
   void change_texture_flag(scoped_blp_texture_reference const& tex, std::size_t flag, bool add);
 
   void clear_shadows();
@@ -180,7 +185,12 @@ public:
   void clearHeight();
 
   //! \todo this is ugly create a build struct or sth
-  void save(sExtendableArray &lADTFile, int &lCurrentPosition, int &lMCIN_Position, std::map<std::string, int> &lTextures, std::vector<WMOInstance> &lObjectInstances, std::vector<ModelInstance>& lModelInstances);
+  void save(sExtendableArray &lADTFile
+            , int &lCurrentPosition
+            , int &lMCIN_Position
+            , std::map<std::string, int> &lTextures
+            , std::vector<WMOInstance*> &lObjectInstances
+            , std::vector<ModelInstance*>& lModelInstances);
 
   // fix the gaps with the chunk to the left
   bool fixGapLeft(const MapChunk* chunk);

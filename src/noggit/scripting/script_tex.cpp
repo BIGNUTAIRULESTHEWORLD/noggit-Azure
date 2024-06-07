@@ -12,8 +12,8 @@
 #define TEXTURE_UNITS_WIDTH 64
 #define TEXTURE_UNITS_PER_CHUNK 4096
 
-namespace noggit {
-  namespace scripting {
+namespace Noggit {
+  namespace Scripting {
 
     tex::tex(script_context * ctx, MapChunk* chunk, int index)
       : script_object(ctx)
@@ -25,7 +25,7 @@ namespace noggit {
     {
       auto& ts = _chunk->texture_set;
       ts->create_temporary_alphamaps_if_needed();
-      return ts->getTempAlphamaps()->get()[index][_index];
+      return ts->getTempAlphamaps()->value()[index][_index];
     }
 
     void tex::set_alpha(int index, float value)
@@ -41,7 +41,7 @@ namespace noggit {
       }
       auto& ts = _chunk->texture_set;
       ts->create_temporary_alphamaps_if_needed();
-      ts->getTempAlphamaps()->get()[index][_index] = value;
+      ts->getTempAlphamaps()->value()[index][_index] = value;
     }
 
     namespace {

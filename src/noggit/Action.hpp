@@ -9,18 +9,19 @@
 #include <set>
 #include <algorithm>
 #include <external/tsl/robin_map.h>
-#include <boost/optional.hpp>
+#include <optional>
 #include <noggit/TextureManager.h>
 #include <noggit/texture_set.hpp>
 #include <noggit/SceneObject.hpp>
 #include <noggit/liquid_layer.hpp>
 #include <noggit/ChunkWater.hpp>
 #include <QObject>
+#include <ClientData.hpp>
 
 class MapView;
 class MapChunk;
 
-namespace noggit
+namespace Noggit
 {
 
     enum ActionFlags
@@ -55,18 +56,25 @@ namespace noggit
         eNUM         = 0x100
     };
 
+    enum class ActionObjectTypes
+    {
+      WMO,
+      M2
+    };
+
     struct TextureChangeCache
     {
       size_t n_textures;
       std::vector<std::string> textures;
-      std::array<boost::optional<Alphamap>, 3> alphamaps;
-      boost::optional<tmp_edit_alpha_values> tmp_edit_values;
+      std::array<std::optional<Alphamap>, 3> alphamaps;
+      std::optional<tmp_edit_alpha_values> tmp_edit_values;
       ENTRY_MCLY layers_info[4];
     };
 
     struct ObjectInstanceCache
     {
-      std::string filename;
+      BlizzardArchive::Listfile::FileKey file_key;
+      ActionObjectTypes type;
       glm::vec3 pos;
       math::degrees::vec3 dir;
       float scale;

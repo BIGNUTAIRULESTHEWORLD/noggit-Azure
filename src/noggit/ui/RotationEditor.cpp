@@ -16,9 +16,9 @@
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QLabel>
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     rotation_editor::rotation_editor(QWidget* parent, World* world)
       : QWidget (parent)
@@ -55,7 +55,7 @@ namespace noggit
       _rotation_z->setDecimals (3);
       _rotation_z->setWrapping(true);
       _rotation_z->setSingleStep(5.0f);
-      _rotation_y->setRange (0.f, 360.f);
+      _rotation_y->setRange(-180.f, 180.f);
       _rotation_y->setDecimals (3);
       _rotation_y->setWrapping(true);
       _rotation_y->setSingleStep(5.0f);
@@ -75,28 +75,28 @@ namespace noggit
       connect ( _rotation_x, qOverload<double> (&QDoubleSpinBox::valueChanged)
               , [&, world, parent]
       {
-        noggit::ActionManager::instance()->beginAction(reinterpret_cast<MapView*>(parent),
-                                                       noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+        NOGGIT_ACTION_MGR->beginAction(reinterpret_cast<MapView*>(parent),
+                                                       Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
         set_model_rotation(world);
-        noggit::ActionManager::instance()->endAction();
+        NOGGIT_ACTION_MGR->endAction();
       }
               );
       connect ( _rotation_z, qOverload<double> (&QDoubleSpinBox::valueChanged)
               , [&, world, parent]
               {
-                noggit::ActionManager::instance()->beginAction(reinterpret_cast<MapView*>(parent),
-                                                               noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+                NOGGIT_ACTION_MGR->beginAction(reinterpret_cast<MapView*>(parent),
+                                                               Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
                 set_model_rotation(world);
-                noggit::ActionManager::instance()->endAction();
+                NOGGIT_ACTION_MGR->endAction();
               }
               );
       connect ( _rotation_y, qOverload<double> (&QDoubleSpinBox::valueChanged)
               , [&, world, parent]
               {
-                noggit::ActionManager::instance()->beginAction(reinterpret_cast<MapView*>(parent),
-                                                               noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+                NOGGIT_ACTION_MGR->beginAction(reinterpret_cast<MapView*>(parent),
+                                                               Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
                 set_model_rotation(world);
-                noggit::ActionManager::instance()->endAction();
+                NOGGIT_ACTION_MGR->endAction();
               }
               );
 
@@ -108,10 +108,10 @@ namespace noggit
                     // avoid rotation changes when losing focus
                     if (_rotation_x->hasFocus())
                     {
-                      noggit::ActionManager::instance()->beginAction(reinterpret_cast<MapView*>(parent),
-                                                                     noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+                      NOGGIT_ACTION_MGR->beginAction(reinterpret_cast<MapView*>(parent),
+                                                                     Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
                       change_models_rotation(world);
-                      noggit::ActionManager::instance()->endAction();
+                      NOGGIT_ACTION_MGR->endAction();
                     }
                     else // reset value
                     {
@@ -129,10 +129,10 @@ namespace noggit
                     // avoid rotation changes when losing focus
                     if (_rotation_z->hasFocus())
                     {
-                      noggit::ActionManager::instance()->beginAction(reinterpret_cast<MapView*>(parent),
-                                                                     noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+                      NOGGIT_ACTION_MGR->beginAction(reinterpret_cast<MapView*>(parent),
+                                                                     Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
                       change_models_rotation(world);
-                      noggit::ActionManager::instance()->endAction();
+                      NOGGIT_ACTION_MGR->endAction();
                     }
                     else // reset value
                     {
@@ -150,10 +150,10 @@ namespace noggit
                     // avoid rotation changes when losing focus
                     if (_rotation_y->hasFocus())
                     {
-                      noggit::ActionManager::instance()->beginAction(reinterpret_cast<MapView*>(parent),
-                                                                     noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+                      NOGGIT_ACTION_MGR->beginAction(reinterpret_cast<MapView*>(parent),
+                                                                     Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
                       change_models_rotation(world);
-                      noggit::ActionManager::instance()->endAction();
+                      NOGGIT_ACTION_MGR->endAction();
                     }
                     else // reset value
                     {
@@ -167,28 +167,28 @@ namespace noggit
       connect ( _position_x, qOverload<double> (&QDoubleSpinBox::valueChanged)
               , [&, world, parent] (double v)
                 {
-                  noggit::ActionManager::instance()->beginAction(reinterpret_cast<MapView*>(parent),
-                                                                 noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+                  NOGGIT_ACTION_MGR->beginAction(reinterpret_cast<MapView*>(parent),
+                                                                 Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
                   world->set_selected_models_pos(v, _position_y->value(), _position_z->value());
-                  noggit::ActionManager::instance()->endAction();
+                  NOGGIT_ACTION_MGR->endAction();
                 }
               );
       connect ( _position_z, qOverload<double> (&QDoubleSpinBox::valueChanged)
               , [&, world, parent] (double v)
                 {
-                  noggit::ActionManager::instance()->beginAction(reinterpret_cast<MapView*>(parent),
-                                                                 noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+                  NOGGIT_ACTION_MGR->beginAction(reinterpret_cast<MapView*>(parent),
+                                                                 Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
                   world->set_selected_models_pos(_position_x->value(), _position_y->value(), v);
-                  noggit::ActionManager::instance()->endAction();
+                  NOGGIT_ACTION_MGR->endAction();
                 }
               );
       connect ( _position_y, qOverload<double> (&QDoubleSpinBox::valueChanged)
               , [&, world, parent] (double v)
                 {
-                  noggit::ActionManager::instance()->beginAction(reinterpret_cast<MapView*>(parent),
-                                                                 noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+                  NOGGIT_ACTION_MGR->beginAction(reinterpret_cast<MapView*>(parent),
+                                                                 Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
                   world->set_selected_models_pos(_position_x->value(), v, _position_z->value());
-                  noggit::ActionManager::instance()->endAction();
+                  NOGGIT_ACTION_MGR->endAction();
                 }
               );
 
@@ -197,10 +197,10 @@ namespace noggit
                 {
                   if (!world->has_multiple_model_selected())
                   {
-                    noggit::ActionManager::instance()->beginAction(reinterpret_cast<MapView*>(parent),
-                                                                   noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+                    NOGGIT_ACTION_MGR->beginAction(reinterpret_cast<MapView*>(parent),
+                                                                   Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
                     world->scale_selected_models(v, World::m2_scaling_type::set);
-                    noggit::ActionManager::instance()->endAction();
+                    NOGGIT_ACTION_MGR->endAction();
                   }
                 }
               );
@@ -212,10 +212,10 @@ namespace noggit
                     // avoid scale changes when losing focus
                     if (_scale->hasFocus())
                     {
-                      noggit::ActionManager::instance()->beginAction(reinterpret_cast<MapView*>(parent),
-                                                                     noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+                      NOGGIT_ACTION_MGR->beginAction(reinterpret_cast<MapView*>(parent),
+                                                                     Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
                       world->scale_selected_models(_scale->value(), World::m2_scaling_type::mult);
-                      noggit::ActionManager::instance()->endAction();
+                      NOGGIT_ACTION_MGR->endAction();
                     }
                     else // reset value
                     {
@@ -239,7 +239,7 @@ namespace noggit
 
       if (world->has_multiple_model_selected())
       {
-        glm::vec3 const& p = world->multi_select_pivot().get();
+        glm::vec3 const& p = world->multi_select_pivot().value();
 
         _position_x->setValue(p.x);
         _position_y->setValue(p.y);
@@ -264,9 +264,9 @@ namespace noggit
 
         if (entry)
         {
-          selection_type selection = entry.get();
+          selection_type selection = entry.value();
 
-          auto obj = boost::get<selected_object_type>(selection);
+          auto obj = std::get<selected_object_type>(selection);
 
           _scale->setEnabled(obj->which() != eWMO);
 

@@ -4,9 +4,7 @@
 
 #include <opengl/shader.fwd.hpp>
 #include <opengl/types.hpp>
-
-#include <boost/optional.hpp>
-
+#include <opengl/texture.hpp>
 #include <initializer_list>
 #include <map>
 #include <set>
@@ -14,6 +12,7 @@
 #include <vector>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <unordered_map>
 #include <external/tsl/robin_map.h>
 #include <glm/vec2.hpp>
@@ -28,7 +27,7 @@ namespace math
   struct vector_3d;
 }
 
-namespace opengl
+namespace OpenGL
 {
   struct shader
   {
@@ -70,9 +69,9 @@ namespace opengl
     inline GLuint uniform_block_location (std::string const& name) const;
     inline GLuint attrib_location (std::string const& name) const;
 
-    friend struct scoped::use_program;
+    friend struct Scoped::use_program;
 
-    boost::optional<GLuint> _handle;
+    std::optional<GLuint> _handle;
 
     tsl::robin_map<std::string, GLuint> _uniforms;
     tsl::robin_map<std::string, GLuint> _attribs;
@@ -82,7 +81,7 @@ namespace opengl
     tsl::robin_map<GLuint, bool> _uniforms_bool_cache;
   };
 
-  namespace scoped
+  namespace Scoped
   {
     struct use_program
     {
@@ -107,6 +106,8 @@ namespace opengl
       void uniform (GLint pos, bool);
       void uniform (std::string const& name, std::vector<glm::vec3> const& value);
       void uniform (GLint pos, std::vector<glm::vec3> const& value);
+      void uniform(std::string const& name, std::vector<glm::vec4> const& value);
+      void uniform(GLint pos, std::vector<glm::vec4> const& value);
       void uniform (std::string const& name, glm::vec2 const&);
       void uniform (GLint pos, glm::vec2 const&);
       void uniform (std::string const& name, glm::vec3 const&);

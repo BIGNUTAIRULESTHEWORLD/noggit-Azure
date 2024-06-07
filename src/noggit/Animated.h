@@ -1,14 +1,16 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #pragma once
-#include <noggit/MPQ.h>
 #include <noggit/ModelHeaders.h>
 #include <math/interpolation.hpp>
 #include <cassert>
 #include <map>
 #include <vector>
 #include <memory>
+#include <type_traits>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/ext/quaternion_common.hpp>
+#include <ClientFile.hpp>
 
 namespace Animation
 {
@@ -41,10 +43,10 @@ namespace Animation
   {
     //! \todo Check if this is really correct.
     return glm::quat(
+      static_cast<float>((value.w > 0 ? value.w - 32767 : value.w + 32767) / 32767.0f),
       static_cast<float>((value.x > 0 ? value.x - 32767 : value.x + 32767) / 32767.0f),
       static_cast<float>((value.y > 0 ? value.y - 32767 : value.y + 32767) / 32767.0f),
-      static_cast<float>((value.z > 0 ? value.z - 32767 : value.z + 32767) / 32767.0f),
-      static_cast<float>((value.w > 0 ? value.w - 32767 : value.w + 32767) / 32767.0f));
+      static_cast<float>((value.z > 0 ? value.z - 32767 : value.z + 32767) / 32767.0f));
   }
 
   template<>
@@ -147,6 +149,7 @@ namespace Animation
         }
         else
         {
+
           TimestampType t1 = timestampVector[pos];
           TimestampType t2 = timestampVector[pos + 1];
           const float percentage = (time - t1) / static_cast<float>(t2 - t1);
@@ -155,7 +158,16 @@ namespace Animation
           {
           case Animation::Interpolation::Type::LINEAR:
           {
-            result = math::interpolation::linear (percentage, dataVector[pos], dataVector[pos + 1]);
+            //result = math::interpolation::linear (percentage, dataVector[pos], dataVector[pos + 1]);
+            if constexpr (std::is_same_v<AnimatedType, glm::quat>)
+            {
+              result = glm::slerp(dataVector[pos], dataVector[pos + 1], percentage);
+            }
+            else
+            {
+              result = glm::mix(dataVector[pos], dataVector[pos + 1], percentage);
+            }
+           
           }
             break;
 
@@ -171,8 +183,12 @@ namespace Animation
       return result;
     }
 
-    //! \todo Use a vector of MPQFile& for the anim files instead for safety.
-    M2Value (const AnimationBlock& animationBlock, const MPQFile& file, int32_t* globalSequences, const std::vector<std::unique_ptr<MPQFile>>& animation_files = std::vector<std::unique_ptr<MPQFile>>())
+    //! \todo Use a vector of BlizzardArchive::ClientFile& for the anim files instead for safety.
+    M2Value (const AnimationBlock& animationBlock
+             , const BlizzardArchive::ClientFile& file
+             , int32_t* globalSequences
+             , const std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>& animation_files
+             = std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>())
     {
       assert(animationBlock.nTimes == animationBlock.nKeys);
 
@@ -188,19 +204,19 @@ namespace Animation
       const AnimationBlockHeader* timestampHeaders = file.get<AnimationBlockHeader>(animationBlock.ofsTimes);
       const AnimationBlockHeader* keyHeaders = file.get<AnimationBlockHeader>(animationBlock.ofsKeys);
 
-      for (size_t j = 0; j < animationBlock.nTimes; ++j)
+      for (std::uint32_t j = 0; j < animationBlock.nTimes; ++j)
       {
         const TimestampType* timestamps = j < animation_files.size() && animation_files[j] ?
           animation_files[j]->get<TimestampType>(timestampHeaders[j].ofsEntries) :
           file.get<TimestampType>(timestampHeaders[j].ofsEntries);
 
-        for (size_t i = 0; i < timestampHeaders[j].nEntries; ++i)
+        for (std::uint32_t i = 0; i < timestampHeaders[j].nEntries; ++i)
         {
           times[j].push_back(timestamps[i]);
         }
       }
 
-      for (size_t j = 0; j < animationBlock.nKeys; ++j)
+      for (std::uint32_t j = 0; j < animationBlock.nKeys; ++j)
       {
         const DataType* keys = j < animation_files.size() && animation_files[j] ?
           animation_files[j]->get<DataType>(keyHeaders[j].ofsEntries) :
@@ -210,14 +226,14 @@ namespace Animation
         {
         case Animation::Interpolation::Type::NONE:
         case Animation::Interpolation::Type::LINEAR:
-          for (size_t i = 0; i < keyHeaders[j].nEntries; ++i)
+          for (std::uint32_t i = 0; i < keyHeaders[j].nEntries; ++i)
           {
             data[j].push_back(_conversion(keys[i]));
           }
           break;
 
         case Animation::Interpolation::Type::HERMITE:
-          for (size_t i = 0; i < keyHeaders[j].nEntries; ++i)
+          for (std::uint32_t i = 0; i < keyHeaders[j].nEntries; ++i)
           {
             data[j].push_back(_conversion(keys[i * 3]));
             in[j].push_back(_conversion(keys[i * 3 + 1]));
@@ -234,9 +250,9 @@ namespace Animation
       {
       case Animation::Interpolation::Type::NONE:
       case Animation::Interpolation::Type::LINEAR:
-        for (size_t i = 0; i < data.size(); ++i)
+        for (std::uint32_t i = 0; i < data.size(); ++i)
         {
-          for (size_t j = 0; j < data[i].size(); ++j)
+          for (std::uint32_t j = 0; j < data[i].size(); ++j)
           {
             data[i][j] = function(data[i][j]);
           }
@@ -244,9 +260,9 @@ namespace Animation
         break;
 
       case Animation::Interpolation::Type::HERMITE:
-        for (size_t i = 0; i < data.size(); ++i)
+        for (std::uint32_t i = 0; i < data.size(); ++i)
         {
-          for (size_t j = 0; j < data[i].size(); ++j)
+          for (std::uint32_t j = 0; j < data[i].size(); ++j)
           {
             data[i][j] = function(data[i][j]);
             in[i][j] = function(in[i][j]);

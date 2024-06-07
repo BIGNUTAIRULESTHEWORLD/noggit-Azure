@@ -1,11 +1,12 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include "MinimapCreator.hpp"
-#include "font_awesome.hpp"
+#include "FontAwesome.hpp"
 
 #include <noggit/MapView.h>
 #include <noggit/World.h>
 #include <noggit/Log.h>
+#include <noggit/project/CurrentProject.hpp>
 
 #include <util/qt/overload.hpp>
 
@@ -26,9 +27,9 @@
 #include <QByteArray>
 #include <QPalette>
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     MinimapCreator::MinimapCreator (
         MapView* mapView,
@@ -164,15 +165,15 @@ namespace noggit
       m2_include_box_layout->addRow(m2_include_box_layout_btns);
 
       auto add_btn = new QPushButton("Add", m2_include_widget);
-      add_btn->setIcon(font_awesome_icon(font_awesome::plus));
+      add_btn->setIcon(FontAwesomeIcon(FontAwesome::plus));
       m2_include_box_layout_btns->addWidget(add_btn);
 
       auto remove_btn = new QPushButton("Remove", m2_include_widget);
-      remove_btn->setIcon(font_awesome_icon(font_awesome::times));
+      remove_btn->setIcon(FontAwesomeIcon(FontAwesome::times));
       m2_include_box_layout_btns->addWidget(remove_btn);
 
       auto clear_btn = new QPushButton("Clear all", m2_include_widget);
-      clear_btn->setIcon(font_awesome_icon(font_awesome::trashalt));
+      clear_btn->setIcon(FontAwesomeIcon(FontAwesome::trashalt));
       m2_include_box_layout_btns->addWidget(clear_btn);
 
       // M2 instance include tab
@@ -197,15 +198,15 @@ namespace noggit
       m2_instance_include_box_layout->addRow(m2_instance_include_box_layout_btns);
 
       auto add_btn_m2i = new QPushButton("Add", m2_instance_include_widget);
-      add_btn_m2i->setIcon(font_awesome_icon(font_awesome::plus));
+      add_btn_m2i->setIcon(FontAwesomeIcon(FontAwesome::plus));
       m2_instance_include_box_layout_btns->addWidget(add_btn_m2i);
 
       auto remove_btn_m2i = new QPushButton("Remove", m2_instance_include_widget);
-      remove_btn_m2i->setIcon(font_awesome_icon(font_awesome::times));
+      remove_btn_m2i->setIcon(FontAwesomeIcon(FontAwesome::times));
       m2_instance_include_box_layout_btns->addWidget(remove_btn_m2i);
 
       auto clear_btn_m2i = new QPushButton("Clear all", m2_instance_include_widget);
-      clear_btn_m2i->setIcon(font_awesome_icon(font_awesome::trashalt));
+      clear_btn_m2i->setIcon(FontAwesomeIcon(FontAwesome::trashalt));
       m2_instance_include_box_layout_btns->addWidget(clear_btn_m2i);
 
       // WMO model exclude tab
@@ -230,15 +231,15 @@ namespace noggit
       wmo_exclude_box_layout->addRow(wmo_exclude_box_layout_btns);
 
       auto add_btn_wmo = new QPushButton("Add", wmo_exclude_widget);
-      add_btn_wmo->setIcon(font_awesome_icon(font_awesome::plus));
+      add_btn_wmo->setIcon(FontAwesomeIcon(FontAwesome::plus));
       wmo_exclude_box_layout_btns->addWidget(add_btn_wmo);
 
       auto remove_btn_wmo = new QPushButton("Remove", wmo_exclude_widget);
-      remove_btn_wmo->setIcon(font_awesome_icon(font_awesome::times));
+      remove_btn_wmo->setIcon(FontAwesomeIcon(FontAwesome::times));
       wmo_exclude_box_layout_btns->addWidget(remove_btn_wmo);
 
       auto clear_btn_wmo = new QPushButton("Clear all", wmo_exclude_widget);
-      clear_btn_wmo->setIcon(font_awesome_icon(font_awesome::trashalt));
+      clear_btn_wmo->setIcon(FontAwesomeIcon(FontAwesome::trashalt));
       wmo_exclude_box_layout_btns->addWidget(clear_btn_wmo);
 
       // WMO instance exclude tab
@@ -263,15 +264,15 @@ namespace noggit
       wmo_instance_exclude_box_layout->addRow(wmo_instance_exclude_box_layout_btns);
 
       auto add_btn_wmo_i = new QPushButton("Add", wmo_instance_exclude_widget);
-      add_btn_wmo_i->setIcon(font_awesome_icon(font_awesome::plus));
+      add_btn_wmo_i->setIcon(FontAwesomeIcon(FontAwesome::plus));
       wmo_instance_exclude_box_layout_btns->addWidget(add_btn_wmo_i);
 
       auto remove_btn_wmo_i = new QPushButton("Remove", wmo_instance_exclude_widget);
-      remove_btn_wmo_i->setIcon(font_awesome_icon(font_awesome::times));
+      remove_btn_wmo_i->setIcon(FontAwesomeIcon(FontAwesome::times));
       wmo_instance_exclude_box_layout_btns->addWidget(remove_btn_wmo_i);
 
       auto clear_btn_wmo_i = new QPushButton("Clear all", wmo_instance_exclude_widget);
-      clear_btn_wmo_i->setIcon(font_awesome_icon(font_awesome::trashalt));
+      clear_btn_wmo_i->setIcon(FontAwesomeIcon(FontAwesome::trashalt));
       wmo_instance_exclude_box_layout_btns->addWidget(clear_btn_wmo_i);
 
       // Lighting
@@ -431,14 +432,14 @@ namespace noggit
 
                   for (auto& selection : world->current_selection())
                   {
-                    if (selection.which() != eEntry_Object)
+                    if (selection.index() != eEntry_Object)
                       continue;
 
-                    auto obj = boost::get<selected_object_type>(selection);
+                    auto obj = std::get<selected_object_type>(selection);
 
                     if (obj->which() == eMODEL)
                     {
-                      includeM2Model(static_cast<ModelInstance*>(obj)->model->filename);
+                      includeM2Model(static_cast<ModelInstance*>(obj)->model->file_key().filepath());
                     }
 
                   }
@@ -463,14 +464,14 @@ namespace noggit
 
                 for (auto& selection : world->current_selection())
                 {
-                  if (selection.which() != eEntry_Object)
+                  if (selection.index() != eEntry_Object)
                     continue;
 
-                  auto obj = boost::get<selected_object_type>(selection);
+                  auto obj = std::get<selected_object_type>(selection);
 
                   if (obj->which() == eMODEL)
                   {
-                    unincludeM2Model(static_cast<ModelInstance*>(obj)->model->filename);
+                    unincludeM2Model(static_cast<ModelInstance*>(obj)->model->file_key().filepath());
                   }
 
                 }
@@ -497,10 +498,10 @@ namespace noggit
 
                   for (auto& selection : world->current_selection())
                   {
-                    if (selection.which() != eEntry_Object)
+                    if (selection.index() != eEntry_Object)
                       continue;
 
-                    auto obj = boost::get<selected_object_type>(selection);
+                    auto obj = std::get<selected_object_type>(selection);
 
                     if(obj->which() == eMODEL)
                     {
@@ -529,10 +530,10 @@ namespace noggit
 
                 for (auto& selection : world->current_selection())
                 {
-                  if (selection.which() != eEntry_Object)
+                  if (selection.index() != eEntry_Object)
                     continue;
 
-                  auto obj = boost::get<selected_object_type>(selection);
+                  auto obj = std::get<selected_object_type>(selection);
 
                   if (obj->which() == eMODEL)
                   {
@@ -562,15 +563,15 @@ namespace noggit
 
                 for (auto& selection : world->current_selection())
                 {
-                  if (selection.which() != eEntry_Object)
+                  if (selection.index() != eEntry_Object)
                     continue;
 
-                  auto obj = boost::get<selected_object_type>(selection);
+                  auto obj = std::get<selected_object_type>(selection);
 
 
                   if (obj->which() == eWMO)
                   {
-                    excludeWMOModel(static_cast<WMOInstance*>(obj)->wmo->filename);
+                    excludeWMOModel(static_cast<WMOInstance*>(obj)->wmo->file_key().filepath());
                   }
 
                 }
@@ -596,14 +597,14 @@ namespace noggit
                 for (auto& selection : world->current_selection())
                 {
 
-                  if (selection.which() != eEntry_Object)
+                  if (selection.index() != eEntry_Object)
                     continue;
 
-                  auto obj = boost::get<selected_object_type>(selection);
+                  auto obj = std::get<selected_object_type>(selection);
 
                   if (obj->which() == eWMO)
                   {
-                    unexcludeWMOModel(static_cast<WMOInstance*>(obj)->wmo->filename);
+                    unexcludeWMOModel(static_cast<WMOInstance*>(obj)->wmo->file_key().filepath());
                   }
 
                 }
@@ -629,10 +630,10 @@ namespace noggit
 
                 for (auto& selection : world->current_selection())
                 {
-                  if (selection.which() != eEntry_Object)
+                  if (selection.index() != eEntry_Object)
                     continue;
 
-                  auto obj = boost::get<selected_object_type>(selection);
+                  auto obj = std::get<selected_object_type>(selection);
 
                   if (obj->which() == eWMO)
                   {
@@ -661,10 +662,10 @@ namespace noggit
 
                 for (auto& selection : world->current_selection())
                 {
-                  if (selection.which() != eEntry_Object)
+                  if (selection.index() != eEntry_Object)
                     continue;
 
-                  auto obj = boost::get<selected_object_type>(selection);
+                  auto obj = std::get<selected_object_type>(selection);
 
                   if (obj->which() == eWMO)
                   {
@@ -1027,8 +1028,7 @@ namespace noggit
 
     void MinimapCreator::loadFiltersFromJSON()
     {
-      QSettings settings;
-      QString str = settings.value ("project/path").toString();
+      QString str = QString(Noggit::Project::CurrentProject::get()->ProjectPath.c_str());
       if (!(str.endsWith('\\') || str.endsWith('/')))
       {
         str += "/";
@@ -1096,8 +1096,7 @@ namespace noggit
 
     void MinimapCreator::saveFiltersToJSON()
     {
-      QSettings settings;
-      QString str = settings.value ("project/path").toString();
+      QString str = QString(Noggit::Project::CurrentProject::get()->ProjectPath.c_str());
       if (!(str.endsWith('\\') || str.endsWith('/')))
       {
         str += "/";

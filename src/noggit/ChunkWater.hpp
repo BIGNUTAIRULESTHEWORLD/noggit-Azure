@@ -7,11 +7,16 @@
 
 #include <vector>
 #include <set>
+#include <optional>
 
-class MPQFile;
 class sExtendableArray;
 class MapChunk;
 class TileWater;
+
+namespace BlizzardArchive
+{
+  class ClientFile;
+}
 
 class ChunkWater
 {
@@ -25,7 +30,7 @@ public:
   ChunkWater& operator= (ChunkWater&&) = delete;
 
   void from_mclq(std::vector<mclq>& layers);
-  void fromFile(MPQFile &f, size_t basePos);
+  void fromFile(BlizzardArchive::ClientFile& f, size_t basePos);
   void save(sExtendableArray& adt, int base_pos, int& header_pos, int& current_pos);
 
   bool is_visible ( const float& cull_distance
@@ -40,6 +45,7 @@ public:
   void setType(int type, size_t layer);
   int getType(size_t layer) const;
   bool hasData(size_t layer) const;
+  void tagUpdate();
 
   std::vector<liquid_layer>* getLayers() { return &_layers; };
 
@@ -64,7 +70,7 @@ public:
 
   MapChunk* getChunk() { return _chunk; };
   TileWater* getWaterTile() { return _water_tile; };
-
+  std::optional<MH2O_Render> Render;
   float xbase, zbase;
 
 private:
@@ -78,9 +84,11 @@ private:
   void copy_height_to_layer(liquid_layer& target, glm::vec3 const& pos, float radius);
 
 
-  MH2O_Render Render;
+
 
   std::vector<liquid_layer> _layers;
   MapChunk* _chunk;
   TileWater* _water_tile;
+
+  friend class MapView;
 };

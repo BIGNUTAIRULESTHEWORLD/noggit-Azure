@@ -4,19 +4,19 @@
 #include <noggit/scripting/script_filesystem.hpp>
 #include <noggit/scripting/scripting_tool.hpp>
 #include <noggit/scripting/script_context.hpp>
-#include <noggit/ui/SettingsPanel.h>
+#include <noggit/ui/windows/settingsPanel/SettingsPanel.h>
 
+#include <fstream>
 #include <QtWidgets/QMessageBox>
-#include <boost/filesystem.hpp>
 #include <sol/sol.hpp>
 
 #include <set>
 
-namespace fs = boost::filesystem;
+namespace fs = std::filesystem;
 
-namespace noggit
+namespace Noggit
 {
-  namespace scripting
+  namespace Scripting
   {
     void mkdirs(std::string const& pathstr)
     {
@@ -41,12 +41,12 @@ namespace noggit
     }
 
     namespace {
-      std::set<boost::filesystem::path> allowed_files;
+      std::set<std::filesystem::path> allowed_files;
     }
 
-    boost::filesystem::path get_writable_path(std::string const& caller, script_context * state, std::string const& path)
+    std::filesystem::path get_writable_path(std::string const& caller, script_context * state, std::string const& path)
     {
-      auto canonical = boost::filesystem::weakly_canonical(boost::filesystem::path(path));
+      auto canonical = std::filesystem::weakly_canonical(std::filesystem::path(path));
       if (state->tool()->get_noggit_settings()->value("allow_scripts_write_any_file", false).toBool())
       {
         return canonical;
@@ -106,5 +106,5 @@ namespace noggit
       state->set_function("read_file",read_file);
       state->set_function("path_exists",path_exists);
     }
-  } // namespace scripting
-} // namespace noggit
+  } // namespace Scripting
+} // namespace Noggit

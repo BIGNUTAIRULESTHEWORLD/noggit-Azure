@@ -17,6 +17,11 @@ class Model;
 class ParticleSystem;
 class RibbonEmitter;
 
+namespace BlizzardArchive
+{
+  class ClientFile;
+}
+
 struct Particle {
   glm::vec3 pos, speed, down, origin, dir;
   glm::vec3  corners[4];
@@ -82,8 +87,8 @@ class ParticleSystem
 public:
   float tofs;
 
-  ParticleSystem(Model*, const MPQFile& f, const ModelParticleEmitterDef &mta,
-                 int *globals, noggit::NoggitRenderContext context);
+  ParticleSystem(Model*, const BlizzardArchive::ClientFile& f, const ModelParticleEmitterDef &mta,
+                 int *globals, Noggit::NoggitRenderContext context);
 
   ParticleSystem(ParticleSystem const& other);
   ParticleSystem(ParticleSystem&&);
@@ -94,7 +99,7 @@ public:
 
   void setup(int anim, int time, int animtime);
   void draw( glm::mat4x4 const& model_view
-           , opengl::scoped::use_program& shader
+           , OpenGL::Scoped::use_program& shader
            , GLuint const& transform_vbo
            , int instances_count
            );
@@ -108,15 +113,15 @@ private:
   bool _uploaded = false;
   void upload();
 
-  opengl::scoped::deferred_upload_vertex_arrays<1> _vertex_array;
+  OpenGL::Scoped::deferred_upload_vertex_arrays<1> _vertex_array;
   GLuint const& _vao = _vertex_array[0];
-  opengl::scoped::deferred_upload_buffers<5> _buffers;
+  OpenGL::Scoped::deferred_upload_buffers<5> _buffers;
   GLuint const& _vertices_vbo = _buffers[0];
   GLuint const& _offsets_vbo = _buffers[1];
   GLuint const& _colors_vbo = _buffers[2];
   GLuint const& _texcoord_vbo = _buffers[3];
   GLuint const& _indices_vbo = _buffers[4];
-  noggit::NoggitRenderContext _context;
+  Noggit::NoggitRenderContext _context;
 };
 
 
@@ -156,8 +161,8 @@ class RibbonEmitter
   std::list<RibbonSegment> segs;
 
 public:
-  RibbonEmitter(Model*, const MPQFile &f, ModelRibbonEmitterDef const& mta, int *globals
-                , noggit::NoggitRenderContext context);
+  RibbonEmitter(Model*, const BlizzardArchive::ClientFile &f, ModelRibbonEmitterDef const& mta, int *globals
+                , Noggit::NoggitRenderContext context);
 
   RibbonEmitter(RibbonEmitter const& other);
   RibbonEmitter(RibbonEmitter&&);
@@ -165,7 +170,7 @@ public:
   RibbonEmitter& operator= (RibbonEmitter&&) = delete;
 
   void setup(int anim, int time, int animtime);
-  void draw( opengl::scoped::use_program& shader
+  void draw( OpenGL::Scoped::use_program& shader
            , GLuint const& transform_vbo
            , int instances_count
            );
@@ -176,11 +181,11 @@ private:
   bool _uploaded = false;
   void upload();
 
-  opengl::scoped::deferred_upload_vertex_arrays<1> _vertex_array;
+  OpenGL::Scoped::deferred_upload_vertex_arrays<1> _vertex_array;
   GLuint const& _vao = _vertex_array[0];
-  opengl::scoped::deferred_upload_buffers<3> _buffers;
+  OpenGL::Scoped::deferred_upload_buffers<3> _buffers;
   GLuint const& _vertices_vbo = _buffers[0];
   GLuint const& _texcoord_vbo = _buffers[1];
   GLuint const& _indices_vbo = _buffers[2];
-  noggit::NoggitRenderContext _context;
+  Noggit::NoggitRenderContext _context;
 };

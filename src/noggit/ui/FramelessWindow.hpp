@@ -2,16 +2,16 @@
 #define NOGGIT_FRAMELESSWINDOW_HPP
 
 #include <external/framelesshelper/framelesswindowsmanager.h>
-#include <noggit/ui/font_awesome.hpp>
+#include <noggit/ui/FontAwesome.hpp>
 #include <ui_TitleBar.h>
 
 #include <QWidget>
 
 
-namespace noggit::ui
+namespace Noggit::Ui
 {
   template <typename T>
-  Ui::TitleBar* setupFramelessWindow(QWidget* titlebar_target, T* window,  QSize minimum_size, QSize maximum_size, bool is_resizeable = true)
+  ::Ui::TitleBar* setupFramelessWindow(QWidget* titlebar_target, T* window,  QSize minimum_size, QSize maximum_size, bool is_resizeable = true)
   {
 
     QSettings settings;
@@ -20,19 +20,19 @@ namespace noggit::ui
       return nullptr;
     }
 
-    auto titleBarWidget = new Ui::TitleBar;
+    auto titleBarWidget = new ::Ui::TitleBar;
     titleBarWidget->setupUi(titlebar_target);
     titleBarWidget->windowTitle->setText(window->windowTitle());
 
     titleBarWidget->iconButton->setAccessibleName("titlebar_icon");
     titleBarWidget->iconButton->setMinimumWidth(32);
-    titleBarWidget->minimizeButton->setIcon(font_awesome_icon(font_awesome::windowminimize));
+    titleBarWidget->minimizeButton->setIcon(FontAwesomeIcon(FontAwesome::windowminimize));
     titleBarWidget->minimizeButton->setIconSize(QSize(16, 16));
     titleBarWidget->minimizeButton->setAccessibleName("titlebar_minimize");
-    titleBarWidget->maximizeButton->setIcon(font_awesome_icon(font_awesome::windowmaximize));
+    titleBarWidget->maximizeButton->setIcon(FontAwesomeIcon(FontAwesome::windowmaximize));
     titleBarWidget->maximizeButton->setAccessibleName("titlebar_maximize");
     titleBarWidget->maximizeButton->setIconSize(QSize(14, 14));
-    titleBarWidget->closeButton->setIcon(font_awesome_icon(font_awesome::times));
+    titleBarWidget->closeButton->setIcon(FontAwesomeIcon(FontAwesome::times));
     titleBarWidget->closeButton->setAccessibleName("titlebar_close");
     titleBarWidget->closeButton->setIconSize(QSize(18, 18));
 

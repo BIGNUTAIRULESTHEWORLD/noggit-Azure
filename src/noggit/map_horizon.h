@@ -15,14 +15,18 @@
 #include <memory>
 
 class MapIndex;
+class MapTile;
+class MapView;
+class World;
 
-namespace noggit
+namespace Noggit
 {
 
 struct map_horizon_tile
 {
     int16_t height_17[17][17];
     int16_t height_16[16][16];
+    int16_t holes[16];
 };
 
 struct map_horizon_batch
@@ -60,15 +64,15 @@ public:
 
     map_horizon_batch _batches[64][64];
 
-    opengl::scoped::deferred_upload_vertex_arrays<1> _vaos;
+    OpenGL::Scoped::deferred_upload_vertex_arrays<1> _vaos;
     GLuint const& _vao = _vaos[0];
-    opengl::scoped::buffers<2> _buffers;
+    OpenGL::Scoped::buffers<2> _buffers;
     GLuint const& _index_buffer = _buffers[0];
     GLuint const& _vertex_buffer = _buffers[1];
-    std::unique_ptr<opengl::program> _map_horizon_program;
+    std::unique_ptr<OpenGL::program> _map_horizon_program;
   };
 
-  class minimap : public opengl::texture
+  class minimap : public OpenGL::texture
   {
   public:
     minimap(const map_horizon& horizon);
@@ -76,10 +80,27 @@ public:
 
   map_horizon(const std::string& basename, const MapIndex * const index);
 
+  void update_minimap_tile(int y, int x, bool has_data);
+
+  void set_minimap(const MapIndex* const index);
+
+  void remove_horizon_tile(int y, int x);
+
+  Noggit::map_horizon_tile* get_horizon_tile(int y, int x);
+
   QImage _qt_minimap;
 
+  void update_horizon_tile(MapTile* mTile);
+
+  void save_wdl(World* world, bool regenerate = false);
+
 private:
+  int16_t getWdlheight(MapTile* tile, float x, float y);
+
   std::string _filename;
+
+  std::vector<std::string> mWMOFilenames;
+  // std::vector<ENTRY_MODF> lWMOInstances;
 
   std::unique_ptr<map_horizon_tile> _tiles[64][64];
 };

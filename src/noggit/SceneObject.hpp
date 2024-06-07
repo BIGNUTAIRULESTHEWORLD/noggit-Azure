@@ -3,13 +3,18 @@
 #ifndef NOGGIT_3DOBJECT_HPP
 #define NOGGIT_3DOBJECT_HPP
 
-#include <math/matrix_4x4.hpp>
+#include <glm/mat4x4.hpp>
 #include <math/ray.hpp>
 #include <noggit/Selection.h>
 #include <noggit/ContextObject.hpp>
 #include <cstdint>
 #include <unordered_set>
 #include <array>
+
+namespace BlizzardArchive::Listfile
+{
+  class FileKey;
+}
 
 class AsyncObject;
 
@@ -24,7 +29,7 @@ class MapTile;
 class SceneObject : public Selectable
 {
 public:
-  SceneObject(SceneObjectTypes type, noggit::NoggitRenderContext context, std::string filename = "");
+  SceneObject(SceneObjectTypes type, Noggit::NoggitRenderContext context);
 
   [[nodiscard]]
   bool isInsideRect(std::array<glm::vec3, 2> const* rect) const;
@@ -36,9 +41,13 @@ public:
 
   virtual void recalcExtents() = 0;
   virtual void ensureExtents() = 0;
+
+  [[nodiscard]]
   virtual bool finishedLoading() = 0;
 
   void resetDirection();
+
+  void normalizeDirection();
 
   [[nodiscard]]
   glm::mat4x4 transformMatrix() const { return _transform_mat; };
@@ -47,19 +56,23 @@ public:
   glm::mat4x4 transformMatrixInverted() const { return _transform_mat_inverted; };
 
   [[nodiscard]]
-  glm::mat4x4 transformMatrixTransposed() const { return _transform_mat_transposed; };
-
   SceneObjectTypes which() const { return _type; };
-
-  std::string const& getFilename() const { return _filename; };
 
   void refTile(MapTile* tile);
   void derefTile(MapTile* tile);
-  std::vector<MapTile*> const& getTiles() { return _tiles; };
 
-  virtual AsyncObject* instance_model() = 0;
+  [[nodiscard]]
+  std::vector<MapTile*> const& getTiles() const { return _tiles; };
 
+  [[nodiscard]]
+  virtual AsyncObject* instance_model() const = 0;
+
+  [[nodiscard]]
   std::array<glm::vec3, 2> const& getExtents() { ensureExtents(); return extents; }
+
+  glm::vec3 const getServerPos() { return glm::vec3(ZEROPOINT - pos.z, ZEROPOINT - pos.x, pos.y); }
+
+  bool _grouped = false;
 
 public:
   glm::vec3 pos;
@@ -74,11 +87,8 @@ protected:
 
   glm::mat4x4 _transform_mat = glm::mat4x4();
   glm::mat4x4 _transform_mat_inverted = glm::mat4x4();
-  glm::mat4x4 _transform_mat_transposed = glm::mat4x4();
 
-  noggit::NoggitRenderContext _context;
-
-  std::string _filename;
+  Noggit::NoggitRenderContext _context;
 
   std::vector<MapTile*> _tiles;
 };

@@ -3,13 +3,13 @@
 #pragma once
 
 #include <noggit/ui/widget.hpp>
-#include <noggit/ui/font_noggit.hpp>
+#include <noggit/ui/FontNoggit.hpp>
 
 class QFormLayout;
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     class help : public widget
     {
@@ -17,7 +17,7 @@ namespace noggit
       help(QWidget* parent = nullptr);
 
     private:
-      inline void generate_hotkey_row(std::initializer_list<font_noggit::icons>&& hotkeys, const char* description, QFormLayout* layout);
+      inline void generate_hotkey_row(std::initializer_list<FontNoggit::Icons>&& hotkeys, const char* description, QFormLayout* layout);
     };
   }
 }

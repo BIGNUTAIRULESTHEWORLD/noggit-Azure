@@ -3,11 +3,11 @@
 #pragma once
 
 #include <QtGui/QOpenGLContext>
-#include <math/matrix_4x4.hpp>
+#include <glm/mat4x4.hpp>
 #include <cstdint>
 #include <array>
 
-namespace opengl
+namespace OpenGL
 {
   typedef GLuint light;
 
@@ -53,7 +53,12 @@ namespace opengl
     int draw_paintability_overlay = false;
     int draw_selection_overlay = false;
     glm::vec4 wireframe_color;
-
+    int draw_impassible_climb = false;
+    int climb_use_output_angle = false;
+    int climb_use_smooth_interpolation = false;
+    float climb_value;
+    int draw_vertex_color = true;
+    int padding[3];
   };
 
   struct ChunkInstanceDataUniformBlock
@@ -64,7 +69,7 @@ namespace opengl
     int ChunkTexDoAnim[4];
     int ChunkTexAnimSpeed[4];
     int AreaIDColor_Pad2_DrawSelection[4];
-    glm::vec4 ChunkXYZBase_Pad1;
+    int ChunkXZ_TileXZ[4];
     int ChunkTexAnimDir[4];
   };
 

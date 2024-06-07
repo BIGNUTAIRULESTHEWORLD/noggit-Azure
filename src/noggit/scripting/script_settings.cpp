@@ -5,7 +5,8 @@
 #include <noggit/scripting/script_context.hpp>
 
 #include <sol/sol.hpp>
-#include <boost/filesystem.hpp>
+#include <filesystem>
+#include <fstream>
 #include <nlohmann/json.hpp>
 
 #include <iomanip>
@@ -14,9 +15,9 @@
 #define OUTER_RADIUS_PATH "__outer_radius"
 #define SCRIPT_FILE "script_settings.json"
 
-namespace noggit
+namespace Noggit
 {
-  namespace scripting
+  namespace Scripting
   {
     script_settings::script_settings(scripting_tool *tool)
         : QGroupBox("Script Settings"), _tool(tool)
@@ -310,7 +311,7 @@ namespace noggit
 
     void script_settings::load_json()
     {
-      if (!boost::filesystem::exists(SCRIPT_FILE))
+      if (!std::filesystem::exists(SCRIPT_FILE))
       {
         return;
       }
@@ -321,18 +322,18 @@ namespace noggit
       }
       catch (std::exception err)
       {
-        if (!boost::filesystem::exists(SCRIPT_FILE))
+        if (!std::filesystem::exists(SCRIPT_FILE))
         {
           return;
         }
         // back up broken script settings, since they won't be read and will be overwritten.
         std::string backup_file = std::string(SCRIPT_FILE) + ".backup";
         int i = 0;
-        while (boost::filesystem::exists(backup_file + std::to_string(i)))
+        while (std::filesystem::exists(backup_file + std::to_string(i)))
         {
           ++i;
         }
-        boost::filesystem::copy(SCRIPT_FILE, backup_file + std::to_string(i));
+        std::filesystem::copy(SCRIPT_FILE, backup_file + std::to_string(i));
         // Add a message box here
       }
     }
@@ -518,5 +519,5 @@ namespace noggit
       state->new_usertype<string_tag>("string_tag","get",&string_tag::get);
       state->new_usertype<string_list_tag>("string_list_tag","get",&string_list_tag::get);
     }
-  } // namespace scripting
-} // namespace noggit
+  } // namespace Scripting
+} // namespace Noggit

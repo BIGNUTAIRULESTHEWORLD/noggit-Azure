@@ -4,7 +4,8 @@
 #define NOGGIT_OBJECT_PALETTE_HPP
 
 #include <noggit/ui/widget.hpp>
-#include <noggit/Red/PreviewRenderer/PreviewRenderer.hpp>
+#include <noggit/ui/tools/PreviewRenderer/PreviewRenderer.hpp>
+#include <noggit/project/ApplicationProject.h>
 #include <QtWidgets/QListWidget>
 #include <unordered_set>
 #include <string>
@@ -22,9 +23,9 @@ class QPoint;
 class MapView;
 
 
-namespace noggit
+namespace Noggit
 {
-    namespace ui
+    namespace Ui
     {
         class current_texture;
 
@@ -45,11 +46,15 @@ namespace noggit
         Q_OBJECT
 
         public:
-            ObjectPalette(MapView* map_view, QWidget* parent);
+            ObjectPalette(MapView* map_view, std::shared_ptr<Noggit::Project::NoggitProject> Project,  QWidget* parent);
+            
             ~ObjectPalette();
 
-            void addObject();
-            void addObjectByFilename(QString const& filename);
+            void addObjectFromAssetBrowser();
+            void addObjectByFilename(QString const& filename, bool save_palette = true);
+            void LoadSavedPalette();
+
+            void SavePalette();
 
             void removeObject(QString filename);
 
@@ -57,7 +62,6 @@ namespace noggit
 
             void dragEnterEvent(QDragEnterEvent* event) override;
             void dropEvent(QDropEvent* event) override;
-
 
         signals:
             void selected(std::string);
@@ -71,7 +75,8 @@ namespace noggit
             QPushButton* _remove_button;
             std::unordered_set<std::string> _object_paths;
             MapView* _map_view;
-            noggit::Red::PreviewRenderer* _preview_renderer;
+            Noggit::Ui::Tools::PreviewRenderer* _preview_renderer;
+            std::shared_ptr<Noggit::Project::NoggitProject> _project;
 
         };
     }

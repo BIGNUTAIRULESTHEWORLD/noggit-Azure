@@ -3,12 +3,9 @@
 #include <noggit/scripting/scripting_tool.hpp>
 #include <noggit/scripting/script_exception.hpp>
 #include <noggit/scripting/script_context.hpp>
-
-#include <boost/algorithm/string.hpp>
-
-namespace noggit
+namespace Noggit
 {
-  namespace scripting
+  namespace Scripting
   {
     float noisemap::get_index(std::string const& caller, int x, int y)
     {
@@ -106,8 +103,11 @@ namespace noggit
       _start_y = start_y;
       _size = width*height;
       _noise.resize(_size);
-      auto upper = boost::algorithm::to_upper_copy<std::string>(algorithm);
 
+      auto upper = std::string();
+      for (auto const& character : algorithm)
+          upper += std::toupper(character);
+ 
       FastNoise::SmartNode<> generator = nullptr;
       if(upper=="SIMPLEX")
       {
@@ -145,7 +145,7 @@ namespace noggit
         , width
         , height
         , frequency
-        , std::hash<std::string>()(std::string(seed))
+        , static_cast<std::int32_t>(std::hash<std::string>()(std::string(seed)))
       );
     }
 
@@ -213,5 +213,5 @@ namespace noggit
                            );
         });
     }
-  } // namespace scripting
-} // namespace noggit
+  } // namespace Scripting
+} // namespace Noggit

@@ -1,20 +1,16 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #pragma once
-
 #include <noggit/Selection.h>
-
-#include <boost/optional.hpp>
-
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QWidget>
 #include <QDockWidget>
 
 class World;
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     class rotation_editor : public QWidget
     {

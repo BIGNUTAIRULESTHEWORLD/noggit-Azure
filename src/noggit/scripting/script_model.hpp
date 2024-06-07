@@ -1,16 +1,15 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #pragma once
 #include <noggit/scripting/script_object.hpp>
-#include <boost/variant.hpp>
 #include <glm/vec3.hpp>
 
 class World;
 
 class SceneObject;
 
-namespace noggit
+namespace Noggit
 {
-  namespace scripting
+  namespace Scripting
   {
     class scripting_tool;
     class script_context;
@@ -50,5 +49,5 @@ namespace noggit
     );
 
     void register_model(script_context * state);
-  } // namespace scripting
-} // namespace noggit
+  } // namespace Scripting
+} // namespace Noggit

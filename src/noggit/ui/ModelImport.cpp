@@ -15,11 +15,11 @@
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QHBoxLayout>
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
-    model_import::model_import (noggit::ui::object_editor* object_editor)
+    model_import::model_import (Noggit::Ui::object_editor* object_editor)
       : QWidget (object_editor, Qt::Tool | Qt::WindowStaysOnTopHint)
     {
       setWindowIcon (QIcon (":/icon"));
@@ -59,7 +59,7 @@ namespace noggit
 
       std::ifstream fileReader (settings.value ("project/import_file", "import.txt").toString().toStdString());
       std::string const filter
-        (mpq::normalized_filename (_textBox->text().toStdString()));
+        (BlizzardArchive::ClientData::normalizeFilenameInternal(_textBox->text().toStdString()));
 
       std::string line;
       while (std::getline (fileReader, line))
@@ -69,7 +69,7 @@ namespace noggit
           continue;
         }
 
-        std::string path (mpq::normalized_filename (line));
+        std::string path (BlizzardArchive::ClientData::normalizeFilenameInternal(line));
 
         if (!filter.empty() && path.find (filter) == std::string::npos)
         {

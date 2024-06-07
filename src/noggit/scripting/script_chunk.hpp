@@ -4,10 +4,11 @@
 #include <noggit/scripting/script_vert.hpp>
 #include <noggit/scripting/script_object.hpp>
 #include <noggit/MapChunk.h>
+#include <cstdint>
 
-namespace noggit
+namespace Noggit
 {
-  namespace scripting
+  namespace Scripting
   {
     class script_context;
     class selection;
@@ -32,6 +33,18 @@ namespace noggit
       void apply_heightmap();
       void apply_vertex_color();
       void apply_all();
+
+      void set_deep_flag(std::uint32_t low, std::uint32_t high);
+      void set_deep_flag_1(std::uint32_t low);
+      std::uint32_t get_deep_flag();
+      std::uint32_t get_deep_flag_high();
+
+      void set_fishable_flag(std::uint32_t low, std::uint32_t high);
+      void set_fishable_flag_1(std::uint32_t low);
+      std::uint32_t get_fishable_flag();
+      std::uint32_t get_fishable_flag_high();
+      bool has_render_flags();
+
       void set_impassable(bool add);
       int get_area_id();
       void set_area_id(int value);
@@ -39,10 +52,12 @@ namespace noggit
       vert get_vert(int index);
       std::shared_ptr<selection> to_selection();
     private:
+      MH2O_Render getRenderOrDefault();
+      MH2O_Render& getOrCreateRender();
       MapChunk* _chunk;
       friend class selection;
     };
 
     void register_chunk(script_context * state);
-  } // namespace scripting
-} // namespace noggit
+  } // namespace Scripting
+} // namespace Noggit

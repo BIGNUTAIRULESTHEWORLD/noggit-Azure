@@ -8,12 +8,14 @@
 #include <noggit/WMO.h> // WMO
 #include <noggit/MapTile.h>
 #include <noggit/WMOInstance.h>
-#include <opengl/primitives.hpp>
+#include <noggit/rendering/Primitives.hpp>
 #include <opengl/scoped.hpp>
 
-WMOInstance::WMOInstance(std::string const& filename, ENTRY_MODF const* d, noggit::NoggitRenderContext context)
-  : SceneObject(SceneObjectTypes::eWMO, context, filename)
-  , wmo(filename, context)
+#include <sstream>
+
+WMOInstance::WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, ENTRY_MODF const* d, Noggit::NoggitRenderContext context)
+  : SceneObject(SceneObjectTypes::eWMO, context)
+  , wmo(file_key, context)
   , mFlags(d->flags)
   , mUnknown(d->unknown), mNameset(d->nameSet)
   , _doodadset(d->doodadSet)
@@ -30,9 +32,9 @@ WMOInstance::WMOInstance(std::string const& filename, ENTRY_MODF const* d, noggi
   change_doodadset(_doodadset);
 }
 
-WMOInstance::WMOInstance(std::string const& filename, noggit::NoggitRenderContext context)
-  : SceneObject(SceneObjectTypes::eWMO, context, filename)
-  , wmo(filename, context)
+WMOInstance::WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, Noggit::NoggitRenderContext context)
+  : SceneObject(SceneObjectTypes::eWMO, context)
+  , wmo(file_key, context)
   , mFlags(0)
   , mUnknown(0)
   , mNameset(0)
@@ -48,7 +50,7 @@ WMOInstance::WMOInstance(std::string const& filename, noggit::NoggitRenderContex
 }
 
 
-void WMOInstance::draw ( opengl::scoped::use_program& wmo_shader
+void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
                        , glm::mat4x4 const& model_view
                        , glm::mat4x4 const& projection
                        , math::frustum const& frustum
@@ -62,6 +64,7 @@ void WMOInstance::draw ( opengl::scoped::use_program& wmo_shader
                        , bool world_has_skies
                        , display_mode display
                        , bool no_cull
+                       , bool draw_exterior
                        )
 {
   if (!wmo->finishedLoading() || wmo->loading_failed())
@@ -74,9 +77,9 @@ void WMOInstance::draw ( opengl::scoped::use_program& wmo_shader
                            std::find_if(selection.begin(), selection.end(),
                                         [id](selection_type type)
                                         {
-                                          return type.type() == typeid(selected_object_type)
-                                          && boost::get<selected_object_type>(type)->which() == SceneObjectTypes::eWMO
-                                          && static_cast<WMOInstance*>(boost::get<selected_object_type>(type))->uid == id;
+                                          return var_type(type) == typeid(selected_object_type)
+                                          && std::get<selected_object_type>(type)->which() == SceneObjectTypes::eWMO
+                                          && static_cast<WMOInstance*>(std::get<selected_object_type>(type))->uid == id;
                                         }) != selection.end();
 
   {
@@ -86,11 +89,11 @@ void WMOInstance::draw ( opengl::scoped::use_program& wmo_shader
     {
       for (auto& tile : getTiles())
       {
-        if (tile->objects_frustum_cull_test && !tile->tile_occluded)
+        if (tile->renderer()->objectsFrustumCullTest() && !tile->renderer()->isOccluded())
         {
-          region_visible = tile->objects_frustum_cull_test;
+          region_visible = tile->renderer()->objectsFrustumCullTest();
 
-          if (tile->objects_frustum_cull_test > 1)
+          if (tile->renderer()->objectsFrustumCullTest() > 1)
             break;
         }
       }
@@ -103,12 +106,11 @@ void WMOInstance::draw ( opengl::scoped::use_program& wmo_shader
 
     wmo_shader.uniform("transform", _transform_mat);
 
-    wmo->draw ( wmo_shader
+    wmo->renderer()->draw( wmo_shader
               , model_view
               , projection
               , _transform_mat
-              , _transform_mat_transposed
-              , is_selected
+              , is_selected && !_grouped
               , frustum
               , cull_distance
               , camera
@@ -117,18 +119,19 @@ void WMOInstance::draw ( opengl::scoped::use_program& wmo_shader
               , animtime
               , world_has_skies
               , display
+              , !draw_exterior
               );
   }
 
   if (force_box || is_selected)
   {
-    //gl.enable(GL_BLEND);
-    //gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    glm::vec4 color = force_box ? glm::vec4(0.0f, 0.0f, 1.0f, 1.0f)
+    glm::vec4 color = force_box || _grouped ? glm::vec4(0.5f, 0.5f, 1.0f, 0.5f)
         : glm::vec4(0.0f, 1.0f, 0.0f, 1.0f);
 
-    opengl::primitives::wire_box::getInstance(_context).draw(model_view
+    Noggit::Rendering::Primitives::WireBox::getInstance(_context).draw(model_view
        , projection
        , glm::mat4x4(glm::mat4x4(1))
        , color
@@ -137,7 +140,7 @@ void WMOInstance::draw ( opengl::scoped::use_program& wmo_shader
   }
 }
 
-void WMOInstance::intersect (math::ray const& ray, selection_result* results)
+void WMOInstance::intersect (math::ray const& ray, selection_result* results, bool do_exterior)
 {
   if (!ray.intersect_bounds (extents[0], extents[1]))
   {
@@ -146,7 +149,7 @@ void WMOInstance::intersect (math::ray const& ray, selection_result* results)
 
   math::ray subray(_transform_mat_inverted, ray);
 
-  for (auto&& result : wmo->intersect(subray))
+  for (auto&& result : wmo->intersect(subray, do_exterior))
   {
     results->emplace_back (result, this);
   }
@@ -158,15 +161,22 @@ void WMOInstance::ensureExtents()
   // TODO: optimize
 }
 
-void WMOInstance::updateDetails(noggit::ui::detail_infos* detail_widget)
+void WMOInstance::updateDetails(Noggit::Ui::detail_infos* detail_widget)
 {
   std::stringstream select_info;
 
-  select_info << "<b>filename: </b>" << wmo->filename
+  select_info << "<b>filename: </b>" << wmo->file_key().filepath()
+    // << "<br><b>FileDataID: </b>" << wmo->file_key().fileDataID() not in wrath
     << "<br><b>unique ID: </b>" << uid
     << "<br><b>position X/Y/Z: </b>{" << pos.x << ", " << pos.y << ", " << pos.z << "}"
     << "<br><b>rotation X/Y/Z: </b>{" << dir.x << ", " << dir.y << ", " << dir.z << "}"
+    << "<br><b>WMO Id: </b>" << wmo->WmoId
     << "<br><b>doodad set: </b>" << doodadset()
+    << "<br><b>name set: </b>" << mNameset
+
+    << "<br><b>server position X/Y/Z: </b>{" << (ZEROPOINT - pos.z) << ", " << (ZEROPOINT - pos.x) << ", " << pos.y << "}"
+    << "<br><b>server orientation:  </b>" << fabs(2 * glm::pi<float>() - glm::pi<float>() / 180.0 * (float(dir.y) < 0 ? fabs(float(dir.y)) + 180.0 : fabs(float(dir.y) - 180.0)))
+
     << "<br><b>textures used: </b>" << wmo->textures.size()
     << "<span>";
 
@@ -183,7 +193,7 @@ void WMOInstance::updateDetails(noggit::ui::detail_infos* detail_widget)
     if (error)
       select_info << "<font color=\"Red\">";
 
-    select_info  << "<b>" << (j + 1) << ":</b> " << wmo->textures[j]->filename;
+    select_info  << "<b>" << (j + 1) << ":</b> " << wmo->textures[j]->file_key().stringRepr();
 
     if (stuck || error)
       select_info << "</font>";
@@ -236,13 +246,14 @@ void WMOInstance::recalcExtents()
 
     points.insert(points.end(), adjustedGroupPoints.begin(), adjustedGroupPoints.end());
 
-    if (group.has_skybox())
+    if (group.has_skybox() || _update_group_extents)
     {
       math::aabb const group_aabb(adjustedGroupPoints);
 
       group_extents[i] = {group_aabb.min, group_aabb.max};
     }
   }
+  _update_group_extents = false;
 
   math::aabb const wmo_aabb(points);
 
@@ -250,6 +261,10 @@ void WMOInstance::recalcExtents()
   extents[1] = wmo_aabb.max;
 }
 
+void WMOInstance::change_nameset(uint16_t name_set)
+{
+    mNameset = name_set;
+}
 
 void WMOInstance::change_doodadset(uint16_t doodad_set)
 {
@@ -278,6 +293,9 @@ void WMOInstance::update_doodads()
   {
     for (auto& doodad : group_doodads.second)
     {
+      if (!doodad.need_matrix_update())
+        continue;
+
       doodad.update_transform_matrix_wmo(this);
     }
   }
@@ -348,7 +366,7 @@ std::map<uint32_t, std::vector<wmo_doodad_instance>>* WMOInstance::get_doodads(b
     {
       for (auto& doodad : _doodads_per_group[i])
       {
-        if (doodad.need_matrix_update())
+        if (doodad.finishedLoading() && doodad.need_matrix_update())
         {
           doodad.update_transform_matrix_wmo(this);
         }

@@ -3,19 +3,15 @@
 #include <noggit/scripting/scripting_tool.hpp>
 #include <noggit/scripting/script_context.hpp>
 #include <noggit/scripting/script_exception.hpp>
-
 #include <noggit/World.h>
 #include <noggit/ModelInstance.h>
 #include <noggit/WMOInstance.h>
 #include <noggit/ui/ObjectEditor.h>
-
 #include <sol/sol.hpp>
-#include <boost/algorithm/string/predicate.hpp>
-#include <boost/algorithm/string/case_conv.hpp>
 
-namespace noggit
+namespace Noggit
 {
-  namespace scripting
+  namespace Scripting
   {
     model::model (script_context* ctx, SceneObject* object)
       : script_object(ctx)
@@ -73,13 +69,16 @@ namespace noggit
 
     std::string model::get_filename()
     {
-      return _object->getFilename();
+      return _object->instance_model()->file_key().filepath();
     }
 
     bool model::has_filename(std::string const& name)
     {
       std::string copy = std::string(name);
-      boost::to_lower(copy);
+
+      std::transform(copy.begin(), copy.end(), copy.begin(),
+          [](unsigned char c) { return std::tolower(c); });
+
       std::replace(copy.begin(),copy.end(),'\\','/');
       return copy == get_filename();
     }
@@ -99,7 +98,7 @@ namespace noggit
 
       remove();
 
-      if (boost::ends_with(filename, ".wmo"))
+      if (filename.ends_with(".wmo"))
       {
         _object = 
           world()->addWMOAndGetInstance(filename, get_pos(), math::degrees::vec3 {get_rot()});
@@ -154,5 +153,5 @@ namespace noggit
         , "replace", &model::replace
       );
     }
-  } // namespace scripting
-} // namespace noggit
+  } // namespace Scripting
+} // namespace Noggit

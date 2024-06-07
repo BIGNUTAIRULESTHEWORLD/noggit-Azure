@@ -1,12 +1,11 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/world_model_instances_storage.hpp>
-
 #include <noggit/World.h>
 #include <noggit/ActionManager.hpp>
 #include <noggit/Action.hpp>
 
-namespace noggit
+namespace Noggit
 {
   world_model_instances_storage::world_model_instances_storage(World* world)
     : _world(world)
@@ -39,7 +38,7 @@ namespace noggit
     if (existing_instance)
     {
       // instance already loaded
-      if (existing_instance.get()->isDuplicateOf(instance))
+      if (existing_instance.value()->isDuplicateOf(instance))
       {
         _instance_count_per_uid[uid]++;
         return uid;
@@ -47,8 +46,8 @@ namespace noggit
     }
     else if(!unsafe_uid_is_used(uid))
     {
-      if (noggit::ActionManager::instance()->getCurrentAction())
-        noggit::ActionManager::instance()->getCurrentAction()->registerObjectAdded(&instance);
+      if (NOGGIT_CUR_ACTION)
+        NOGGIT_CUR_ACTION->registerObjectAdded(&instance);
       _m2s.emplace(uid, instance);
       _instance_count_per_uid[uid] = 1;
       return uid;
@@ -87,7 +86,7 @@ namespace noggit
     if (existing_instance)
     {
       // instance already loaded
-      if (existing_instance.get()->isDuplicateOf(instance))
+      if (existing_instance.value()->isDuplicateOf(instance))
       {
         _instance_count_per_uid[uid]++;
 
@@ -96,8 +95,8 @@ namespace noggit
     }
     else if (!unsafe_uid_is_used(uid))
     {
-      if (noggit::ActionManager::instance()->getCurrentAction())
-        noggit::ActionManager::instance()->getCurrentAction()->registerObjectAdded(&instance);
+      if (NOGGIT_CUR_ACTION)
+        NOGGIT_CUR_ACTION->registerObjectAdded(&instance);
       _wmos.emplace(uid, instance);
       _instance_count_per_uid[uid] = 1;
       return uid;
@@ -110,16 +109,16 @@ namespace noggit
     return unsafe_add_wmo_instance_no_world_upd(std::move(instance));
   }
 
-  void world_model_instances_storage::delete_instances_from_tile(tile_index const& tile)
+  void world_model_instances_storage::delete_instances_from_tile(TileIndex const& tile)
   {
     std::unique_lock<std::mutex> const lock (_mutex);
 
     for (auto it = _m2s.begin(); it != _m2s.end();)
     {
-      if (tile_index(it->second.pos) == tile)
+      if (TileIndex(it->second.pos) == tile)
       {
-        if (noggit::ActionManager::instance()->getCurrentAction())
-          noggit::ActionManager::instance()->getCurrentAction()->registerObjectRemoved(&it->second);
+        if (NOGGIT_CUR_ACTION)
+          NOGGIT_CUR_ACTION->registerObjectRemoved(&it->second);
         _world->updateTilesModel(&it->second, model_update::remove);
         _instance_count_per_uid.erase(it->first);
         it = _m2s.erase(it);
@@ -131,10 +130,10 @@ namespace noggit
     }
     for (auto it = _wmos.begin(); it != _wmos.end();)
     {
-      if (tile_index(it->second.pos) == tile)
+      if (TileIndex(it->second.pos) == tile)
       {
-        if (noggit::ActionManager::instance()->getCurrentAction())
-          noggit::ActionManager::instance()->getCurrentAction()->registerObjectRemoved(&it->second);
+        if (NOGGIT_CUR_ACTION)
+          NOGGIT_CUR_ACTION->registerObjectRemoved(&it->second);
         _world->updateTilesWMO(&it->second, model_update::remove);
         _instance_count_per_uid.erase(it->first);
         it = _wmos.erase(it);
@@ -152,13 +151,13 @@ namespace noggit
 
     for (auto& it : instances)
     {
-      if (it.which() != eEntry_Object)
+      if (it.index() != eEntry_Object)
         continue;
 
-      auto obj = boost::get<selected_object_type>(it);
+      auto obj = std::get<selected_object_type>(it);
 
-      if (noggit::ActionManager::instance()->getCurrentAction())
-        noggit::ActionManager::instance()->getCurrentAction()->registerObjectRemoved(obj);
+      if (NOGGIT_CUR_ACTION)
+        NOGGIT_CUR_ACTION->registerObjectRemoved(obj);
 
       if (obj->which() == eMODEL)
       {
@@ -185,13 +184,22 @@ namespace noggit
   {
     std::unique_lock<std::mutex> const lock (_mutex);
 
-    if (noggit::ActionManager::instance()->getCurrentAction())
+    if (auto instance = get_instance(uid, false))
     {
-      if (auto instance = get_instance(uid))
+      _world->updateTilesEntry(instance.value(), model_update::remove);
+      auto obj = std::get<selected_object_type>(instance.value());
+
+      for (auto& selection_group : _world->_selection_groups)
       {
-        _world->updateTilesEntry(instance.get(), model_update::remove);
-        auto obj = boost::get<selected_object_type>(instance.get());
-        noggit::ActionManager::instance()->getCurrentAction()->registerObjectRemoved(obj);
+          if (selection_group.contains_object(obj))
+          {
+              selection_group.remove_member(obj->uid);
+          }
+      }
+
+      if (NOGGIT_CUR_ACTION)
+      {
+        NOGGIT_CUR_ACTION->registerObjectRemoved(obj);
       }
     }
 
@@ -229,12 +237,12 @@ namespace noggit
     _wmos.clear();
   }
 
-  boost::optional<ModelInstance*> world_model_instances_storage::get_model_instance(std::uint32_t uid)
+  std::optional<ModelInstance*> world_model_instances_storage::get_model_instance(std::uint32_t uid)
   {
     std::unique_lock<std::mutex> const lock (_mutex);
     return unsafe_get_model_instance(uid);
   }
-  boost::optional<ModelInstance*> world_model_instances_storage::unsafe_get_model_instance(std::uint32_t uid)
+  std::optional<ModelInstance*> world_model_instances_storage::unsafe_get_model_instance(std::uint32_t uid)
   {
     auto it = _m2s.find(uid);
 
@@ -244,16 +252,16 @@ namespace noggit
     }
     else
     {
-      return boost::none;
+      return std::nullopt;
     }
   }
 
-  boost::optional<WMOInstance*> world_model_instances_storage::get_wmo_instance(std::uint32_t uid)
+  std::optional<WMOInstance*> world_model_instances_storage::get_wmo_instance(std::uint32_t uid)
   {
     std::unique_lock<std::mutex> const lock (_mutex);
     return unsafe_get_wmo_instance(uid);
   }
-  boost::optional<WMOInstance*> world_model_instances_storage::unsafe_get_wmo_instance(std::uint32_t uid)
+  std::optional<WMOInstance*> world_model_instances_storage::unsafe_get_wmo_instance(std::uint32_t uid)
   {
     auto it = _wmos.find(uid);
 
@@ -263,31 +271,56 @@ namespace noggit
     }
     else
     {
-      return boost::none;
+      return std::nullopt;
     }
   }
 
-  boost::optional<selection_type> world_model_instances_storage::get_instance(std::uint32_t uid)
+  std::optional<selection_type> world_model_instances_storage::get_instance(std::uint32_t uid, bool lock)
   {
-    std::unique_lock<std::mutex> const lock (_mutex);
-    
-    auto wmo_it = _wmos.find(uid);
-
-    if (wmo_it != _wmos.end())
+    if (lock)
     {
-      return selection_type {&wmo_it->second};
-    }
-    else
-    {
-      auto m2_it = _m2s.find(uid);
+      std::unique_lock<std::mutex> const lock(_mutex);
 
-      if (m2_it != _m2s.end())
+      auto wmo_it = _wmos.find(uid);
+
+      if (wmo_it != _wmos.end())
       {
-        return selection_type {&m2_it->second};
+        return selection_type{ &wmo_it->second };
       }
       else
       {
-        return boost::none;
+        auto m2_it = _m2s.find(uid);
+
+        if (m2_it != _m2s.end())
+        {
+          return selection_type{ &m2_it->second };
+        }
+        else
+        {
+          return std::nullopt;
+        }
+      }
+    }
+    else
+    {
+      auto wmo_it = _wmos.find(uid);
+
+      if (wmo_it != _wmos.end())
+      {
+        return selection_type{ &wmo_it->second };
+      }
+      else
+      {
+        auto m2_it = _m2s.find(uid);
+
+        if (m2_it != _m2s.end())
+        {
+          return selection_type{ &m2_it->second };
+        }
+        else
+        {
+            return std::nullopt;
+        }
       }
     }
   }
@@ -314,8 +347,8 @@ namespace noggit
           _world->updateTilesWMO(&rhs->second, model_update::remove);
 
           _instance_count_per_uid.erase(rhs->second.uid);
-          if (noggit::ActionManager::instance()->getCurrentAction())
-            noggit::ActionManager::instance()->getCurrentAction()->registerObjectRemoved(&rhs->second);
+          if (NOGGIT_CUR_ACTION)
+            NOGGIT_CUR_ACTION->registerObjectRemoved(&rhs->second);
           rhs = _wmos.erase(rhs);
           deleted_uids++;
         }
@@ -338,8 +371,8 @@ namespace noggit
 
           _instance_count_per_uid.erase(rhs->second.uid);
 
-          if (noggit::ActionManager::instance()->getCurrentAction())
-            noggit::ActionManager::instance()->getCurrentAction()->registerObjectRemoved(&rhs->second);
+          if (NOGGIT_CUR_ACTION)
+            NOGGIT_CUR_ACTION->registerObjectRemoved(&rhs->second);
           rhs = _m2s.erase(rhs);
           deleted_uids++;
         }

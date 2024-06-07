@@ -3,6 +3,8 @@
 #pragma once
 
 #include <math/trig.hpp>
+#include <glm/glm.hpp>
+#include <type_traits>
 
 namespace math
 {
@@ -11,9 +13,10 @@ namespace math
     template<typename T>
     static T linear (const float& percentage, const T& start, const T& end)
     {
-      return T (start * (1.0f - percentage) + end * percentage);
+      return T();
     }
 
+    /*
     template<typename T>
     static T slerp (const float& percentage, const T& start, const T& end)
     {
@@ -29,6 +32,7 @@ namespace math
 
       return T (start * glm::cos(a._) + T (end - start * dot).normalize() * glm::sin(a._));
     }
+     */
 
     template<typename T>
     static T hermite ( const float& percentage

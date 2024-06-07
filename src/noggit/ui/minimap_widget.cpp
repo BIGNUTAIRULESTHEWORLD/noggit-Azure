@@ -11,12 +11,12 @@
 
 #include <noggit/Sky.h>
 #include <noggit/World.h>
-#include <noggit/camera.hpp>
+#include <noggit/Camera.hpp>
 #include <QTransform>
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     minimap_widget::minimap_widget (QWidget* parent)
       : QWidget (parent)
@@ -48,7 +48,7 @@ namespace noggit
             {
               for (int j = 0; j < 3; ++j)
               {
-                if (_world->mapIndex.hasTile(tile_index(x + i, y + j)))
+                if (_world->mapIndex.hasTile(TileIndex(x + i, y + j)))
                 {
                   (*_selected_tiles)[64 * (x + i) + (y + j)]
                     = !QApplication::keyboardModifiers().testFlag(Qt::ControlModifier);
@@ -59,7 +59,7 @@ namespace noggit
           }
           else
           {
-            if (_world->mapIndex.hasTile(tile_index(tile.x(), tile.y())))
+            if (_world->mapIndex.hasTile(TileIndex(tile.x(), tile.y())))
             {
               (*_selected_tiles)[64 * tile.x() + tile.y()]
                 = !QApplication::keyboardModifiers().testFlag(Qt::ControlModifier);
@@ -116,8 +116,18 @@ namespace noggit
     }
 
     //! \todo Only redraw stuff as told in event.
-    void minimap_widget::paintEvent (QPaintEvent*)
+    // called by _minimap->update()
+    // \todo : massive performance drop after clicking the minimap once until moving cursor out of frame, paintEvent gets called repeatidly
+    void minimap_widget::paintEvent (QPaintEvent* paint_event)
     {
+        /*
+        auto rectangle = paint_event->rect();
+        auto left = rectangle.left();
+        auto rectop = rectangle.top();
+        auto recwidth = rectangle.width();
+        auto recheight = rectangle.height();
+        */
+
       //! \note Only take multiples of 1.0 pixels per tile.
       const int smaller_side ((qMin (rect().width(), rect().height()) / 64) * 64);
       const QRect drawing_rect (0, 0, smaller_side, smaller_side);
@@ -141,11 +151,11 @@ namespace noggit
         {
           //! \todo Draw non-existing tiles aswell?
           painter.setBrush (QColor (255, 255, 255, 30));
-          for (size_t i (0); i < 64; ++i)
+          for (int i (0); i < 64; ++i)
           {
-            for (size_t j (0); j < 64; ++j)
+            for (int j (0); j < 64; ++j)
             {
-              tile_index const tile (i, j);
+              TileIndex const tile (i, j);
               bool changed = false;
 
               if (world()->mapIndex.hasTile (tile))
@@ -205,9 +215,9 @@ namespace noggit
           }
         }
 
-        if (draw_skies() && world()->skies)
+        if (draw_skies() && _world->renderer()->skies())
         {
-          foreach (Sky sky, world()->skies->skies)
+          foreach (Sky sky, _world->renderer()->skies()->skies)
           {
             //! \todo Get actual color from sky.
             //! \todo Get actual radius.
@@ -227,21 +237,54 @@ namespace noggit
         {
           painter.setPen (Qt::red);
 
+          // hackfix
+          auto yaw = _camera->yaw();
+          yaw._ -= 90.0f;
+
+          while (yaw._ < -180.0f)
+              yaw._ += 360.0f;
+
           QLineF camera_vector ( QPointF ( _camera->position.x * scale_factor
                                          , _camera->position.z * scale_factor
                                          )
                                , QPointF ( _camera->position.x * scale_factor
                                          , _camera->position.z * scale_factor
                                          )
-                               + QPointF ( glm::cos(math::radians(_camera->yaw())._) * scale_factor
-                                         , -glm::sin(math::radians(_camera->yaw())._) * scale_factor
+                               + QPointF ( glm::cos(math::radians(yaw)._) * scale_factor
+                                         , -glm::sin(math::radians(yaw)._) * scale_factor
                                          )
                                );
           camera_vector.setLength (15.0);
 
           painter.drawLine (camera_vector);
         }
-      }
+      
+        if (_world->mapIndex.hasAGlobalWMO())
+        {
+            painter.setPen(QColor::fromRgbF(1.0f, 0.0f, 0.0f, 1.f));
+
+            auto extents = _world->mWmoEntry.extents;
+
+            // WMOInstance inst(_world->mWmoFilename, &_world->mWmoEntry, _world->_context);
+
+            float pos = tile_size * 64 / 2; // TODO : convert wmo pos 
+
+            float min_point_x = pos + (extents[0][0] / TILESIZE * tile_size); // extents[min][x]
+            float min_point_y = pos + (extents[0][1] / TILESIZE * tile_size); // extents[min][y]
+            float max_point_x = pos + (extents[1][0] / TILESIZE * tile_size);
+            float max_point_y = pos + (extents[1][1] / TILESIZE * tile_size);
+            // tile_size = 14 | max size = 896
+
+            float width = max_point_x - min_point_x;
+            float height = max_point_y - min_point_y;
+            painter.drawRect(QRectF(min_point_x
+                , min_point_y
+                , width // width
+                , height // height
+            )
+            );
+        }
+}
       else
       {
         //! \todo Draw something so user realizes this will become the minimap.
@@ -276,7 +319,7 @@ namespace noggit
 
       QPoint tile = locateTile(event);
 
-      if (!world()->mapIndex.hasTile (tile_index (tile.x(), tile.y())))
+      if (!world()->mapIndex.hasTile (TileIndex (tile.x(), tile.y())) && !_world->mapIndex.hasAGlobalWMO())
       {
         event->ignore();
         return;
@@ -290,6 +333,13 @@ namespace noggit
 
     void minimap_widget::mousePressEvent(QMouseEvent* event)
     {
+      if (!_world)
+      {
+        event->ignore();
+        return;
+      }
+
+
       if (event->button() == Qt::RightButton)
       {
         _is_selecting = false;
@@ -307,28 +357,37 @@ namespace noggit
 
     void minimap_widget::mouseReleaseEvent(QMouseEvent* event)
     {
+
+      if (!_world)
+      {
+        event->ignore();
+        return;
+      }
+
       _is_selecting = false;
       update();
     }
 
     void minimap_widget::mouseMoveEvent(QMouseEvent* event)
     {
-      if (_world)
+      if (!_world)
       {
-        QPoint tile = locateTile(event);
-
-        std::string str("ADT: " + std::to_string(tile.x()) + "_" + std::to_string(tile.y()));
-
-        QToolTip::showText(mapToGlobal(QPoint(event->pos().x(), event->pos().y() + 5)), QString::fromStdString(str));
-
-        if (_is_selecting)
-        {
-          emit tile_clicked(tile);
-        }
-
-        update();
-
+        event->ignore();
+        return;
       }
+
+      QPoint tile = locateTile(event);
+
+      std::string str("ADT: " + std::to_string(tile.x()) + "_" + std::to_string(tile.y()));
+
+      QToolTip::showText(mapToGlobal(QPoint(event->pos().x(), event->pos().y() + 5)), QString::fromStdString(str));
+
+      if (_is_selecting)
+      {
+        emit tile_clicked(tile);
+      }
+
+      // update();
     }
   }
 }

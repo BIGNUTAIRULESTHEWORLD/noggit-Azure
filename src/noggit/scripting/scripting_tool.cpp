@@ -4,7 +4,7 @@
 #include <noggit/scripting/script_profiles.hpp>
 #include <noggit/scripting/script_settings.hpp>
 #include <noggit/scripting/scripting_tool.hpp>
-#include <noggit/camera.hpp>
+#include <noggit/Camera.hpp>
 #include <noggit/Log.h>
 #include <noggit/tool_enums.hpp>
 #include <noggit/World.h>
@@ -17,16 +17,14 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QCheckBox>
-#include <boost/filesystem.hpp>
-#include <boost/thread.hpp>
 
 #include <cmath>
 
 #define CUR_PROFILE_PATH "__cur_profile"
 
-namespace noggit
+namespace Noggit
 {
-  namespace scripting
+  namespace Scripting
   {
     // TEMP: remove when exceptions are working
     namespace
@@ -320,5 +318,5 @@ namespace noggit
     {
       return _noggit_settings;
     }
-  } // namespace scripting
-} // namespace noggit
+  } // namespace Scripting
+} // namespace Noggit

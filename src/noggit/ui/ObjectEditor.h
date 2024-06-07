@@ -2,23 +2,23 @@
 
 #pragma once
 #include <noggit/Selection.h>
-#include <noggit/bool_toggle_property.hpp>
+#include <noggit/BoolToggleProperty.hpp>
 
 #include <QLabel>
 #include <QWidget>
 #include <QSettings>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QSlider>
-
-#include <boost/optional.hpp>
+#include <QtWidgets/qcombobox.h>
+#include <QtWidgets/qgroupbox.h>
 
 class MapView;
 class QButtonGroup;
 class World;
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     class model_import;
     class rotation_editor;
@@ -34,7 +34,7 @@ enum ModelPasteMode
   PASTE_MODE_COUNT
 };
 
-namespace noggit
+namespace Noggit
 {
   struct object_paste_params
   {
@@ -46,20 +46,21 @@ namespace noggit
     float maxScale = 1.1f;
   };
 
-  namespace ui
+  namespace Ui
   {
     class object_editor : public QWidget
     {
     public:
       object_editor ( MapView*
                     , World*
-                    , bool_toggle_property* move_model_to_cursor_position
-                    , bool_toggle_property* snap_multi_selection_to_ground
-                    , bool_toggle_property* use_median_pivot_point
+                    , BoolToggleProperty* move_model_to_cursor_position
+                    , BoolToggleProperty* snap_multi_selection_to_ground
+                    , BoolToggleProperty* use_median_pivot_point
                     , object_paste_params*
-                    , bool_toggle_property* rotate_along_ground
-                    , bool_toggle_property* rotate_along_ground_smooth
-                    , bool_toggle_property* rotate_along_ground_random
+                    , BoolToggleProperty* rotate_along_ground
+                    , BoolToggleProperty* rotate_along_ground_smooth
+                    , BoolToggleProperty* rotate_along_ground_random
+                    , BoolToggleProperty* move_model_snap_to_objects
                     , QWidget* parent = nullptr
                     );
 
@@ -79,31 +80,48 @@ namespace noggit
 
       float brushRadius() const { return _radius; }
 
+      float drag_selection_depth() const { return _drag_selection_depth; }
+
+      int clipboardSize() const { return _model_instance_created.size(); }
+
+      std::vector<selection_type> getClipboard() const& { return _model_instance_created; }
+
       model_import *modelImport;
       rotation_editor* rotationEditor;
       helper_models* helper_models_widget;
       QSize sizeHint() const override;
 
+      void update_selection_ui(World* world);
+
     private:
       float _radius = 0.01f;
+      float _drag_selection_depth = 100.0f;
 
       MapView* _map_view;
 
       QSlider* _radius_slider;
       QDoubleSpinBox* _radius_spin;
+      QSlider* _drag_selection_depth_slider;
+      QDoubleSpinBox* _drag_selection_depth_spin;
+
+      QGroupBox* _wmo_group;
+      QComboBox* _doodadSetSelector;
+      QComboBox* _nameSetSelector;
 
       QSettings* _settings;
 
       QButtonGroup* pasteModeGroup;
       QLabel* _filename;
 
+      QLabel* _selection_groups_info;
+
       bool _copy_model_stats;
       bool _use_median_pivot_point;
 
-      std::vector<selection_type> selected;
+      // std::vector<selection_type> selected;
       std::vector<selection_type> _model_instance_created;
       
-      void replace_selection(std::vector<selection_type> new_selection);
+      void update_clipboard();
 
       void showImportModels();
       void SaveObjecttoTXT (World*);

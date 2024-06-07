@@ -3,6 +3,7 @@
 #pragma once
 
 #include <noggit/ui/widget.hpp>
+#include <noggit/project/ApplicationProject.h>
 #include <QtWidgets/QListWidget>
 #include <unordered_set>
 #include <string>
@@ -18,9 +19,9 @@ class QListWidget;
 class QPoint;
 
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     class current_texture;
 
@@ -42,12 +43,15 @@ namespace noggit
       Q_OBJECT
 
     public:
-      texture_palette_small (QWidget* parent);
+      texture_palette_small (std::shared_ptr<Noggit::Project::NoggitProject> Project, int mapId, QWidget* parent);
 
       void addTexture();
-      void addTextureByFilename(const std::string& filename);
+      void addTextureByFilename(const std::string& filename, bool save_palette = true);
 
       void removeTexture(QString filename);
+
+      void LoadSavedPalette();
+      void SavePalette();
 
       void removeSelectedTexture();
 
@@ -67,6 +71,8 @@ namespace noggit
       QPushButton* _remove_button;
       std::unordered_set<std::string> _texture_paths;
 
+      std::shared_ptr<Noggit::Project::NoggitProject> _project;
+      int _map_id;
     };
   }
 }

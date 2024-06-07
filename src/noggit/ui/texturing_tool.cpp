@@ -7,7 +7,7 @@
 #include <noggit/World.h>
 #include <noggit/MapView.h>
 #include <noggit/tool_enums.hpp>
-#include <noggit/ui/checkbox.hpp>
+#include <noggit/ui/Checkbox.hpp>
 #include <noggit/ui/CurrentTexture.h>
 #include <noggit/ui/texture_swapper.hpp>
 #include <util/qt/overload.hpp>
@@ -15,18 +15,18 @@
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QTabWidget>
-#include <noggit/Red/UiCommon/ExtendedSlider.hpp>
+#include <noggit/ui/tools/UiCommon/ExtendedSlider.hpp>
 
 #define _USE_MATH_DEFINES
 #include <math.h>
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     texturing_tool::texturing_tool ( const glm::vec3* camera_pos
                                    , MapView* map_view
-                                   , bool_toggle_property* show_quick_palette
+                                   , BoolToggleProperty* show_quick_palette
                                    , QWidget* parent
                                    )
       : QWidget(parent)
@@ -69,7 +69,7 @@ namespace noggit
       slider_layout->addLayout(slider_layout_right, 0, 1);
 
       slider_layout_left->addWidget(new QLabel("Hardness:", tool_widget));
-      _hardness_slider = new noggit::Red::UiCommon::ExtendedSlider(tool_widget);
+      _hardness_slider = new Noggit::Ui::Tools::UiCommon::ExtendedSlider(tool_widget);
       _hardness_slider->setPrefix("");
       _hardness_slider->setRange (0, 1);
       _hardness_slider->setDecimals(2);
@@ -78,7 +78,7 @@ namespace noggit
       slider_layout_left->addWidget(_hardness_slider);
 
       slider_layout_left->addWidget(new QLabel("Radius:", tool_widget));
-      _radius_slider = new noggit::Red::UiCommon::ExtendedSlider(tool_widget);
+      _radius_slider = new Noggit::Ui::Tools::UiCommon::ExtendedSlider(tool_widget);
       _radius_slider->setPrefix("");
       _radius_slider->setRange (0, 1000);
       _radius_slider->setDecimals (2);
@@ -86,7 +86,7 @@ namespace noggit
       slider_layout_left->addWidget (_radius_slider);
 
       slider_layout_left->addWidget(new QLabel("Pressure:", tool_widget));
-      _pressure_slider = new noggit::Red::UiCommon::ExtendedSlider(tool_widget);
+      _pressure_slider = new Noggit::Ui::Tools::UiCommon::ExtendedSlider(tool_widget);
       _pressure_slider->setPrefix("");
       _pressure_slider->setRange (0, 1.0f);
       _pressure_slider->setDecimals (2);
@@ -112,10 +112,10 @@ namespace noggit
       tool_layout->addWidget(_show_unpaintable_chunks_cb);
 
       connect(_show_unpaintable_chunks_cb, &QCheckBox::toggled, [=](bool checked)
-      {
-        _map_view->getWorld()->getTerrainParamsUniformBlock()->draw_paintability_overlay = checked;
-        _map_view->getWorld()->markTerrainParamsUniformBlockDirty();
-      });
+          {
+              _map_view->getWorld()->renderer()->getTerrainParamsUniformBlock()->draw_paintability_overlay = checked;
+              _map_view->getWorld()->renderer()->markTerrainParamsUniformBlockDirty();
+          });
 
       // spray
       _spray_mode_group = new QGroupBox("Spray", tool_widget);
@@ -155,12 +155,18 @@ namespace noggit
       _texture_switcher = new texture_swapper(tool_widget, camera_pos, map_view);
       _texture_switcher->hide();
 
-      _image_mask_group = new noggit::Red::ImageMaskSelector(map_view, this);
+      _image_mask_group = new Noggit::Ui::Tools::ImageMaskSelector(map_view, this);
       _image_mask_group->setContinuousActionName("Paint");
       _image_mask_group->setBrushModeVisible(parent == map_view);
       _mask_image = _image_mask_group->getPixmap()->toImage();
       _image_mask_group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-      tool_layout->addWidget(_image_mask_group);
+      // tool_layout->addWidget(_image_mask_group);
+      auto* customBrushBox = new ExpanderWidget(this);
+      customBrushBox->setExpanderTitle("Custom Brush");
+      customBrushBox->addPage(_image_mask_group);
+      customBrushBox->setExpanded(false);
+      tool_layout->addWidget(customBrushBox);
+
       tool_layout->setAlignment(_image_mask_group, Qt::AlignTop);
 
       auto quick_palette_btn (new QPushButton("Quick Palette", this));
@@ -195,7 +201,7 @@ namespace noggit
 
       anim_layout->addRow(_anim_group);
 
-      auto overbright_cb = new checkbox("Overbright", &_overbright_prop, anim_widget);
+      auto overbright_cb = new CheckBox("Overbright", &_overbright_prop, anim_widget);
       anim_layout->addRow(overbright_cb);
 
       tabs->addTab(tool_widget, "Paint");
@@ -213,8 +219,8 @@ namespace noggit
                 }
               );
 
-      connect (anim_speed_slider, &QSlider::valueChanged, &_anim_speed_prop, &noggit::unsigned_int_property::set);
-      connect (anim_orientation_dial, &QDial::valueChanged, &_anim_rotation_prop, &noggit::unsigned_int_property::set);
+      connect (anim_speed_slider, &QSlider::valueChanged, &_anim_speed_prop, &Noggit::unsigned_int_property::set);
+      connect (anim_orientation_dial, &QDial::valueChanged, &_anim_rotation_prop, &Noggit::unsigned_int_property::set);
 
       connect ( tabs, &QTabWidget::currentChanged
               , [this] (int index)
@@ -246,12 +252,12 @@ namespace noggit
                 }
               );
 
-      connect ( _show_unpaintable_chunks_cb, &QCheckBox::stateChanged
-              , [&] (int state)
-                {
-                  _show_unpaintable_chunks = state;
-                }
-              );
+      connect(_show_unpaintable_chunks_cb, &QCheckBox::stateChanged
+          , [&](int state)
+          {
+              _show_unpaintable_chunks = state;
+          }
+      );
 
       connect ( _spray_size_spin, qOverload<double> (&QDoubleSpinBox::valueChanged)
               , [&] (double v)
@@ -294,19 +300,19 @@ namespace noggit
       connect ( _spray_mode_group, &QGroupBox::toggled
               , [&] (bool b)
                 {
-                  _spray_content->setVisible(b);
+                  _spray_content->setEnabled(b);
                 }
               );
 
-      connect ( quick_palette_btn, &QPushButton::pressed
+      connect ( quick_palette_btn, &QPushButton::clicked
               , [=] ()
                 {
-                  show_quick_palette->set(!show_quick_palette);
+              _map_view->getTexturePalette()->setVisible(_map_view->getTexturePalette()->isHidden());
+                  // show_quick_palette->set(!show_quick_palette);
                 }
               );
 
-
-      connect ( _radius_slider, &noggit::Red::UiCommon::ExtendedSlider::valueChanged
+      connect ( _radius_slider, &Noggit::Ui::Tools::UiCommon::ExtendedSlider::valueChanged
           , [&] (double v)
                 {
                     set_radius(static_cast<float>(_radius_slider->value()));
@@ -314,16 +320,16 @@ namespace noggit
       );
 
 
-      connect ( _hardness_slider, &noggit::Red::UiCommon::ExtendedSlider::valueChanged
+      connect ( _hardness_slider, &Noggit::Ui::Tools::UiCommon::ExtendedSlider::valueChanged
           , [&] (double v)
                 {
                     update_brush_hardness();
                 }
       );
 
-      connect (_image_mask_group, &noggit::Red::ImageMaskSelector::rotationUpdated, this, &texturing_tool::updateMaskImage);
-      connect (_radius_slider, &noggit::Red::UiCommon::ExtendedSlider::valueChanged, this, &texturing_tool::updateMaskImage);
-      connect(_image_mask_group, &noggit::Red::ImageMaskSelector::pixmapUpdated, this, &texturing_tool::updateMaskImage);
+      connect (_image_mask_group, &Noggit::Ui::Tools::ImageMaskSelector::rotationUpdated, this, &texturing_tool::updateMaskImage);
+      connect (_radius_slider, &Noggit::Ui::Tools::UiCommon::ExtendedSlider::valueChanged, this, &texturing_tool::updateMaskImage);
+      connect(_image_mask_group, &Noggit::Ui::Tools::ImageMaskSelector::pixmapUpdated, this, &texturing_tool::updateMaskImage);
 
 
 
@@ -493,8 +499,8 @@ namespace noggit
     }
 
     bool texturing_tool::show_unpaintable_chunks() const
-    { 
-      return _show_unpaintable_chunks && _texturing_mode == texturing_mode::paint; 
+    {
+        return _show_unpaintable_chunks && _texturing_mode == texturing_mode::paint;
     }
 
     void texturing_tool::paint (World* world, glm::vec3 const& pos, float dt, scoped_blp_texture_reference texture)
@@ -514,11 +520,12 @@ namespace noggit
         {
           if (_texture_switcher->brush_mode())
           {
-            world->replaceTexture(pos, _texture_switcher->radius(), to_swap.get(), texture);
+                std::cout << _texture_switcher->radius() << std::endl;
+            world->replaceTexture(pos, _texture_switcher->radius(), to_swap.value(), texture, _texture_switcher->entireChunk());
           }
           else
           {
-            world->overwriteTextureAtCurrentChunk(pos, to_swap.get(), texture);
+            world->overwriteTextureAtCurrentChunk(pos, to_swap.value(), texture);
           }          
         }
       }
@@ -619,8 +626,8 @@ namespace noggit
       json["spray_size"] = _spray_size_spin->value();
       json["spray_pressure"] = _spray_pressure_spin->value();
 
-      if (_texture_switcher->texture_to_swap().is_initialized())
-        json["texture_to_swap"] = _texture_switcher->texture_to_swap().get()->filename.c_str();
+      if (_texture_switcher->texture_to_swap().has_value())
+          json["texture_to_swap"] = _texture_switcher->texture_to_swap().value()->file_key().filepath().c_str();
       else
         json["texture_to_swap"] = "";
 

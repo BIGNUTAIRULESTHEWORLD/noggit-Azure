@@ -7,7 +7,7 @@
 #include <noggit/MapHeaders.h>
 #include <noggit/Misc.h>
 #include <noggit/World.h>
-#include <noggit/alphamap.hpp>
+#include <noggit/Alphamap.hpp>
 #include <noggit/texture_set.hpp>
 #include <noggit/tool_enums.hpp>
 #include <noggit/ui/TexturingGUI.h>
@@ -15,16 +15,17 @@
 #include <noggit/Action.hpp>
 #include <opengl/scoped.hpp>
 #include <external/tracy/Tracy.hpp>
+#include <glm/glm.hpp>
+#include <ClientFile.hpp>
 
 #include <algorithm>
 #include <iostream>
 #include <map>
-#include <QPixmap>
 #include <QImage>
 #include <limits>
 
-MapChunk::MapChunk(MapTile *maintile, MPQFile *f, bool bigAlpha,
-                   tile_mode mode, noggit::NoggitRenderContext context, bool init_empty, int chunk_idx)
+MapChunk::MapChunk(MapTile* maintile, BlizzardArchive::ClientFile* f, bool bigAlpha,tile_mode mode
+                    , Noggit::NoggitRenderContext context, bool init_empty, int chunk_idx, bool load_textures)
   : _mode(mode)
   , mt(maintile)
   , use_big_alphamap(bigAlpha)
@@ -147,6 +148,11 @@ MapChunk::MapChunk(MapTile *maintile, MPQFile *f, bool bigAlpha,
     xbase = xbase*-1.0f + ZEROPOINT;
   }
 
+  if (!load_textures)
+  {
+      this->header.nLayers = 0;
+  }
+
   texture_set = std::make_unique<TextureSet>(this, f, base, maintile, bigAlpha,
      !!header_flags.flags.do_not_fix_alpha_map, mode == tile_mode::uid_fix_all, _context);
 
@@ -205,12 +211,12 @@ MapChunk::MapChunk(MapTile *maintile, MPQFile *f, bool bigAlpha,
       f->read(nor, 3);
       int pixel_start = chunk_start + i * 4;
       tile_buffer[pixel_start] = nor[0] / 127.0f;
-      tile_buffer[pixel_start + 1] = nor[1] / 127.0f;
-      tile_buffer[pixel_start + 2] = nor[2] / 127.0f;
+      tile_buffer[pixel_start + 1] = nor[2] / 127.0f;
+      tile_buffer[pixel_start + 2] = nor[1] / 127.0f;
     }
   }
   // - MCSH ----------------------------------------------
-  if(header.ofsShadow && header.sizeShadow)
+  if((header_flags.flags.has_mcsh) && header.ofsShadow && header.sizeShadow)
   {
     f->seek(base + header.ofsShadow);
     f->read(&fourcc, 4);
@@ -218,14 +224,14 @@ MapChunk::MapChunk(MapTile *maintile, MPQFile *f, bool bigAlpha,
 
     assert(fourcc == 'MCSH');
 
-
-    uint8_t compressed_shadow_map[64 * 64 / 8];
+    char compressed_shadow_map[64 * 64 / 8];
 
     // shadow map 64 x 64
-    f->read(compressed_shadow_map, 0x200);
+    f->read(&compressed_shadow_map, 0x200);
     f->seekRelative(-0x200);
 
-    uint8_t *p, *c;
+    uint8_t *p;
+    char *c;
     p = _shadow_map;
     c = compressed_shadow_map;
     for (int i = 0; i<64 * 8; ++i)
@@ -403,7 +409,7 @@ void MapChunk::clearHeight()
 
 
 void MapChunk::draw ( math::frustum const& frustum
-                    , opengl::scoped::use_program& mcnk_shader
+                    , OpenGL::Scoped::use_program& mcnk_shader
                     , const float& cull_distance
                     , const glm::vec3& camera
                     , bool need_visibility_update
@@ -422,8 +428,8 @@ void MapChunk::draw ( math::frustum const& frustum
 /*
   bool cantPaint = show_unpaintable_chunks
                     && draw_paintability_overlay
-                    && noggit::ui::selected_texture::get()
-                    && !canPaintTexture(*noggit::ui::selected_texture::get());
+                    && Noggit::Ui::selected_texture::get()
+                    && !canPaintTexture(*Noggit::Ui::selected_texture::get());
 
   {
     ZoneScopedN("MapChunk::draw() : Binding textures");
@@ -445,7 +451,7 @@ void MapChunk::draw ( math::frustum const& frustum
       }
     }
 
-    opengl::texture::set_active_texture(5);
+    OpenGL::texture::set_active_texture(5);
     shadow.bind();
   }
 
@@ -552,6 +558,7 @@ bool MapChunk::intersect (math::ray const& ray, selection_result* results)
     110, 118, 110, 109, 135, 126, 143, 135, 143, 144, 135, 144, 127, 135, 127, 126
   };
 
+  bool intersection_found = false;
   for (int i (0); i < indices.size(); i += 3)
   {
     if ( auto distance = ray.intersect_triangle ( mVertices[indices[i + 0]]
@@ -563,11 +570,11 @@ bool MapChunk::intersect (math::ray const& ray, selection_result* results)
       results->emplace_back
           (*distance, selected_chunk_type (this, std::make_tuple(indices[i], indices[i + 1],
                                                                  indices[i + 2]), ray.position (*distance)));
-      return true;
+      intersection_found = true;
     }
   }
 
-  return false;
+  return intersection_found;
 }
 
 void MapChunk::updateVerticesData()
@@ -626,7 +633,7 @@ glm::vec3 MapChunk::getNeighborVertex(int i, unsigned dir)
   float vertex_x = mVertices[i].x + xdiff[dir];
   float vertex_z = mVertices[i].z + zdiff[dir];
 
-  tile_index tile({vertex_x, 0, vertex_z});
+  TileIndex tile({vertex_x, 0, vertex_z});
   glm::vec3 result{};
 
   if (tile.x == mt->index.x && tile.z == mt->index.z)
@@ -786,7 +793,7 @@ void MapChunk::updateNormalsData()
 
 bool MapChunk::changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius)
 {
-  float dist, xdiff, zdiff;
+  //float dist, xdiff, zdiff;
   bool changed = false;
 
   for (int i = 0; i < mapbufsize; ++i)
@@ -1025,13 +1032,15 @@ bool MapChunk::flattenTerrain ( glm::vec3 const& pos
 		  continue;
 	  }
 
-    mVertices[i].y = math::interpolation::linear
-      ( BrushType == eFlattenType_Flat ? remain
+    mVertices[i].y = glm::mix
+      ( 
+        mVertices[i].y
+      , ah
+      , BrushType == eFlattenType_Flat ? remain
       : BrushType == eFlattenType_Linear ? remain * (1.f - dist / radius)
       : BrushType == eFlattenType_Smooth ? pow (remain, 1.f + dist / radius)
       : throw std::logic_error ("bad brush type")
-      , mVertices[i].y
-      , ah
+
       );
 
     changed = true;
@@ -1050,7 +1059,7 @@ bool MapChunk::blurTerrain ( glm::vec3 const& pos
                            , float radius
                            , int BrushType
                            , flatten_mode const& mode
-                           , std::function<boost::optional<float> (float, float)> height
+                           , std::function<std::optional<float> (float, float)> height
                            )
 {
   bool changed (false);
@@ -1084,7 +1093,7 @@ bool MapChunk::blurTerrain ( glm::vec3 const& pos
         auto h (height (tx, tz));
         if (h)
         {
-          TotalHeight += (1.0f - dist2 / radius) * h.get();
+          TotalHeight += (1.0f - dist2 / radius) * h.value();
           TotalWeight += (1.0f - dist2 / radius);
         }
       }
@@ -1098,13 +1107,14 @@ bool MapChunk::blurTerrain ( glm::vec3 const& pos
       continue;
     }
 
-    y = math::interpolation::linear
-      ( BrushType == eFlattenType_Flat ? remain
+    y = glm::mix
+      ( 
+        y,
+        target,
+        BrushType == eFlattenType_Flat ? remain
       : BrushType == eFlattenType_Linear ? remain * (1.f - dist / radius)
       : BrushType == eFlattenType_Smooth ? pow (remain, 1.f + dist / radius)
       : throw std::logic_error ("bad brush type")
-      , y
-      , target
       );
 
     changed = true;
@@ -1209,7 +1219,7 @@ auto MapChunk::stamp(glm::vec3 const& pos, float dt, QImage const* img, float ra
   }
   else
   {
-    auto cur_action = noggit::ActionManager::instance()->getCurrentAction();
+    auto cur_action = NOGGIT_CUR_ACTION;
     float* original_heightmap = cur_action->getChunkTerrainOriginalData(this);
 
     if (!original_heightmap)
@@ -1254,6 +1264,17 @@ void MapChunk::eraseTextures()
   texture_set->eraseTextures();
 }
 
+void MapChunk::eraseTexture(scoped_blp_texture_reference const& tex)
+{
+
+    int textureindex = texture_set->get_texture_index_or_add(tex, 0);
+
+    if (textureindex != -1)
+    {
+        texture_set->eraseTexture(textureindex);
+    }
+}
+
 void MapChunk::change_texture_flag(scoped_blp_texture_reference const& tex, std::size_t flag, bool add)
 {
   texture_set->change_texture_flag(tex, flag, add);
@@ -1264,9 +1285,13 @@ int MapChunk::addTexture(scoped_blp_texture_reference texture)
   return texture_set->addTexture(std::move (texture));
 }
 
-void MapChunk::switchTexture(scoped_blp_texture_reference const& oldTexture, scoped_blp_texture_reference newTexture)
+bool MapChunk::switchTexture(scoped_blp_texture_reference const& oldTexture, scoped_blp_texture_reference newTexture)
 {
-  texture_set->replace_texture(oldTexture, std::move (newTexture));
+  bool changed = texture_set->replace_texture(oldTexture, std::move (newTexture));
+  if (changed)
+    registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+
+  return changed;
 }
 
 bool MapChunk::paintTexture(glm::vec3 const& pos, Brush* brush, float strength, float pressure, scoped_blp_texture_reference texture)
@@ -1279,9 +1304,9 @@ bool MapChunk::stampTexture(glm::vec3 const& pos, Brush *brush, float strength, 
   return texture_set->stampTexture(xbase, zbase, pos.x, pos.z, brush, strength, pressure, std::move (texture), img, paint);
 }
 
-bool MapChunk::replaceTexture(glm::vec3 const& pos, float radius, scoped_blp_texture_reference const& old_texture, scoped_blp_texture_reference new_texture)
+bool MapChunk::replaceTexture(glm::vec3 const& pos, float radius, scoped_blp_texture_reference const& old_texture, scoped_blp_texture_reference new_texture, bool entire_chunk)
 {
-  return texture_set->replace_texture(xbase, zbase, pos.x, pos.z, radius, old_texture, std::move (new_texture));
+  return texture_set->replace_texture(xbase, zbase, pos.x, pos.z, radius, old_texture, std::move (new_texture), entire_chunk);
 }
 
 bool MapChunk::canPaintTexture(scoped_blp_texture_reference texture)
@@ -1360,7 +1385,12 @@ void MapChunk::setFlag(bool changeto, uint32_t flag)
   registerChunkUpdate(ChunkUpdateFlags::FLAGS);
 }
 
-void MapChunk::save(sExtendableArray &lADTFile, int &lCurrentPosition, int &lMCIN_Position, std::map<std::string, int> &lTextures, std::vector<WMOInstance> &lObjectInstances, std::vector<ModelInstance>& lModelInstances)
+void MapChunk::save(sExtendableArray& lADTFile
+                    , int& lCurrentPosition
+                    , int& lMCIN_Position
+                    , std::map<std::string, int> &lTextures
+                    , std::vector<WMOInstance*> &lObjectInstances
+                    , std::vector<ModelInstance*>& lModelInstances)
 {
   int lID;
   int lMCNK_Size = 0x80;
@@ -1477,8 +1507,8 @@ void MapChunk::save(sExtendableArray &lADTFile, int &lCurrentPosition, int &lMCI
     int pixel_start = chunk_start + i * 4;
 
     lNormals[i * 3 + 0] = static_cast<char>(tile_buffer[pixel_start] * 127);
-    lNormals[i * 3 + 1] = static_cast<char>(tile_buffer[pixel_start + 1] * 127);
-    lNormals[i * 3 + 2] = static_cast<char>(tile_buffer[pixel_start + 2] * 127);
+    lNormals[i * 3 + 1] = static_cast<char>(tile_buffer[pixel_start + 2] * 127);
+    lNormals[i * 3 + 2] = static_cast<char>(tile_buffer[pixel_start + 1] * 127);
   }
 
   lCurrentPosition += 8 + lMCNR_Size;
@@ -1497,11 +1527,11 @@ void MapChunk::save(sExtendableArray &lADTFile, int &lCurrentPosition, int &lMCI
   //        {
   size_t lMCLY_Size = texture_set ? texture_set->num() * 0x10 : 0;
 
-  lADTFile.Extend(8 + lMCLY_Size);
-  SetChunkHeader(lADTFile, lCurrentPosition, 'MCLY', lMCLY_Size);
+  lADTFile.Extend(static_cast<long>(8 + lMCLY_Size));
+  SetChunkHeader(lADTFile, lCurrentPosition, 'MCLY', static_cast<int>(lMCLY_Size));
 
   lADTFile.GetPointer<MapChunkHeader>(lMCNK_Position + 8)->ofsLayer = lCurrentPosition - lMCNK_Position;
-  lADTFile.GetPointer<MapChunkHeader>(lMCNK_Position + 8)->nLayers = texture_set ? texture_set->num() : 0;
+  lADTFile.GetPointer<MapChunkHeader>(lMCNK_Position + 8)->nLayers = texture_set ? static_cast<std::uint32_t>(texture_set->num()) : 0;
 
   std::vector<std::vector<uint8_t>> alphamaps;
 
@@ -1514,7 +1544,7 @@ void MapChunk::save(sExtendableArray &lADTFile, int &lCurrentPosition, int &lMCI
     // MCLY data
     for (size_t j = 0; j < texture_set->num(); ++j)
     {
-      ENTRY_MCLY * lLayer = lADTFile.GetPointer<ENTRY_MCLY>(lCurrentPosition + 8 + 0x10 * j);
+      ENTRY_MCLY * lLayer = lADTFile.GetPointer<ENTRY_MCLY>(lCurrentPosition + 8 + 0x10 * static_cast<unsigned long>(j));
 
       lLayer->textureID = lTextures.find(texture_set->filename(j))->second;
       lLayer->flags = texture_set->flag(j);
@@ -1531,14 +1561,14 @@ void MapChunk::save(sExtendableArray &lADTFile, int &lCurrentPosition, int &lMCI
         //! \todo find out why compression fuck up textures ingame
         lLayer->flags &= ~FLAG_ALPHA_COMPRESSED;
 
-        lMCAL_Size += alphamaps[j - 1].size();
+        lMCAL_Size += static_cast<int>(alphamaps[j - 1].size());
       }
     }
 
   }
 
-  lCurrentPosition += 8 + lMCLY_Size;
-  lMCNK_Size += 8 + lMCLY_Size;
+  lCurrentPosition += 8 + static_cast<int>(lMCLY_Size);
+  lMCNK_Size += 8 + static_cast<int>(lMCLY_Size);
   //        }
 
   // MCRF
@@ -1554,7 +1584,7 @@ void MapChunk::save(sExtendableArray &lADTFile, int &lCurrentPosition, int &lMCI
   lID = 0;
   for(auto const& wmo : lObjectInstances)
   {
-    if (wmo.isInsideRect(&lChunkExtents))
+    if (wmo->isInsideRect(&lChunkExtents))
     {
       lObjectIDs.push_back(lID);
     }
@@ -1566,20 +1596,20 @@ void MapChunk::save(sExtendableArray &lADTFile, int &lCurrentPosition, int &lMCI
   lID = 0;
   for(auto const& model : lModelInstances)
   {
-    if (model.isInsideRect(&lChunkExtents))
+    if (model->isInsideRect(&lChunkExtents))
     {
       lDoodadIDs.push_back(lID);
     }
     lID++;
   }
 
-  int lMCRF_Size = 4 * (lDoodadIDs.size() + lObjectIDs.size());
+  int lMCRF_Size = static_cast<int>(4 * (lDoodadIDs.size() + lObjectIDs.size()));
   lADTFile.Extend(8 + lMCRF_Size);
   SetChunkHeader(lADTFile, lCurrentPosition, 'MCRF', lMCRF_Size);
 
   lADTFile.GetPointer<MapChunkHeader>(lMCNK_Position + 8)->ofsRefs = lCurrentPosition - lMCNK_Position;
-  lADTFile.GetPointer<MapChunkHeader>(lMCNK_Position + 8)->nDoodadRefs = lDoodadIDs.size();
-  lADTFile.GetPointer<MapChunkHeader>(lMCNK_Position + 8)->nMapObjRefs = lObjectIDs.size();
+  lADTFile.GetPointer<MapChunkHeader>(lMCNK_Position + 8)->nDoodadRefs = static_cast<std::uint32_t>(lDoodadIDs.size());
+  lADTFile.GetPointer<MapChunkHeader>(lMCNK_Position + 8)->nMapObjRefs = static_cast<std::uint32_t>(lObjectIDs.size());
 
   // MCRF data
   int *lReferences = lADTFile.GetPointer<int>(lCurrentPosition + 8);
@@ -1809,7 +1839,7 @@ QImage MapChunk::getAlphamapImage(unsigned layer)
   texture_set->apply_alpha_changes();
   auto alphamaps = texture_set->getAlphamaps();
 
-  auto alpha_layer = alphamaps->at(layer - 1).get();
+  auto alpha_layer = alphamaps->at(layer - 1).value();
 
   QImage image(64, 64, QImage::Format_RGBA8888);
 
@@ -1884,7 +1914,7 @@ void MapChunk::setAlphamapImage(const QImage &image, unsigned int layer)
     return;
 
   texture_set->create_temporary_alphamaps_if_needed();
-  auto& temp_alphamaps = texture_set->getTempAlphamaps()->get();
+  auto& temp_alphamaps = texture_set->getTempAlphamaps()->value();
 
   for (int i = 0; i < 64; ++i)
   {

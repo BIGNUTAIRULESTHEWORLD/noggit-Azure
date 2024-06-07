@@ -7,17 +7,11 @@
 
 #include <noggit/MapView.h>
 #include <noggit/World.h>
-#include <noggit/camera.hpp>
-
-#include <boost/filesystem.hpp>
-#include <boost/algorithm/string/predicate.hpp>
-
-#include <noggit/Log.h>
 
 #include <vector>
-namespace noggit
+namespace Noggit
 {
-  namespace scripting
+  namespace Scripting
   {
 
     namespace
@@ -47,16 +41,16 @@ namespace noggit
 
       register_functions(this);
 
-      boost::filesystem::recursive_directory_iterator end;
+      std::filesystem::recursive_directory_iterator end;
 
-      if(!boost::filesystem::exists("scripts"))
+      if(!std::filesystem::exists("scripts"))
       {
           _tool->addLog("[error]: 'scripts' directory does not exist");
           set_tool_error(_tool);
           return;
       }
 
-      if(!boost::filesystem::is_directory("scripts"))
+      if(!std::filesystem::is_directory("scripts"))
       {
           _tool->addLog("[error]: 'scripts' is not a directory");
           set_tool_error(_tool);
@@ -66,10 +60,11 @@ namespace noggit
       unsigned int error_count = 0;
       unsigned int file_count = 0;
 
-      for (boost::filesystem::recursive_directory_iterator dir("scripts"); dir != end; ++dir)
+      for (std::filesystem::recursive_directory_iterator dir("scripts"); dir != end; ++dir)
       {
         std::string file = dir->path().string();
-        if (!boost::ends_with(file, ".lua") || boost::ends_with(file, ".spec.lua"))
+
+        if (!(dir->path().extension().string() == ".lua") || (dir->path().extension().string() == ".spec.lua"))
         {
           continue;
         }
@@ -163,7 +158,7 @@ namespace noggit
 
     std::string script_context::file_to_module(std::string const& file)
     {
-      auto rel = boost::filesystem::relative(boost::filesystem::path(file),boost::filesystem::path("scripts"))
+      auto rel = std::filesystem::relative(std::filesystem::path(file), std::filesystem::path("scripts"))
         .string();
       std::replace(rel.begin(),rel.end(),'\\','/');
       return rel.substr(0,rel.size()-strlen(".lua"));
@@ -171,7 +166,7 @@ namespace noggit
 
     std::string script_context::module_to_file(std::string const& mod)
     {
-      return (boost::filesystem::path("scripts") / boost::filesystem::path(mod + ".lua")).string();
+      return (std::filesystem::path("scripts") / std::filesystem::path(mod + ".lua")).string();
     }
 
     void script_context::execute_file(std::string const& file)
@@ -184,5 +179,5 @@ namespace noggit
         : create_table();
       _file_stack.pop_back();
     }
-  } // namespace scripting
-} // namespace noggit
+  } // namespace Scripting
+} // namespace Noggit

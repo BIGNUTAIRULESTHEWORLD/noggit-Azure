@@ -18,12 +18,12 @@
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QRadioButton>
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     water::water ( unsigned_int_property* current_layer
-                 , bool_toggle_property* display_all_layers
+                 , BoolToggleProperty* display_all_layers
                  , QWidget* parent
                  )
       : QWidget (parent)
@@ -62,6 +62,10 @@ namespace noggit
       {
         int liquid_id = i->getInt(LiquidTypeDB::ID);
 
+        // filter WMO liquids
+        if (liquid_id == 13 || liquid_id == 14 || liquid_id == 17 || liquid_id == 19 || liquid_id == 20)
+            continue;
+
         std::stringstream ss;
         ss << liquid_id << "-" << LiquidTypeDB::getLiquidName(liquid_id);
         waterType->addItem (QString::fromUtf8(ss.str().c_str()), QVariant (liquid_id));
@@ -84,11 +88,11 @@ namespace noggit
       angle_group->setChecked (_angled_mode.get());
       
       
-      connect ( &_angled_mode, &bool_toggle_property::changed
+      connect ( &_angled_mode, &BoolToggleProperty::changed
               , angle_group, &QGroupBox::setChecked
               );
       connect ( angle_group, &QGroupBox::toggled
-              , &_angled_mode, &bool_toggle_property::set
+              , &_angled_mode, &BoolToggleProperty::set
               );
       auto angle_layout (new QFormLayout (angle_group));
 
@@ -140,11 +144,11 @@ namespace noggit
               , [&] (float f) { _lock_pos.y = f; }
               );
 
-      connect ( &_locked, &bool_toggle_property::changed
+      connect ( &_locked, &BoolToggleProperty::changed
               , lock_group, &QGroupBox::setChecked
               );
       connect ( lock_group, &QGroupBox::toggled
-              , &_locked, &bool_toggle_property::set
+              , &_locked, &BoolToggleProperty::set
               );
 
       layout->addRow(lock_group);
@@ -152,8 +156,8 @@ namespace noggit
       auto override_group (new QGroupBox ("Override", this));
       auto override_layout (new QFormLayout (override_group));
 
-      override_layout->addWidget (new checkbox ("Liquid ID", &_override_liquid_id, this));
-      override_layout->addWidget (new checkbox ("Height", &_override_height, this));
+      override_layout->addWidget (new CheckBox ("Liquid ID", &_override_liquid_id, this));
+      override_layout->addWidget (new CheckBox ("Height", &_override_height, this));
 
       layout->addRow(override_group);
 
@@ -212,7 +216,7 @@ namespace noggit
       auto layer_group (new QGroupBox ("Layers", this));
       auto layer_layout (new QFormLayout (layer_group));
 
-      layer_layout->addRow (new checkbox("Show all layers", display_all_layers));
+      layer_layout->addRow (new CheckBox("Show all layers", display_all_layers));
       layer_layout->addRow (new QLabel("Current layer:", this));
 
       waterLayer = new QSpinBox (this);
@@ -233,7 +237,7 @@ namespace noggit
 
     }
 
-    void water::updatePos(tile_index const& newTile)
+    void water::updatePos(TileIndex const& newTile)
     {
       if (newTile == tile) return;
 

@@ -2,7 +2,9 @@
 
 #include <noggit/DBCFile.h>
 #include <noggit/Log.h>
-#include <noggit/MPQ.h>
+#include <noggit/application/NoggitApplication.hpp>
+#include <noggit/project/CurrentProject.hpp>
+#include <ClientFile.hpp>
 
 #include <string>
 #include <QSettings>
@@ -23,9 +25,9 @@ DBCFile::DBCFile(const std::string& _filename)
   : filename(_filename)
 {}
 
-void DBCFile::open()
+void DBCFile::open(std::shared_ptr<BlizzardArchive::ClientData> clientData)
 {
-  MPQFile f (filename);
+  BlizzardArchive::ClientFile f (filename, clientData.get());
 
   if (f.isEof())
   {
@@ -59,14 +61,13 @@ void DBCFile::open()
 
 void DBCFile::save()
 {
-  QSettings app_settings;
-  QString str = app_settings.value ("project/path").toString();
+  QString str = QString(Noggit::Project::CurrentProject::get()->ProjectPath.c_str());
   if (!(str.endsWith('\\') || str.endsWith('/')))
   {
     str += "/";
   }
 
-  std::string filename_proj = noggit::mpq::normalized_filename(str.toStdString() + filename);
+  std::string filename_proj = BlizzardArchive::ClientData::normalizeFilenameUnix(str.toStdString() + filename);
   QDir dir(str + "/DBFilesClient/");
   if (!dir.exists())
     dir.mkpath(".");
@@ -98,7 +99,7 @@ DBCFile::Record DBCFile::addRecord(size_t id, size_t id_field)
 
   size_t old_size = data.size();
   data.resize(old_size + recordSize);
-  *reinterpret_cast<unsigned int*>(data.data() + old_size + id_field * sizeof(std::uint32_t)) = id;
+  *reinterpret_cast<unsigned int*>(data.data() + old_size + id_field * sizeof(std::uint32_t)) = static_cast<unsigned int>(id);
 
   return Record(*this, data.data() + old_size);
 }
@@ -136,7 +137,7 @@ DBCFile::Record DBCFile::addRecordCopy(size_t id, size_t id_from, size_t id_fiel
 
   Record record_from = getRecord(from_idx);
   std::copy(data.data() + from_idx * recordSize, data.data() + from_idx * recordSize + recordSize, data.data() + old_size);
-  *reinterpret_cast<unsigned int*>(data.data() + old_size + id_field * sizeof(std::uint32_t)) = id;
+  *reinterpret_cast<unsigned int*>(data.data() + old_size + id_field * sizeof(std::uint32_t)) = static_cast<unsigned int>(id);
 
   return Record(*this, data.data() + old_size);
 }

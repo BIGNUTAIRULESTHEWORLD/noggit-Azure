@@ -6,17 +6,17 @@
 
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QGroupBox>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QWidget>
-
-#include <boost/optional.hpp>
+#include <optional>
 
 class World;
 class MapView;
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     class texture_swapper : public QWidget
     {
@@ -26,7 +26,7 @@ namespace noggit
                       , MapView* map_view
                       );
 
-      boost::optional<scoped_blp_texture_reference> const& texture_to_swap() const
+      std::optional<scoped_blp_texture_reference> const& texture_to_swap() const
       {
         return _texture_to_swap;
       }
@@ -34,6 +34,11 @@ namespace noggit
       float radius() const
       {
         return _radius;
+      }
+
+      bool entireChunk() const
+      {
+          return _swap_entire_chunk->isChecked();
       }
 
       void change_radius(float change);
@@ -53,7 +58,7 @@ namespace noggit
       current_texture* const texture_display() { return _texture_to_swap_display; }
 
     private:
-      boost::optional<scoped_blp_texture_reference> _texture_to_swap;
+      std::optional<scoped_blp_texture_reference> _texture_to_swap;
       float _radius;
 
     private:
@@ -61,6 +66,7 @@ namespace noggit
 
       QGroupBox* _brush_mode_group;
       QSlider* _radius_slider;
+      QCheckBox* _swap_entire_chunk;
       QDoubleSpinBox* _radius_spin;
       World* _world;
     };

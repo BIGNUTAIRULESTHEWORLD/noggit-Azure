@@ -3,14 +3,14 @@
 #include <noggit/scripting/scripting_tool.hpp>
 #include <noggit/scripting/script_context.hpp>
 #include <noggit/World.h>
-#include <noggit/camera.hpp>
+#include <noggit/Camera.hpp>
 #include <noggit/Brush.h>
 #include <noggit/ContextObject.hpp>
 
 #include <sol/sol.hpp>
 
-namespace noggit {
-  namespace scripting {
+namespace Noggit {
+  namespace Scripting {
     standard_brush::standard_brush(script_context * ctx)
     : script_object(ctx)
     {}
@@ -157,7 +157,7 @@ namespace noggit {
                            , &brush
                            , strength
                            , pressure
-                           , scoped_blp_texture_reference(texture, noggit::NoggitRenderContext::MAP_VIEW));
+                           , scoped_blp_texture_reference(texture, Noggit::NoggitRenderContext::MAP_VIEW));
     }
 
     void standard_brush::change_terrain( glm::vec3 const& pos

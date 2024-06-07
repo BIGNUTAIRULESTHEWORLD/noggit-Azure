@@ -11,9 +11,11 @@
 
 #include <noggit/DBC.h>
 #include <noggit/Misc.h>
-#include <noggit/MPQ.h>
+
 #include <noggit/TextureManager.h> // TextureManager, Texture
 #include <noggit/ui/TextureList.hpp>
+#include <noggit/application/NoggitApplication.hpp>
+#include <noggit/project/CurrentProject.hpp>
 
 #include <unordered_set>
 
@@ -24,13 +26,9 @@
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QVBoxLayout>
 
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/path.hpp>
-#include <boost/range/iterator_range.hpp>
-
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     struct model_item : QStandardItem
     {
@@ -66,28 +64,25 @@ namespace noggit
       setWindowIcon (QIcon (":/icon"));
       setMinimumHeight(490);
 
-      while (!MPQArchive::allFinishedLoading())
-      {
-        MPQArchive::allFinishLoading();
-      }
-
       std::vector<std::string> tilesets;
       std::unordered_set<std::string> tilesets_with_specular_variant;
 
-      for (auto const& entry : gListfile)
+      for (auto const& entry_pair : Application::NoggitApplication::instance()->clientData()->listfile()->pathToFileDataIDMap())
       {
-        if ( entry.find ("tileset") != std::string::npos
-          && entry.find (".blp") != std::string::npos
+        std::string const& filepath = entry_pair.first;
+
+        if ( filepath.find ("tileset") != std::string::npos
+          && filepath.find (".blp") != std::string::npos
            )
         {
-          auto suffix_pos (entry.find ("_s.blp"));
+          auto suffix_pos (filepath.find ("_s.blp"));
           if (suffix_pos == std::string::npos)
           {
-            tilesets.emplace_back (entry);
+            tilesets.emplace_back (filepath);
           }
           else
           {
-            std::string specular (entry);
+            std::string specular (filepath);
             specular.erase (suffix_pos, strlen ("_s"));
             tilesets_with_specular_variant.emplace (specular);
           }
@@ -95,20 +90,16 @@ namespace noggit
       }
 
       {
-        QSettings settings;
-        auto const prefix
-          (boost::filesystem::path (settings.value("project/path").toString().toStdString()));
+
+        auto const prefix (std::filesystem::path ( Noggit::Project::CurrentProject::get()->ProjectPath ));
         auto const prefix_size (prefix.string().length());
 
-        if (boost::filesystem::exists (prefix))
+        if (std::filesystem::exists (prefix))
         {
-          for ( auto const& entry_abs
-              : boost::make_iterator_range
-                  (boost::filesystem::recursive_directory_iterator (prefix), {})
-              )
+          for ( auto const& entry_abs : std::filesystem::recursive_directory_iterator (prefix))
           {
-            auto entry ( mpq::normalized_filename
-                          (entry_abs.path().string().substr (prefix_size))
+            auto entry ( BlizzardArchive::ClientData::normalizeFilenameInternal(
+                entry_abs.path().string().substr(prefix_size))
                        );
 
             if ( entry.find ("tileset") != std::string::npos
@@ -227,9 +218,9 @@ namespace noggit
     }
 
     // selected_texture:
-    boost::optional<scoped_blp_texture_reference> selected_texture::texture = boost::none;
+    std::optional<scoped_blp_texture_reference> selected_texture::texture = std::nullopt;
 
-    boost::optional<scoped_blp_texture_reference> selected_texture::get()
+    std::optional<scoped_blp_texture_reference> selected_texture::get()
     {
       return selected_texture::texture; // TODO: something performance-hungry is going on here
     }

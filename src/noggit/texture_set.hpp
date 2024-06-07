@@ -2,10 +2,10 @@
 
 #pragma once
 
-#include <noggit/MPQ.h>
-#include <noggit/alphamap.hpp>
+#include <noggit/Alphamap.hpp>
 #include <noggit/MapHeaders.h>
 #include <noggit/ContextObject.hpp>
+#include <noggit/TextureManager.h>
 
 #include <cstdint>
 #include <array>
@@ -13,6 +13,11 @@
 class Brush;
 class MapTile;
 class MapChunk;
+
+namespace BlizzardArchive
+{
+  class ClientFile;
+}
 
 struct tmp_edit_alpha_values
 {
@@ -30,9 +35,9 @@ class TextureSet
 {
 public:
   TextureSet() = delete;
-  TextureSet(MapChunk* chunk, MPQFile* f, size_t base, MapTile* tile
+  TextureSet(MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t base, MapTile* tile
              , bool use_big_alphamaps, bool do_not_fix_alpha_map, bool do_not_convert_alphamaps
-             , noggit::NoggitRenderContext context);
+             , Noggit::NoggitRenderContext context);
 
   int addTexture(scoped_blp_texture_reference texture);
   void eraseTexture(size_t id);
@@ -40,7 +45,7 @@ public:
   // return true if at least 1 texture has been erased
   bool eraseUnusedTextures();
   void swap_layers(int layer_1, int layer_2);
-  void replace_texture(scoped_blp_texture_reference const& texture_to_replace, scoped_blp_texture_reference replacement_texture);
+  bool replace_texture(scoped_blp_texture_reference const& texture_to_replace, scoped_blp_texture_reference replacement_texture);
   bool paintTexture(float xbase, float zbase, float x, float z, Brush* brush, float strength, float pressure, scoped_blp_texture_reference texture);
   bool stampTexture(float xbase, float zbase, float x, float z, Brush* brush, float strength, float pressure, scoped_blp_texture_reference texture, QImage* image, bool paint);
   bool replace_texture( float xbase
@@ -50,6 +55,7 @@ public:
                       , float radius
                       , scoped_blp_texture_reference const& texture_to_replace
                       , scoped_blp_texture_reference replacement_texture
+                      , bool entire_chunk = false
                       );
   bool canPaintTexture(scoped_blp_texture_reference const& texture);
 
@@ -85,8 +91,8 @@ public:
 
   std::array<std::uint16_t, 8> lod_texture_map();
 
-  std::array<boost::optional<Alphamap>, 3>* getAlphamaps() { return &alphamaps; };
-  boost::optional<tmp_edit_alpha_values>* getTempAlphamaps() { return &tmp_edit_values; };
+  std::array<std::optional<Alphamap>, 3>* getAlphamaps() { return &alphamaps; };
+  std::optional<tmp_edit_alpha_values>* getTempAlphamaps() { return &tmp_edit_values; };
 
   int get_texture_index_or_add (scoped_blp_texture_reference texture, float target);
   auto getDoodadMappingBase(void) -> std::uint16_t* { return _doodadMapping.data(); }
@@ -109,7 +115,7 @@ private:
   MapTile* _tile;
 
   std::vector<scoped_blp_texture_reference> textures;
-  std::array<boost::optional<Alphamap>, 3> alphamaps;
+  std::array<std::optional<Alphamap>, 3> alphamaps;
   size_t nTextures;
 
   std::array<std::uint16_t, 8> _doodadMapping;
@@ -118,9 +124,9 @@ private:
 
   ENTRY_MCLY _layers_info[4];
 
-  boost::optional<tmp_edit_alpha_values> tmp_edit_values;
+  std::optional<tmp_edit_alpha_values> tmp_edit_values;
 
   bool _do_not_convert_alphamaps;
 
-  noggit::NoggitRenderContext _context;
+  Noggit::NoggitRenderContext _context;
 };

@@ -1,6 +1,8 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #include <noggit/TextureManager.h>
 #include <noggit/Log.h> // LogDebug
+#include <noggit/application/NoggitApplication.hpp>
+#include <ClientFile.hpp>
 
 #include <QtCore/QString>
 #include <QtGui/QPixmap>
@@ -16,18 +18,18 @@ constexpr unsigned N_ARRAY_TEX = 1;
 void TextureManager::report()
 {
   std::string output = "Still in the Texture manager:\n";
-  _.apply ( [&] (std::string const& key, blp_texture const&)
+  _.apply ( [&] (BlizzardArchive::Listfile::FileKey const& key, blp_texture const&)
             {
-              output += " - " + key + "\n";
+              output += " - " + key.stringRepr() + "\n";
             }
           );
   LogDebug << output;
 }
 
-void TextureManager::unload_all(noggit::NoggitRenderContext context)
+void TextureManager::unload_all(Noggit::NoggitRenderContext context)
 {
   _.context_aware_apply(
-      [&] (std::string const&, blp_texture& blp_texture)
+      [&] (BlizzardArchive::Listfile::FileKey const&, blp_texture& blp_texture)
       {
           blp_texture.unload();
       }
@@ -39,12 +41,12 @@ void TextureManager::unload_all(noggit::NoggitRenderContext context)
 
   for (auto& pair : arrays_for_context)
   {
-    gl.deleteTextures(pair.second.arrays.size(), pair.second.arrays.data());
+    gl.deleteTextures(static_cast<GLuint>(pair.second.arrays.size()), pair.second.arrays.data());
   }
 }
 
 TexArrayParams& TextureManager::get_tex_array(int width, int height, int mip_level,
-                                              noggit::NoggitRenderContext context)
+                                              Noggit::NoggitRenderContext context)
 {
   TexArrayParams& array_params = _tex_arrays[context][std::make_tuple(-1, width, height, mip_level)];
 
@@ -87,7 +89,7 @@ TexArrayParams& TextureManager::get_tex_array(int width, int height, int mip_lev
 }
 
 TexArrayParams& TextureManager::get_tex_array(GLint compression, int width, int height, int mip_level,
-                              std::map<int, std::vector<uint8_t>>& comp_data, noggit::NoggitRenderContext context)
+                              std::map<int, std::vector<uint8_t>>& comp_data, Noggit::NoggitRenderContext context)
 {
 
   TexArrayParams& array_params = _tex_arrays[context][std::make_tuple(compression, width, height, mip_level)];
@@ -111,7 +113,7 @@ TexArrayParams& TextureManager::get_tex_array(GLint compression, int width, int 
 
     for (int i = 0; i < mip_level; ++i)
     {
-      gl.compressedTexImage3D(GL_TEXTURE_2D_ARRAY, i, compression, width_, height_, n_layers, 0, comp_data[i].size() * n_layers, nullptr);
+      gl.compressedTexImage3D(GL_TEXTURE_2D_ARRAY, i, compression, width_, height_, n_layers, 0, static_cast<GLsizei>(comp_data[i].size() * n_layers), nullptr);
 
       width_ = std::max(width_ >> 1, 1);
       height_ = std::max(height_ >> 1, 1);
@@ -146,9 +148,6 @@ struct BLPHeader
   int32_t sizes[16];
 };
 #pragma pack(pop)
-
-#include <boost/thread.hpp>
-#include <noggit/MPQ.h>
 
 void blp_texture::bind()
 {
@@ -189,7 +188,7 @@ void blp_texture::uploadToArray(unsigned layer)
   {
     for (int i = 0; i < _compressed_data.size(); ++i)
     {
-      gl.compressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, i, 0, 0, layer, width, height, 1, _compression_format.get(), _compressed_data[i].size(), _compressed_data[i].data());
+      gl.compressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, i, 0, 0, layer, width, height, 1, _compression_format.value(), static_cast<GLsizei>(_compressed_data[i].size()), _compressed_data[i].data());
 
       width = std::max(width >> 1, 1);
       height = std::max(height >> 1, 1);
@@ -218,7 +217,7 @@ void blp_texture::upload()
 
   if (!_compression_format)
   {
-    auto& params = TextureManager::get_tex_array( _width, _height, _data.size(), _context);
+    auto& params = TextureManager::get_tex_array( _width, _height, static_cast<int>(_data.size()), _context);
 
     int index_x = params.n_used / n_layers;
     int index_y = params.n_used % n_layers;
@@ -242,7 +241,7 @@ void blp_texture::upload()
   }
   else
   {
-    auto& params = TextureManager::get_tex_array(_compression_format.get(), _width, _height, _compressed_data.size(), _compressed_data, _context);
+    auto& params = TextureManager::get_tex_array(_compression_format.value(), _width, _height, static_cast<int>(_compressed_data.size()), _compressed_data, _context);
 
     int index_x = params.n_used / n_layers;
     int index_y = params.n_used % n_layers;
@@ -252,7 +251,7 @@ void blp_texture::upload()
 
     for (int i = 0; i < _compressed_data.size(); ++i)
     {
-      gl.compressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, i, 0, 0, index_y, width, height, 1, _compression_format.get(), _compressed_data[i].size(), _compressed_data[i].data());
+      gl.compressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, i, 0, 0, index_y, width, height, 1, _compression_format.value(), static_cast<GLsizei>(_compressed_data[i].size()), _compressed_data[i].data());
 
       width = std::max(width >> 1, 1);
       height = std::max(height >> 1, 1);
@@ -375,7 +374,7 @@ void blp_texture::loadFromCompressedData(BLPHeader const* lHeader, char const* l
 
     if (size < lHeader->sizes[i])
     {
-      LogDebug << "mipmap size mismatch in '" << filename << "'" << std::endl;
+      LogDebug << "mipmap size mismatch in '" << _file_key.stringRepr() << "'" << std::endl;
       return;
     }
 
@@ -389,29 +388,29 @@ void blp_texture::loadFromCompressedData(BLPHeader const* lHeader, char const* l
   }
 }
 
-blp_texture::blp_texture(const std::string& filenameArg, noggit::NoggitRenderContext context)
-  : AsyncObject(filenameArg)
+blp_texture::blp_texture(BlizzardArchive::Listfile::FileKey const& file_key, Noggit::NoggitRenderContext context)
+  : AsyncObject(file_key)
   , _context(context)
 {
 }
 
 void blp_texture::finishLoading()
 {
-  bool exists = MPQFile::exists(filename);
+  bool exists = Noggit::Application::NoggitApplication::instance()->clientData()->exists( _file_key.filepath());
   if (!exists)
   {
-    LogError << "file not found: '" << filename << "'" << std::endl;
+    LogError << "file not found: '" <<  _file_key.stringRepr() << "'" << std::endl;
   }
 
   std::string spec_filename;
   bool has_specular = false;
 
-  if (filename.starts_with("tileset/"))
+  if (_file_key.filepath().starts_with("tileset/"))
   {
     _is_tileset = true;
 
-    spec_filename = filename.substr(0, filename.find_last_of(".")) + "_s.blp";
-    has_specular = MPQFile::exists(spec_filename);
+    spec_filename = _file_key.filepath().substr(0, _file_key.filepath().find_last_of(".")) + "_s.blp";
+    has_specular = Noggit::Application::NoggitApplication::instance()->clientData()->exists(spec_filename);
 
     if (has_specular)
     {
@@ -419,11 +418,13 @@ void blp_texture::finishLoading()
     }
   }
 
-  MPQFile f(exists ? (has_specular ? spec_filename : filename) : "textures/shanecube.blp");
+  BlizzardArchive::ClientFile f(
+      exists ? (has_specular ? spec_filename : _file_key.filepath()) : "textures/shanecube.blp"
+      , Noggit::Application::NoggitApplication::instance()->clientData());
   if (f.isEof())
   {
     finished = true;
-    throw std::runtime_error ("File " + filename + " does not exist");
+    throw std::runtime_error ("File " + _file_key.stringRepr() + " does not exist");
   }
 
   char const* lData = f.getPointer();
@@ -451,27 +452,100 @@ void blp_texture::finishLoading()
   _state_changed.notify_all();
 }
 
-namespace noggit
+namespace Noggit
 {
 
-  BLPRenderer::BLPRenderer()
+  QPixmap* BLPRenderer::render_blp_to_pixmap ( std::string const& blp_filename
+                                               , int width
+                                               , int height
+                                               )
+  {
+    if (!_uploaded)
+    [[unlikely]]
+    {
+      upload();
+    }
+
+    std::tuple<std::string, int, int> const curEntry{blp_filename, width, height};
+    auto it{_cache.find(curEntry)};
+
+    if(it != _cache.end())
+      return &it->second;
+
+    OpenGL::context::save_current_context const context_save (::gl);
+
+    _context->makeCurrent(_surface.get());
+
+    OpenGL::context::scoped_setter const context_set (::gl, _context.get());
+
+    gl.activeTexture(GL_TEXTURE0);
+    blp_texture texture(blp_filename, Noggit::NoggitRenderContext::BLP_RENDERER);
+    texture.finishLoading();
+    texture.upload();
+
+    width = width == -1 ? texture.width() : width;
+    height = height == -1 ? texture.height() : height;
+
+    float h = static_cast<float>(height);
+    float w = static_cast<float>(width);
+
+    QOpenGLFramebufferObject pixel_buffer(width, height, *_fmt.get());
+    pixel_buffer.bind();
+
+    gl.viewport(0, 0, w, h);
+    gl.clearColor(.0f, .0f, .0f, 1.f);
+    gl.clear(GL_COLOR_BUFFER_BIT);
+    
+    OpenGL::Scoped::use_program shader (*_program.get());
+
+    shader.uniform("tex", 0);
+    shader.uniform("width", w);
+    shader.uniform("height", h);
+
+    gl.bindTexture(GL_TEXTURE_2D_ARRAY, texture.texture_array());
+    shader.uniform("tex_index", texture.array_index());
+
+    OpenGL::Scoped::vao_binder const _ (_vao[0]);
+    
+    OpenGL::Scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> indices_binder(_buffers[0]);
+
+    gl.drawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, nullptr);
+
+    QPixmap result{};
+    result = std::move(QPixmap::fromImage(pixel_buffer.toImage()));
+    pixel_buffer.release();
+
+    if (result.isNull())
+    {
+      throw std::runtime_error
+        ("failed rendering " + blp_filename + " to pixmap");
+    }
+
+    return &(_cache[curEntry] = std::move(result));
+  }
+
+  void BLPRenderer::upload()
   {
     _cache = {};
 
-    opengl::context::save_current_context const context_save (::gl);
-    _context.create();
+    OpenGL::context::save_current_context const context_save (::gl);
 
-    _fmt.setSamples(1);
-    _fmt.setInternalTextureFormat(GL_RGBA8);
+    _context = std::make_unique<QOpenGLContext>();
+    _fmt = std::make_unique<QOpenGLFramebufferObjectFormat>();
+    _surface = std::make_unique<QOffscreenSurface>();
 
-    _surface.create();
+    _context->create();
 
-    _context.makeCurrent(&_surface);
+    _fmt->setSamples(1);
+    _fmt->setInternalTextureFormat(GL_RGBA8);
 
-    opengl::context::scoped_setter const context_set (::gl, &_context);
+    _surface->create();
+    _context->makeCurrent(_surface.get());
 
-    opengl::scoped::bool_setter<GL_CULL_FACE, GL_FALSE> cull;
-    opengl::scoped::bool_setter<GL_DEPTH_TEST, GL_FALSE> depth;
+    OpenGL::context::scoped_setter const context_set (::gl, _context.get());
+
+    OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> cull;
+    OpenGL::Scoped::bool_setter<GL_DEPTH_TEST, GL_FALSE> depth;
 
     _vao.upload();
     _buffers.upload();
@@ -501,11 +575,11 @@ namespace noggit
     gl.bufferData<GL_ELEMENT_ARRAY_BUFFER, std::uint16_t>(indices_vbo, indices, GL_STATIC_DRAW);
 
 
-    _program.reset(new opengl::program
-                      (
-                          {
-                              {
-                                  GL_VERTEX_SHADER, R"code(
+    _program.reset(new OpenGL::program
+                       (
+                           {
+                               {
+                                   GL_VERTEX_SHADER, R"code(
                                   #version 330 core
 
                                   in vec4 position;
@@ -521,9 +595,9 @@ namespace noggit
                                     gl_Position = vec4(position.x * width / 2, position.y * height / 2, position.z, 1.0);
                                   }
                                   )code"
-                              },
-                              {
-                                  GL_FRAGMENT_SHADER, R"code(
+                               },
+                               {
+                                   GL_FRAGMENT_SHADER, R"code(
                                   #version 330 core
 
                                   uniform sampler2DArray tex;
@@ -538,114 +612,65 @@ namespace noggit
                                     out_color = vec4(texture(tex, vec3(f_tex_coord/2.f + vec2(0.5), tex_index)).rgb, 1.);
                                   }
                                   )code"
-                              }
-                          }
-                      ));
-    
-    opengl::scoped::use_program shader (*_program.get());
-    
-    opengl::scoped::vao_binder const _ (_vao[0]);
+                               }
+                           }
+                       ));
+
+    OpenGL::Scoped::use_program shader (*_program.get());
+
+    OpenGL::Scoped::vao_binder const _ (_vao[0]);
 
     {
-      opengl::scoped::buffer_binder<GL_ARRAY_BUFFER> vertices_binder (vertices_vbo);
+      OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> vertices_binder (vertices_vbo);
       shader.attrib("position", 2, GL_FLOAT, GL_FALSE, 0, 0);
     }
     {
-      opengl::scoped::buffer_binder<GL_ARRAY_BUFFER> texcoords_binder (texcoords_vbo);
+      OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> texcoords_binder (texcoords_vbo);
       shader.attrib("tex_coord", 2, GL_FLOAT, GL_FALSE, 0, 0);
     }
 
-
+    _uploaded = true;
   }
 
-  QPixmap* BLPRenderer::render_blp_to_pixmap ( std::string const& blp_filename
-                                               , int width
-                                               , int height
-                                               )
+  void BLPRenderer::unload()
   {
-    std::tuple<std::string, int, int> const curEntry{blp_filename, width, height};
-    auto it{_cache.find(curEntry)};
+    OpenGL::context::save_current_context const context_save (::gl);
+    _context->makeCurrent(_surface.get());
+    OpenGL::context::scoped_setter const context_set (::gl, _context.get());
 
-    if(it != _cache.end())
-      return &it->second;
+    _cache.clear();
+    _vao.unload();
+    _buffers.unload();
+    _program.reset();
+    _surface.reset();
+    _fmt.reset();
+    _context.reset();
 
-    opengl::context::save_current_context const context_save (::gl);
-
-    _context.makeCurrent(&_surface);
-
-    opengl::context::scoped_setter const context_set (::gl, &_context);
-
-    gl.activeTexture(GL_TEXTURE0);
-    blp_texture texture(blp_filename, noggit::NoggitRenderContext::BLP_RENDERER);
-    texture.finishLoading();
-    texture.upload();
-
-    width = width == -1 ? texture.width() : width;
-    height = height == -1 ? texture.height() : height;
-
-    float h = static_cast<float>(height);
-    float w = static_cast<float>(width);
-
-    QOpenGLFramebufferObject pixel_buffer(width, height, _fmt);
-    pixel_buffer.bind();
-
-    gl.viewport(0, 0, w, h);
-    gl.clearColor(.0f, .0f, .0f, 1.f);
-    gl.clear(GL_COLOR_BUFFER_BIT);
-    
-    opengl::scoped::use_program shader (*_program.get());
-
-    shader.uniform("tex", 0);
-    shader.uniform("width", w);
-    shader.uniform("height", h);
-
-    gl.bindTexture(GL_TEXTURE_2D_ARRAY, texture.texture_array());
-    shader.uniform("tex_index", texture.array_index());
-
-    opengl::scoped::vao_binder const _ (_vao[0]);
-    
-    opengl::scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> indices_binder(_buffers[0]);
-
-    gl.drawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, nullptr);
-
-    QPixmap result{};
-    result = std::move(QPixmap::fromImage(pixel_buffer.toImage()));
-    pixel_buffer.release();
-
-    if (result.isNull())
-    {
-      throw std::runtime_error
-        ("failed rendering " + blp_filename + " to pixmap");
-    }
-
-    return &(_cache[curEntry] = std::move(result));
+    _uploaded = false;
   }
 
-  BLPRenderer::~BLPRenderer()
-  {
-    opengl::context::scoped_setter const context_set (::gl, &_context);
-  }
 }
 
-scoped_blp_texture_reference::scoped_blp_texture_reference (std::string const& filename, noggit::NoggitRenderContext context)
+scoped_blp_texture_reference::scoped_blp_texture_reference (std::string const& filename, Noggit::NoggitRenderContext context)
   : _blp_texture(TextureManager::_.emplace(filename, context))
   , _context(context)
 {}
 
 scoped_blp_texture_reference::scoped_blp_texture_reference (scoped_blp_texture_reference const& other)
-  : _blp_texture(other._blp_texture ? TextureManager::_.emplace(other._blp_texture->filename, other._context) : nullptr)
+  : _blp_texture(other._blp_texture ? TextureManager::_.emplace(other._blp_texture->file_key().filepath(), other._context) : nullptr)
   , _context(other._context)
 {}
 
 void scoped_blp_texture_reference::Deleter::operator() (blp_texture* texture) const
 {
-  TextureManager::_.erase(texture->filename, texture->getContext());
+  TextureManager::_.erase(texture->file_key().filepath(), texture->getContext());
 }
 
 blp_texture* scoped_blp_texture_reference::operator->() const
 {
   return _blp_texture.get();
 }
+
 blp_texture* scoped_blp_texture_reference::get() const
 {
   return _blp_texture.get();

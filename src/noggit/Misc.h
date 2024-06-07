@@ -1,10 +1,7 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #pragma once
-
-#include <boost/optional.hpp>
 #include <math/trig.hpp>
-#include <noggit/Log.h>
 
 #include <algorithm>
 #include <cassert>
@@ -14,12 +11,23 @@
 #include <string>
 #include <vector>
 #include <glm/vec4.hpp>
+#include <glm/vec2.hpp>
 #include <noggit/Selection.h>
+
 
 // namespace for static helper functions.
 
+
+//This can be moved somewhere lated, replaces Boost::variant::type() which returnes typeid of active indexed variant
+//https://stackoverflow.com/questions/53696720/get-currently-held-typeid-of-stdvariant-like-boostvariant-type
+template<class V>
+std::type_info const& var_type(V const& v) {
+    return std::visit([](auto&& x)->decltype(auto) { return typeid(x); }, v);
+}
+
 namespace misc
 {
+  
   void find_and_replace(std::string& source, const std::string& find, const std::string& replace);
   float frand();
   float randfloat(float lower, float upper);
@@ -48,6 +56,7 @@ namespace misc
   bool deg_vec3d_equals(math::degrees::vec3 const& v1, math::degrees::vec3 const& v2);
 
   bool pointInside(glm::vec3 point, std::array<glm::vec3, 2> const& extents);
+  bool pointInside(glm::vec2 point, std::array<glm::vec2, 2> const& extents);
   void minmax(glm::vec3* a, glm::vec3* b);
 
   inline int rounded_int_div(int value, int div)

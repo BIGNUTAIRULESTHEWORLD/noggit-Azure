@@ -1,12 +1,11 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #pragma once
 #include <noggit/DBCFile.h>
-#include <noggit/MPQ.h>
 #include <noggit/ModelInstance.h>
 #include <noggit/ContextObject.hpp>
+#include <noggit/rendering/Primitives.hpp>
 #include <opengl/scoped.hpp>
 #include <opengl/shader.fwd.hpp>
-#include <opengl/primitives.hpp>
 
 #include <memory>
 #include <string>
@@ -27,7 +26,7 @@ private:
   std::vector<OutdoorLightStats> lightStats;
 
 public:
-  explicit OutdoorLighting(const std::string& fname);
+  OutdoorLighting();
 
   OutdoorLightStats getLightStats(int time);
 };
@@ -48,20 +47,64 @@ struct SkyFloatParam
   int time;
 };
 
+class SkyParam
+{
+public:
+    std::optional<ModelInstance> skybox;
+    int Id;
+
+    SkyParam() = default;
+    explicit SkyParam(int paramId, Noggit::NoggitRenderContext context);
+
+    std::vector<SkyColor> colorRows[36];
+    std::vector<SkyFloatParam> floatParams[6];
+    int mmin[36];
+    int mmin_float[6];
+
+    bool highlight_sky() const { return _highlight_sky; }
+    float river_shallow_alpha() const { return _river_shallow_alpha; }
+    float river_deep_alpha() const { return _river_deep_alpha; }
+    float ocean_shallow_alpha() const { return _ocean_shallow_alpha; }
+    float ocean_deep_alpha() const { return _ocean_deep_alpha; }
+    float glow() const { return _glow; }
+
+    void set_glow(float glow) { _glow = glow; }
+    void set_highlight_sky(bool state) { _highlight_sky = state; }
+    void set_river_shallow_alpha(float alpha) { _river_shallow_alpha = alpha; }
+    void set_river_deep_alpha(float alpha) { _river_deep_alpha = alpha; }
+    void set_ocean_shallow_alpha(float alpha) { _ocean_shallow_alpha = alpha; }
+    void set_ocean_deep_alpha(float alpha) { _ocean_deep_alpha = alpha; }
+
+private:
+    bool _highlight_sky;
+    float _river_shallow_alpha;
+    float _river_deep_alpha;
+    float _ocean_shallow_alpha;
+    float _ocean_deep_alpha;
+
+    float _glow;
+
+    Noggit::NoggitRenderContext _context;
+};
+
 class Sky 
 {
 public:
-  boost::optional<ModelInstance> skybox;
+  std::optional<ModelInstance> skybox;
 
+  int Id;
   glm::vec3 pos;
   float r1, r2;
 
-  explicit Sky(DBCFile::Iterator data, noggit::NoggitRenderContext context);
+  explicit Sky(DBCFile::Iterator data, Noggit::NoggitRenderContext context);
 
-  std::vector<SkyColor> colorRows[36];
-  std::vector<SkyFloatParam> floatParams[6];
-  int mmin[36];
-  int mmin_float[6];
+  SkyParam* skyParams[8];
+  int curr_sky_param = 0;
+
+  // std::vector<SkyColor> colorRows[36];
+  // std::vector<SkyFloatParam> floatParams[6];
+  // int mmin[36];
+  // int mmin_float[6];
 
   char name[32];
 
@@ -71,6 +114,8 @@ public:
   float weight;
   bool global;
 
+  bool is_new_record = false;
+
   bool operator<(const Sky& s) const
   {
     if (global) return false;
@@ -78,23 +123,34 @@ public:
     else return r2 < s.r2;
   }
 
-  float river_shallow_alpha() const { return _river_shallow_alpha; }
-  float river_deep_alpha() const { return _river_deep_alpha; }
-  float ocean_shallow_alpha() const { return _ocean_shallow_alpha; }
-  float ocean_deep_alpha() const { return _ocean_deep_alpha; }
-  float glow() const { return _glow; }
+  // bool highlight_sky() const { return _highlight_sky; }
+  // float river_shallow_alpha() const { return _river_shallow_alpha; }
+  // float river_deep_alpha() const { return _river_deep_alpha; }
+  // float ocean_shallow_alpha() const { return _ocean_shallow_alpha; }
+  // float ocean_deep_alpha() const { return _ocean_deep_alpha; }
+  // float glow() const { return _glow; }
   bool selected() const { return _selected; }
+  // 
+  // void set_glow(float glow) { _glow = glow; }
+  // void set_highlight_sky(bool state) { _highlight_sky = state; }
+  // void set_river_shallow_alpha(float alpha) { _river_shallow_alpha = alpha; }
+  // void set_river_deep_alpha(float alpha) { _river_deep_alpha = alpha; }
+  // void set_ocean_shallow_alpha(float alpha) { _ocean_shallow_alpha = alpha; }
+  // void set_ocean_deep_alpha(float alpha) { _ocean_deep_alpha = alpha; }
+
+  void save_to_dbc();
 
 private:
-  float _river_shallow_alpha;
-  float _river_deep_alpha;
-  float _ocean_shallow_alpha;
-  float _ocean_deep_alpha;
+  // bool _highlight_sky;
+  // float _river_shallow_alpha;
+  // float _river_deep_alpha;
+  // float _ocean_shallow_alpha;
+  // float _ocean_deep_alpha;
 
-  float _glow;
+  // float _glow;
   bool _selected;
 
-  noggit::NoggitRenderContext _context;
+  Noggit::NoggitRenderContext _context;
 };
 
 enum SkyColorNames 
@@ -126,9 +182,22 @@ enum SkyFloatParamsNames
   FOG_MULTIPLIER,
   CELESTIAL_FLOW,
   CLOUD_DENSITY,
-  UNK_1,
-  UNK_2,
+  UNK_FLOAT_PARAM_1,
+  UNK_FLOAT_PARAM_2,
   NUM_SkyFloatParamsNames
+};
+
+enum SkyParamsNames
+{
+    CLEAR,
+    CLEAR_WATER,
+    STORM,
+    STORM_WATER,
+    DEATH,
+    UNK_PARAM_1,
+    UNK_PARAM_2,
+    UNK_PARAM_3,
+    NUM_SkyParamsNames
 };
 
 class Skies 
@@ -155,15 +224,20 @@ public:
   std::vector<Sky> skies;
   std::vector<glm::vec3> color_set = std::vector<glm::vec3>(NUM_SkyColorNames);
 
-  explicit Skies(unsigned int mapid, noggit::NoggitRenderContext context);
+  explicit Skies(unsigned int mapid, Noggit::NoggitRenderContext context);
 
   Sky* findSkyWeights(glm::vec3 pos);
+
+  Sky* findClosestSkyByWeight();
+  Sky* findClosestSkyByDistance(glm::vec3 pos);
+
+  void setCurrentParam(int param_id);
   void update_sky_colors(glm::vec3 pos, int time);
 
   bool draw ( glm::mat4x4 const& model_view
             , glm::mat4x4 const& projection
             , glm::vec3 const& camera_pos
-            , opengl::scoped::use_program& m2_shader
+            , OpenGL::Scoped::use_program& m2_shader
             , math::frustum const& frustum
             , const float& cull_distance
             , int animtime
@@ -211,18 +285,18 @@ private:
 
   void upload();
   void update_color_buffer();
-  void update_vao(opengl::scoped::use_program& shader);
+  void update_vao(OpenGL::Scoped::use_program& shader);
 
-  opengl::scoped::deferred_upload_vertex_arrays<1> _vertex_array;
+  OpenGL::Scoped::deferred_upload_vertex_arrays<1> _vertex_array;
   GLuint const& _vao = _vertex_array[0];
-  opengl::scoped::deferred_upload_buffers<3> _buffers;
+  OpenGL::Scoped::deferred_upload_buffers<3> _buffers;
   GLuint const& _vertices_vbo = _buffers[0];
   GLuint const& _colors_vbo = _buffers[1];
   GLuint const& _indices_vbo = _buffers[2];
 
-  std::unique_ptr<opengl::program> _program;
+  std::unique_ptr<OpenGL::program> _program;
 
-  noggit::NoggitRenderContext _context;
+  Noggit::NoggitRenderContext _context;
 
-  opengl::primitives::sphere _sphere_render;
+  Noggit::Rendering::Primitives::Sphere _sphere_render;
 };

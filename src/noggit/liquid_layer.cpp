@@ -5,9 +5,7 @@
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/Misc.h>
-
-#include <boost/filesystem.hpp>
-#include <boost/format.hpp>
+#include <ClientFile.hpp>
 
 #include <algorithm>
 #include <string>
@@ -29,6 +27,9 @@ liquid_layer::liquid_layer(ChunkWater* chunk, glm::vec3 const& base, float heigh
   , pos(base)
   , _chunk(chunk)
 {
+  if (!gLiquidTypeDB.CheckIfIdExists(_liquid_id))
+    _liquid_id = 1;
+
   for (int z = 0; z < 9; ++z)
   {
     for (int x = 0; x < 9; ++x)
@@ -56,6 +57,9 @@ liquid_layer::liquid_layer(ChunkWater* chunk, glm::vec3 const& base, mclq& liqui
   , pos(base)
   , _chunk(chunk)
 {
+  if (!gLiquidTypeDB.CheckIfIdExists(_liquid_id))
+    _liquid_id = 1;
+
   changeLiquidID(_liquid_id);
 
   for (int z = 0; z < 8; ++z)
@@ -95,7 +99,12 @@ liquid_layer::liquid_layer(ChunkWater* chunk, glm::vec3 const& base, mclq& liqui
 
 }
 
-liquid_layer::liquid_layer(ChunkWater* chunk, MPQFile &f, std::size_t base_pos, glm::vec3 const& base, MH2O_Information const& info, std::uint64_t infomask)
+liquid_layer::liquid_layer(ChunkWater* chunk
+                           , BlizzardArchive::ClientFile& f
+                           , std::size_t base_pos
+                           , glm::vec3 const& base
+                           , MH2O_Information const& info
+                           , std::uint64_t infomask)
   : _liquid_id(info.liquid_id)
   , _liquid_vertex_format(info.liquid_vertex_format)
   , _minimum(info.minHeight)
@@ -104,6 +113,10 @@ liquid_layer::liquid_layer(ChunkWater* chunk, MPQFile &f, std::size_t base_pos, 
   , pos(base)
   , _chunk(chunk)
 {
+  // check if liquid id is valid or some downported maps will crash
+  if (!gLiquidTypeDB.CheckIfIdExists(_liquid_id))
+    _liquid_id = 1;
+
   int offset = 0;
   for (int z = 0; z < info.height; ++z)
   {

@@ -5,26 +5,22 @@
 #include <math/ray.hpp>
 #include <noggit/Misc.h>
 #include <noggit/Selection.h>
-#include <noggit/bool_toggle_property.hpp>
-#include <noggit/camera.hpp>
+#include <noggit/BoolToggleProperty.hpp>
+#include <noggit/Camera.hpp>
 #include <noggit/tool_enums.hpp>
 #include <noggit/ui/ObjectEditor.h>
 #include <noggit/ui/MinimapCreator.hpp>
-#include <noggit/ui/uid_fix_window.hpp>
+#include <noggit/ui/UidFixWindow.hpp>
 #include <noggit/unsigned_int_property.hpp>
-#include <noggit/Red/StampMode/Ui/Tool.hpp>
-#include <noggit/Red/StampMode/Ui/PaletteMain.hpp>
-#include <noggit/Red/AssetBrowser/Ui/AssetBrowser.hpp>
-#include <noggit/Red/ViewportGizmo/ViewportGizmo.hpp>
-#include <noggit/Red/ViewportManager/ViewportManager.hpp>
-#include <noggit/Red/ToolPanel/ToolPanel.hpp>
+#include <noggit/ui/tools/AssetBrowser/Ui/AssetBrowser.hpp>
+#include <noggit/ui/tools/ViewportGizmo/ViewportGizmo.hpp>
+#include <noggit/ui/tools/ViewportManager/ViewportManager.hpp>
+#include <noggit/ui/tools/ToolPanel/ToolPanel.hpp>
 #include <noggit/TabletManager.hpp>
 #include <external/qtimgui/QtImGui.h>
-#include <external/QtAdvancedDockingSystem/src/DockManager.h>
 #include <opengl/texture.hpp>
 #include <opengl/scoped.hpp>
-
-#include <boost/optional.hpp>
+#include <optional>
 
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QSettings>
@@ -48,34 +44,46 @@
 
 class World;
 
-namespace noggit
+namespace Noggit::Ui::Windows
+{
+    class NoggitWindow;
+}
+
+namespace Noggit
 {
 
-  namespace Red::ViewToolbar::Ui
+  namespace Ui::Tools::ViewToolbar::Ui
   {
     class ViewToolbar;
   }
 
-  namespace Red
+  namespace Ui::Tools
   {
     class BrushStack;
     class LightEditor;
+
+    namespace ChunkManipulator
+    {
+      class ChunkManipulatorPanel;
+    }
   }
 
-  namespace scripting
+  namespace Scripting
   {
     class scripting_tool;
   }
 
-  class camera;
-  namespace ui
+  class Camera;
+
+	
+  namespace Ui
   {
     class detail_infos;
     class flatten_blur_tool;
     class help;
     class minimap_widget;
-    class shader_tool;
-    class terrain_tool;
+    class ShaderTool;
+    class TerrainTool;
     class texture_picker;
     class texturing_tool;
     class toolbar;
@@ -83,7 +91,6 @@ namespace noggit
     class zone_id_browser;
     class texture_palette_small;
     class hole_tool;
-    struct main_window;
     struct tileset_chooser;
     class ObjectPalette;
   }
@@ -96,7 +103,7 @@ enum class save_mode
   all
 };
 
-class MapView : public noggit::Red::ViewportManager::Viewport
+class MapView : public Noggit::Ui::Tools::ViewportManager::Viewport
 {
   Q_OBJECT
 public:
@@ -111,7 +118,7 @@ public:
   bool  rightMouse = false;
 
   std::unique_ptr<World> _world;
-  noggit::camera _camera;
+  Noggit::Camera _camera;
 
 private:
 
@@ -119,32 +126,46 @@ private:
   float moving, strafing, updown, mousedir, turn, lookat;
   CursorType _cursorType;
   glm::vec3 _cursor_pos;
+  QPoint _drag_start_pos;
+  QPoint _right_click_pos;
   float _cursorRotation;
   bool look, freelook;
   bool ui_hidden = false;
 
   bool _camera_moved_since_last_draw = true;
 
+  std::array<Qt::Key, 6> _inputs = {Qt::Key_W, Qt::Key_S, Qt::Key_D, Qt::Key_A, Qt::Key_Q, Qt::Key_E};
+  void checkInputsSettings();
+
 public:
-  noggit::bool_toggle_property _draw_contour = {false};
-  noggit::bool_toggle_property _draw_mfbo = {false};
-  noggit::bool_toggle_property _draw_wireframe = {false};
-  noggit::bool_toggle_property _draw_lines = {false};
-  noggit::bool_toggle_property _draw_terrain = {true};
-  noggit::bool_toggle_property _draw_wmo = {true};
-  noggit::bool_toggle_property _draw_water = {true};
-  noggit::bool_toggle_property _draw_wmo_doodads = {true};
-  noggit::bool_toggle_property _draw_models = {true};
-  noggit::bool_toggle_property _draw_model_animations = {false};
-  noggit::bool_toggle_property _draw_hole_lines = {false};
-  noggit::bool_toggle_property _draw_models_with_box = {false};
-  noggit::bool_toggle_property _draw_fog = {false};
-  noggit::bool_toggle_property _draw_hidden_models = {false};
-  noggit::bool_toggle_property _draw_occlusion_boxes = {false};
+  Noggit::BoolToggleProperty _draw_vertex_color = {true};
+  Noggit::BoolToggleProperty _draw_baked_shadows = { true };
+  Noggit::BoolToggleProperty _draw_climb = {false};
+  Noggit::BoolToggleProperty _draw_contour = {false};
+  Noggit::BoolToggleProperty _draw_mfbo = {false};
+  Noggit::BoolToggleProperty _draw_wireframe = {false};
+  Noggit::BoolToggleProperty _draw_lines = {false};
+  Noggit::BoolToggleProperty _draw_terrain = {true};
+  Noggit::BoolToggleProperty _draw_wmo = {true};
+  Noggit::BoolToggleProperty _draw_water = {true};
+  Noggit::BoolToggleProperty _draw_wmo_doodads = {true};
+  Noggit::BoolToggleProperty _draw_wmo_exterior = { true };
+  Noggit::BoolToggleProperty _draw_models = {true};
+  Noggit::BoolToggleProperty _draw_model_animations = {true};
+  Noggit::BoolToggleProperty _draw_hole_lines = {false};
+  Noggit::BoolToggleProperty _draw_models_with_box = {false};
+  Noggit::BoolToggleProperty _draw_fog = {false};
+  Noggit::BoolToggleProperty _draw_hidden_models = {false};
+  Noggit::BoolToggleProperty _draw_occlusion_boxes = {false};
+  Noggit::BoolToggleProperty _game_mode_camera = { false };
+  Noggit::BoolToggleProperty _draw_lights_zones = { false };
+  Noggit::BoolToggleProperty _show_detail_info_window = { false };
+  Noggit::BoolToggleProperty _show_minimap_window = { false };
 private:
 
   int _selected_area_id = -1;
 
+  [[nodiscard]]
   math::ray intersect_ray() const;
   selection_result intersect_result(bool terrain_only);
   void doSelection(bool selectTerrainOnly, bool mouseMove = false);
@@ -152,7 +173,10 @@ private:
 
   display_mode _display_mode;
 
+  [[nodiscard]]
   glm::mat4x4 model_view() const;
+
+  [[nodiscard]]
   glm::mat4x4 projection() const;
 
   void draw_map();
@@ -165,7 +189,7 @@ private:
 
   void ResetSelectedObjectRotation();
   void snap_selected_models_to_the_ground();
-  void DeleteSelectedObject();
+  void DeleteSelectedObjects();
   void changeZoneIDValue (int set);
 
   QPointF _last_mouse_pos;
@@ -185,7 +209,7 @@ private:
   // Vars for the ground editing toggle mode store the status of some
   // view settings when the ground editing mode is switched on to
   // restore them if switch back again
-
+  std::shared_ptr<Noggit::Project::NoggitProject> _project;
   bool  alloff = true;
   bool  alloff_models = false;
   bool  alloff_doodads = false;
@@ -194,6 +218,9 @@ private:
   bool  alloff_detailselect = false;
   bool  alloff_fog = false;
   bool  alloff_terrain = false;
+  bool  alloff_climb = false;
+  bool  alloff_vertex_color = false;
+  bool  alloff_baked_shadows = false;
 
   editing_mode terrainMode = editing_mode::ground;
   editing_mode saveterrainMode = terrainMode;
@@ -208,13 +235,15 @@ private:
 
   bool saving_minimap = false;
 
-  noggit::ui::toolbar* _toolbar;
-  noggit::Red::ViewToolbar::Ui::ViewToolbar* _view_toolbar;
+  Noggit::Ui::toolbar* _toolbar;
+  Noggit::Ui::Tools::ViewToolbar::Ui::ViewToolbar* _view_toolbar;
+  Noggit::Ui::Tools::ViewToolbar::Ui::ViewToolbar* _secondary_toolbar;
+  Noggit::Ui::Tools::ViewToolbar::Ui::ViewToolbar* _left_sec_toolbar;
 
   void save(save_mode mode);
 
   QSettings* _settings;
-  noggit::Red::ViewportGizmo::ViewportGizmo _transform_gizmo;
+  Noggit::Ui::Tools::ViewportGizmo::ViewportGizmo _transform_gizmo;
   ImGuiContext* _imgui_context;
 
 signals:
@@ -224,6 +253,7 @@ signals:
   void updateProgress(int value);
 public slots:
   void on_exit_prompt();
+  void ShowContextMenu(QPoint pos);
 
 public:
   glm::vec4 cursor_color;
@@ -231,7 +261,8 @@ public:
   MapView ( math::degrees ah0
           , math::degrees av0
           , glm::vec3 camera_pos
-          , noggit::ui::main_window*
+          , Noggit::Ui::Windows::NoggitWindow*
+          , std::shared_ptr<Noggit::Project::NoggitProject> Project
           , std::unique_ptr<World>
           , uid_fix_mode uid_fix = uid_fix_mode::none
           , bool from_bookmark = false
@@ -239,31 +270,55 @@ public:
   ~MapView();
 
   void tick (float dt);
-  void selectModel(std::string const& model);
+  void change_selected_wmo_nameset(int set);
   void change_selected_wmo_doodadset(int set);
   void saveMinimap(MinimapRenderSettings* settings);
   void initMinimapSave() { saving_minimap = true; };
-  auto populateImageModel(QStandardItemModel* model) const -> void;
   auto setBrushTexture(QImage const* img) -> void;
-  noggit::camera* getCamera() { return &_camera; };
+  Noggit::Camera* getCamera() { return &_camera; };
   void randomizeTerrainRotation();
   void randomizeTexturingRotation();
   void randomizeShaderRotation();
   void randomizeStampRotation();
   void onSettingsSave();
-  noggit::ui::minimap_widget* getMinimapWidget() const { return _minimap;  }
+  void updateRotationEditor() { _rotation_editor_need_update = true; };
+  void setCameraDirty() { _camera_moved_since_last_draw = true; };
+
+  [[nodiscard]]
+  Noggit::Ui::minimap_widget* getMinimapWidget() const { return _minimap;  }
 
   void set_editing_mode (editing_mode);
   editing_mode get_editing_mode() { return terrainMode; };
 
+  [[nodiscard]]
+  QWidget *getSecondaryToolBar();
+
+  [[nodiscard]]
+  QWidget *getLeftSecondaryToolbar();
+
+  [[nodiscard]]
   QWidget* getActiveStampModeItem();
 
-  noggit::NoggitRenderContext getRenderContext() { return _context; };
+  [[nodiscard]]
+  Noggit::Ui::flatten_blur_tool* getFlattenTool() { return flattenTool; };
+
+  [[nodiscard]]
+  Noggit::NoggitRenderContext getRenderContext() { return _context; };
+
+  [[nodiscard]]
   World* getWorld() { return _world.get(); };
+
+  [[nodiscard]]
   QDockWidget* getAssetBrowser() {return _asset_browser_dock; };
-  noggit::ui::object_editor* getObjectEditor() { return objectEditor; };
+
+  [[nodiscard]]
+  Noggit::Ui::object_editor* getObjectEditor() { return objectEditor; };
+
+  [[nodiscard]]
   QDockWidget* getObjectPalette() { return _object_palette_dock; };
 
+  [[nodiscard]]
+  QDockWidget* getTexturePalette() { return   _texture_palette_dock; };
 
 private:
   enum Modifier
@@ -313,12 +368,12 @@ private:
   virtual void focusOutEvent (QFocusEvent*) override;
   virtual void enterEvent(QEvent*) override;
 
-  noggit::ui::main_window* _main_window;
+  Noggit::Ui::Windows::NoggitWindow* _main_window;
 
   glm::vec4 normalized_device_coords (int x, int y) const;
   float aspect_ratio() const;
 
-  noggit::TabletManager* _tablet_manager;
+  Noggit::TabletManager* _tablet_manager;
 
   QLabel* _status_position;
   QLabel* _status_selection;
@@ -326,29 +381,31 @@ private:
   QLabel* _status_time;
   QLabel* _status_fps;
   QLabel* _status_culling;
+  QLabel* _status_database;
 
-  noggit::bool_toggle_property _locked_cursor_mode = {false};
-  noggit::bool_toggle_property _move_model_to_cursor_position = {true};
-  noggit::bool_toggle_property _snap_multi_selection_to_ground = {false};
-  noggit::bool_toggle_property _rotate_along_ground = { true };
-  noggit::bool_toggle_property _rotate_along_ground_smooth = { true };
-  noggit::bool_toggle_property _rotate_along_ground_random = { false };
-  noggit::bool_toggle_property _use_median_pivot_point = {true};
-  noggit::bool_toggle_property _display_all_water_layers = {true};
-  noggit::unsigned_int_property _displayed_water_layer = {0};
-  noggit::object_paste_params _object_paste_params;
+  Noggit::BoolToggleProperty _locked_cursor_mode = {false};
+  Noggit::BoolToggleProperty _move_model_to_cursor_position = {true};
+  Noggit::BoolToggleProperty _move_model_snap_to_objects = { true };
+  Noggit::BoolToggleProperty _snap_multi_selection_to_ground = {false};
+  Noggit::BoolToggleProperty _rotate_along_ground = {true };
+  Noggit::BoolToggleProperty _rotate_doodads_along_doodads = { false };
+  Noggit::BoolToggleProperty _rotate_doodads_along_wmos = { false };
+  Noggit::BoolToggleProperty _rotate_along_ground_smooth = {true };
+  Noggit::BoolToggleProperty _rotate_along_ground_random = {false };
+  Noggit::BoolToggleProperty _use_median_pivot_point = {true};
+  Noggit::BoolToggleProperty _display_all_water_layers = {true};
+  Noggit::unsigned_int_property _displayed_water_layer = {0};
+  Noggit::object_paste_params _object_paste_params;
 
-  noggit::bool_toggle_property _show_detail_info_window = {false};
-  noggit::bool_toggle_property _show_minimap_window = {false};
-  noggit::bool_toggle_property _show_node_editor = {false};
-  noggit::bool_toggle_property _show_minimap_borders = {true};
-  noggit::bool_toggle_property _show_minimap_skies = {false};
-  noggit::bool_toggle_property _show_keybindings_window = {false};
-  noggit::bool_toggle_property _show_texture_palette_window = {false};
-  noggit::bool_toggle_property _show_texture_palette_small_window = {false};
-  noggit::bool_toggle_property _showStampPalette{false};
+  Noggit::BoolToggleProperty _show_node_editor = {false};
+  Noggit::BoolToggleProperty _show_minimap_borders = {true};
+  Noggit::BoolToggleProperty _show_minimap_skies = {false};
+  Noggit::BoolToggleProperty _show_keybindings_window = {false};
+  Noggit::BoolToggleProperty _show_texture_palette_window = {false};
+  Noggit::BoolToggleProperty _show_texture_palette_small_window = {false};
+  Noggit::BoolToggleProperty _showStampPalette{false};
 
-  noggit::ui::minimap_widget* _minimap;
+  Noggit::Ui::minimap_widget* _minimap;
   QDockWidget* _minimap_dock;
   QDockWidget* _texture_palette_dock;
   QDockWidget* _object_palette_dock;
@@ -357,30 +414,31 @@ private:
 
   void setToolPropertyWidgetVisibility(editing_mode mode);
 
-  void unloadOpenglData(bool from_manager = false) override;
+  void unloadOpenglData() override;
 
-  noggit::ui::help* _keybindings;
-  noggit::ui::tileset_chooser* TexturePalette;
-  noggit::ui::detail_infos* guidetailInfos;
-  noggit::ui::zone_id_browser* ZoneIDBrowser;
-  noggit::ui::texture_palette_small* _texture_palette_small;
-  noggit::ui::ObjectPalette* _object_palette;
-  noggit::ui::texture_picker* TexturePicker;
-  noggit::ui::water* guiWater;
-  noggit::ui::object_editor* objectEditor;
-  noggit::ui::flatten_blur_tool* flattenTool;
-  noggit::ui::terrain_tool* terrainTool;
-  noggit::ui::shader_tool* shaderTool;
-  noggit::ui::texturing_tool* texturingTool;
-  noggit::ui::hole_tool* holeTool;
-  noggit::ui::MinimapCreator* minimapTool;
-  noggit::Red::BrushStack* stampTool;
-  noggit::Red::LightEditor* lightEditor;
-  noggit::scripting::scripting_tool* scriptingTool;
+  Noggit::Ui::help* _keybindings;
+  Noggit::Ui::tileset_chooser* TexturePalette;
+  Noggit::Ui::detail_infos* guidetailInfos;
+  Noggit::Ui::zone_id_browser* ZoneIDBrowser;
+  Noggit::Ui::texture_palette_small* _texture_palette_small;
+  Noggit::Ui::ObjectPalette* _object_palette;
+  Noggit::Ui::texture_picker* TexturePicker;
+  Noggit::Ui::water* guiWater;
+  Noggit::Ui::object_editor* objectEditor;
+  Noggit::Ui::flatten_blur_tool* flattenTool;
+  Noggit::Ui::TerrainTool* terrainTool;
+  Noggit::Ui::ShaderTool* shaderTool;
+  Noggit::Ui::texturing_tool* texturingTool;
+  Noggit::Ui::hole_tool* holeTool;
+  Noggit::Ui::MinimapCreator* minimapTool;
+  Noggit::Ui::Tools::BrushStack* stampTool;
+  Noggit::Ui::Tools::LightEditor* lightEditor;
+  Noggit::Ui::Tools::ChunkManipulator::ChunkManipulatorPanel* _chunk_manipulator;
+  Noggit::Scripting::scripting_tool* scriptingTool;
 
-  opengl::texture* const _texBrush;
+  OpenGL::texture* const _texBrush;
 
-  noggit::Red::AssetBrowser::Ui::AssetBrowserWidget* _asset_browser;
+  Noggit::Ui::Tools::AssetBrowser::Ui::AssetBrowserWidget* _asset_browser;
 
   QDockWidget* _asset_browser_dock;
   QDockWidget* _node_editor_dock;
@@ -388,13 +446,16 @@ private:
   QDockWidget* _texture_picker_dock;
   QDockWidget* _detail_infos_dock;
 
-  noggit::Red::ToolPanel* _tool_panel_dock;
+  Noggit::Ui::Tools::ToolPanel* _tool_panel_dock;
 
   ::Ui::MapViewOverlay* _viewport_overlay_ui;
   ImGuizmo::MODE _gizmo_mode = ImGuizmo::MODE::WORLD;
   ImGuizmo::OPERATION _gizmo_operation = ImGuizmo::OPERATION::TRANSLATE;
-  noggit::bool_toggle_property _gizmo_on = {true};
-  QMetaObject::Connection _gl_guard_connection;
+  Noggit::BoolToggleProperty _gizmo_on = {true};
+
+  bool _change_operation_mode = false;
+  void updateGizmoOverlay(ImGuizmo::OPERATION operation);
+
   bool _gl_initialized = false;
   bool _destroying = false;
   bool _needs_redraw = false;
@@ -403,7 +464,9 @@ private:
   unsigned _mmap_render_index = 0;
   std::optional<QImage> _mmap_combined_image;
 
-  opengl::scoped::deferred_upload_buffers<2> _buffers;
+  OpenGL::Scoped::deferred_upload_buffers<2> _buffers;
+
+  QRubberBand* _area_selection;
 
 public:
 
@@ -423,6 +486,7 @@ private:
   void setupStampUi();
   void setupLightEditorUi();
   void setupScriptingUi();
+  void setupChunkManipulatorUi();
   void setupNodeEditor();
   void setupAssetBrowser();
   void setupDetailInfos();

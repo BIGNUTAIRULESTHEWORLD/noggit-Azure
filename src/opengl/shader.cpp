@@ -1,5 +1,4 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
-#include <math/matrix_4x4.hpp>
 #include <opengl/scoped.hpp>
 #include <opengl/context.hpp>
 #include <opengl/context.inl>
@@ -7,7 +6,6 @@
 #include <opengl/texture.hpp>
 #include <noggit/Misc.h>
 #include <glm/vec3.hpp>
-#include <boost/filesystem/string_file.hpp>
 
 #include <QFile>
 #include <QTextStream>
@@ -17,7 +15,7 @@
 #include <regex>
 #include <sstream>
 
-namespace opengl
+namespace OpenGL
 {
   shader::shader (GLenum type, std::string const& source)
   try
@@ -114,7 +112,7 @@ namespace opengl
 #endif
   }
   program::program (program&& other)
-    : _handle (boost::none)
+    : _handle (std::nullopt)
   {
     std::swap (_handle, other._handle);
   }
@@ -139,7 +137,7 @@ namespace opengl
     return gl.getAttribLocation (*_handle, name.c_str());
   }
 
-  namespace scoped
+  namespace Scoped
   {
     use_program::use_program (program const& p)
       : _program (p)
@@ -242,7 +240,7 @@ namespace opengl
 
     void use_program::bind_uniform_block(std::string const& name, unsigned target)
     {
-      gl.uniformBlockBinding(_program._handle.get(), uniform_block_location(name), target);
+        gl.uniformBlockBinding(_program._handle.value() , uniform_block_location(name), target);
     }
     void use_program::uniform (std::string const& name, std::vector<int> const& value)
     {
@@ -250,7 +248,7 @@ namespace opengl
       if (loc < 0)
         return;
 
-      gl.uniform1iv (loc, value.size(), value.data());
+      gl.uniform1iv (loc, static_cast<GLsizei>(value.size()), value.data());
     }
     void use_program::uniform (std::string const& name, int const* data, std::size_t size)
     {
@@ -258,7 +256,7 @@ namespace opengl
       if (loc < 0)
         return;
 
-      gl.uniform1iv (loc, size, data);
+      gl.uniform1iv (loc, static_cast<GLsizei>(size), data);
     }
     void use_program::uniform (std::string const& name, glm::vec3 const* data, std::size_t size)
     {
@@ -266,11 +264,11 @@ namespace opengl
       if (loc < 0)
         return;
 
-      gl.uniform3fv (loc, size, reinterpret_cast<const GLfloat*>(data));
+      gl.uniform3fv (loc, static_cast<GLsizei>(size), reinterpret_cast<const GLfloat*>(data));
     }
     void use_program::uniform (GLint pos, std::vector<int> const& value)
     {
-      gl.uniform1iv (pos, value.size(), value.data());
+      gl.uniform1iv (pos, static_cast<GLsizei>(value.size()), value.data());
     }
     void use_program::uniform (std::string const& name, std::vector<glm::vec3> const& value)
     {
@@ -278,7 +276,15 @@ namespace opengl
       if (loc < 0)
         return;
 
-      gl.uniform3fv (loc, value.size(), glm::value_ptr(value[0]));
+      gl.uniform3fv (loc, static_cast<GLsizei>(value.size()), glm::value_ptr(value[0]));
+    }
+    void use_program::uniform(std::string const& name, std::vector<glm::vec4> const& value)
+    {
+        GLuint loc = uniform_location(name);
+        if (loc < 0)
+            return;
+
+        gl.uniform4fv(loc, static_cast<GLsizei>(value.size()), glm::value_ptr(value[0]));
     }
     void use_program::uniform_chunk_textures (std::string const& name, std::array<std::array<std::array<int, 2>, 4>, 256> const& value)
     {
@@ -290,7 +296,11 @@ namespace opengl
     }
     void use_program::uniform (GLint pos, std::vector<glm::vec3> const& value)
     {
-      gl.uniform3fv (pos, value.size(),glm::value_ptr(value[0]));
+      gl.uniform3fv (pos, static_cast<GLsizei>(value.size()),glm::value_ptr(value[0]));
+    }
+    void use_program::uniform(GLint pos, std::vector<glm::vec4> const& value)
+    {
+        gl.uniform4fv(pos, static_cast<GLsizei>(value.size()), glm::value_ptr(value[0]));
     }
     void use_program::uniform (std::string const& name, glm::vec2 const& value)
     {
@@ -402,7 +412,7 @@ namespace opengl
       GLuint const location (attrib_location (name));
       gl.enableVertexAttribArray (location);
       _enabled_vertex_attrib_arrays.emplace (location);
-      scoped::buffer_binder<GL_ARRAY_BUFFER> const bind (buffer);
+      Scoped::buffer_binder<GL_ARRAY_BUFFER> const bind (buffer);
       gl.vertexAttribPointer (location, size, type, normalized, stride, data);
     }
 
@@ -419,7 +429,7 @@ namespace opengl
       GLuint const location (attrib_location (name));
       gl.enableVertexAttribArray (location);
       _enabled_vertex_attrib_arrays.emplace (location);
-      scoped::buffer_binder<GL_ARRAY_BUFFER> const bind (buffer);
+      Scoped::buffer_binder<GL_ARRAY_BUFFER> const bind (buffer);
       gl.vertexAttribIPointer (location, size, type, stride, data);
     }
 
@@ -427,7 +437,7 @@ namespace opengl
     void use_program::attrib_divisor(std::string const& name, GLuint divisor, GLsizei range)
     {
       GLuint const location (attrib_location (name));
-      for (GLuint i = 0; i < range; ++i)
+      for (GLuint i = 0; i < static_cast<GLuint>(range); ++i)
       {
         gl.vertexAttribDivisor(location + i, divisor);
       }

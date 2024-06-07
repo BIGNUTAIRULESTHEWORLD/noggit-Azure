@@ -2,7 +2,7 @@
 
 #pragma once
 #include <noggit/tool_enums.hpp>
-#include <noggit/Red/UiCommon/ExtendedSlider.hpp>
+#include <noggit/ui/tools/UiCommon/ExtendedSlider.hpp>
 #include <QtWidgets/QButtonGroup>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDial>
@@ -14,9 +14,9 @@
 #include <glm/vec3.hpp>
 
 class World;
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     class flatten_blur_tool : public QWidget
     {
@@ -49,10 +49,11 @@ namespace noggit
       bool use_ref_pos() const  { return _lock_group->isChecked(); }
       glm::vec3 ref_pos() const { return _lock_pos; }
 
-      noggit::Red::UiCommon::ExtendedSlider* getRadiusSlider() { return _radius_slider; };
-      noggit::Red::UiCommon::ExtendedSlider* getSpeedSlider() { return _speed_slider; };
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* getRadiusSlider() { return _radius_slider; };
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* getSpeedSlider() { return _speed_slider; };
 
       QSize sizeHint() const override;
+      flatten_mode _flatten_mode;
 
       QJsonObject toJSON();
       void fromJSON(QJsonObject const& json);
@@ -64,16 +65,17 @@ namespace noggit
       glm::vec3 _lock_pos;
 
       int _flatten_type;
-      flatten_mode _flatten_mode;
 
     private:
       QButtonGroup* _type_button_box;
-      noggit::Red::UiCommon::ExtendedSlider* _radius_slider;
-      noggit::Red::UiCommon::ExtendedSlider* _speed_slider;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _radius_slider;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _speed_slider;
 
       QGroupBox* _angle_group;
       QSlider* _angle_slider;
       QDial* _orientation_dial;
+      QLabel* _orientation_info;
+      QLabel* _angle_info;
 
       QGroupBox* _lock_group;
       QDoubleSpinBox* _lock_x;
@@ -82,6 +84,8 @@ namespace noggit
 
       QCheckBox* _lock_up_checkbox;
       QCheckBox* _lock_down_checkbox;
+      QCheckBox* _snap_m2_objects_chkbox;
+      QCheckBox* _snap_wmo_objects_chkbox;
     };
   }
 }

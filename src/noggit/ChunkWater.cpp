@@ -3,9 +3,9 @@
 #include <noggit/ChunkWater.hpp>
 #include <noggit/TileWater.hpp>
 #include <noggit/liquid_layer.hpp>
-#include <noggit/MPQ.h>
 #include <noggit/MapChunk.h>
 #include <noggit/Misc.h>
+#include <ClientFile.hpp>
 
 ChunkWater::ChunkWater(MapChunk* chunk, TileWater* water_tile, float x, float z, bool use_mclq_green_lava)
   : xbase(x)
@@ -22,6 +22,7 @@ void ChunkWater::from_mclq(std::vector<mclq>& layers)
 {
   glm::vec3 pos(xbase, 0.0f, zbase);
 
+  if (!Render.has_value()) Render.emplace();
   for (mclq& liquid : layers)
   {
     std::uint8_t mclq_liquid_type = 0;
@@ -32,8 +33,8 @@ void ChunkWater::from_mclq(std::vector<mclq>& layers)
       {
         mclq_tile const& tile = liquid.tiles[z * 8 + x];
 
-        misc::bit_or(Render.fishable, x, z, tile.fishable);
-        misc::bit_or(Render.fatigue, x, z, tile.fatigue);
+        misc::bit_or(Render.value().fishable, x, z, tile.fishable);
+        misc::bit_or(Render.value().fatigue, x, z, tile.fatigue);
 
         if (!tile.dont_render)
         {
@@ -45,19 +46,15 @@ void ChunkWater::from_mclq(std::vector<mclq>& layers)
     switch (mclq_liquid_type)
     {
       case 1:
-        _water_tile->registerNewChunk(_layers.size());
         _layers.emplace_back(this, pos, liquid, 2);
         break;
       case 3:
-        _water_tile->registerNewChunk(_layers.size());
         _layers.emplace_back(this, pos, liquid, 4);
         break;
       case 4:
-        _water_tile->registerNewChunk(_layers.size());
         _layers.emplace_back(this, pos, liquid, 1);
         break;
       case 6:
-        _water_tile->registerNewChunk(_layers.size());
         _layers.emplace_back(this, pos, liquid, (_use_mclq_green_lava ? 15 : 3));
 
         break;
@@ -65,11 +62,12 @@ void ChunkWater::from_mclq(std::vector<mclq>& layers)
         LogError << "Invalid/unhandled MCLQ liquid type" << std::endl;
         break;
     }
+    _water_tile->tagUpdate();
   }
   update_layers();
 }
 
-void ChunkWater::fromFile(MPQFile &f, size_t basePos)
+void ChunkWater::fromFile(BlizzardArchive::ClientFile &f, size_t basePos)
 {
   MH2O_Header header;
   f.read(&header, sizeof(MH2O_Header));
@@ -82,8 +80,9 @@ void ChunkWater::fromFile(MPQFile &f, size_t basePos)
   //render
   if (header.ofsRenderMask)
   {
-    f.seek(basePos + header.ofsRenderMask + sizeof(MH2O_Render));
-    f.read(&Render, sizeof(MH2O_Render));
+    Render.emplace();
+    f.seek(basePos + header.ofsRenderMask);
+    f.read(&Render.value(), sizeof(MH2O_Render));
   }
 
   for (std::size_t k = 0; k < header.nLayers; ++k)
@@ -106,7 +105,7 @@ void ChunkWater::fromFile(MPQFile &f, size_t basePos)
     }
 
     glm::vec3 pos(xbase, 0.0f, zbase);
-    _water_tile->registerNewChunk(_layers.size());
+    _water_tile->tagUpdate();
     _layers.emplace_back(this, f, basePos, pos, info, infoMask);
   }
 
@@ -123,18 +122,26 @@ void ChunkWater::save(sExtendableArray& adt, int base_pos, int& header_pos, int&
 
   if (hasData(0))
   {
-    header.nLayers = _layers.size();
-    header.ofsRenderMask = current_pos - base_pos;
-    adt.Insert(current_pos, sizeof(MH2O_Render), reinterpret_cast<char*>(&Render));
-    current_pos += sizeof(MH2O_Render);
+    header.nLayers = static_cast<std::uint32_t>(_layers.size());
+
+    if (Render.has_value())
+    {
+        header.ofsRenderMask = current_pos - base_pos;
+        adt.Insert(current_pos, sizeof(MH2O_Render), reinterpret_cast<char*>(&Render.value()));
+        current_pos += sizeof(MH2O_Render);
+    }
+    else
+    {
+        header.ofsRenderMask = 0;
+    }
 
     header.ofsInformation = current_pos - base_pos;
     int info_pos = current_pos;
 
     std::size_t info_size = sizeof(MH2O_Information) * _layers.size();
-    current_pos += info_size;
+    current_pos += static_cast<std::uint32_t>(info_size);
 
-    adt.Extend(info_size);
+    adt.Extend(static_cast<long>(info_size));
 
     for (liquid_layer& layer : _layers)
     {
@@ -177,7 +184,7 @@ void ChunkWater::setType(int type, size_t layer)
   {
     _layers[layer].changeLiquidID(type);
   }
-  _water_tile->updateLayer(layer);
+  _water_tile->tagUpdate();
 }
 
 bool ChunkWater::is_visible ( const float& cull_distance
@@ -212,7 +219,7 @@ void ChunkWater::update_layers()
     extents[0].y = std::min(extents[0].y, vmin.y);
     extents[1].y = std::max(extents[1].y, vmax.y);
 
-    _water_tile->updateLayer(count);
+    _water_tile->tagUpdate();
     count++;
   }
 
@@ -258,7 +265,7 @@ void ChunkWater::paintLiquid( glm::vec3 const& pos
     {
       liquid_layer layer(this, glm::vec3(xbase, 0.0f, zbase), pos.y, liquid_id);
       copy_height_to_layer(layer, pos, radius);
-      _water_tile->registerNewChunk(_layers.size());
+      _water_tile->tagUpdate();
       _layers.push_back(layer);
     }
   }
@@ -292,14 +299,14 @@ void ChunkWater::paintLiquid( glm::vec3 const& pos
     layer.clear(); // remove the liquid to not override the other layer
     layer.paintLiquid(pos, radius, true, angle, orientation, lock, origin, override_height, chunk, opacity_factor);
     layer.changeLiquidID(liquid_id);
-    _water_tile->registerNewChunk(_layers.size());
+    _water_tile->tagUpdate();
     _layers.push_back(layer);
   }
   else
   {
     liquid_layer layer(this, glm::vec3(xbase, 0.0f, zbase), pos.y, liquid_id);
     layer.paintLiquid(pos, radius, true, angle, orientation, lock, origin, override_height, chunk, opacity_factor);
-    _water_tile->registerNewChunk(_layers.size());
+    _water_tile->tagUpdate();
     _layers.push_back(layer);
   }
 
@@ -308,12 +315,12 @@ void ChunkWater::paintLiquid( glm::vec3 const& pos
 
 void ChunkWater::cleanup()
 {
-  for (int i = _layers.size() - 1; i >= 0; --i)
+  for (int i = static_cast<int>(_layers.size() - 1); i >= 0; --i)
   {
     if (_layers[i].empty())
     {
       _layers.erase(_layers.begin() + i);
-      _water_tile->unregisterChunk(i);
+      _water_tile->tagUpdate();
     }
   }
 }
@@ -341,5 +348,10 @@ void ChunkWater::copy_height_to_layer(liquid_layer& target, glm::vec3 const& pos
       }
     }
   }
+}
+
+void ChunkWater::tagUpdate()
+{
+  _water_tile->tagUpdate();
 }
 

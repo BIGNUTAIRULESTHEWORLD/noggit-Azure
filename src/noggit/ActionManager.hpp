@@ -10,7 +10,8 @@
 
 class MapView;
 
-namespace noggit
+
+namespace Noggit
 {
 
     class ActionManager : public QObject
@@ -73,4 +74,8 @@ namespace noggit
 
 }
 
+#define NOGGIT_CUR_ACTION Noggit::ActionManager::instance()->getCurrentAction()
+#define NOGGIT_ACTION_MGR Noggit::ActionManager::instance()
+
 #endif //NOGGITQT_ACTIONMANAGER_HPP
+

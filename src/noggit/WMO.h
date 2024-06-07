@@ -1,17 +1,19 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #pragma once
 #include <math/ray.hpp>
-#include <noggit/MPQ.h>
+
 #include <noggit/ModelInstance.h> // ModelInstance
 #include <noggit/ModelManager.h>
-#include <noggit/multimap_with_normalized_key.hpp>
+#include <noggit/AsyncObjectMultimap.hpp>
 #include <noggit/TextureManager.h>
 #include <noggit/tool_enums.hpp>
 #include <noggit/wmo_liquid.hpp>
 #include <noggit/ContextObject.hpp>
-#include <opengl/primitives.hpp>
-
-#include <boost/optional.hpp>
+#include <noggit/rendering/WMOGroupRender.hpp>
+#include <noggit/rendering/WMORender.hpp>
+#include <noggit/rendering/Primitives.hpp>
+#include <ClientFile.hpp>
+#include <optional>
 
 #include <map>
 #include <set>
@@ -27,35 +29,12 @@ class WMOManager;
 class wmo_liquid;
 class Model;
 
-struct WMORenderBatch
+namespace Noggit::Rendering
 {
-  std::uint32_t flags;
-  std::uint32_t shader;
-  std::uint32_t tex_array0;
-  std::uint32_t tex_array1;
-  std::uint32_t tex0;
-  std::uint32_t tex1;
-  std::uint32_t alpha_test_mode;
-  std::uint32_t _pad1;
-};
+  class WMOGroupRender;
+  class WMORender;
+}
 
-enum WMORenderBatchFlags
-{
-  eWMOBatch_ExteriorLit = 0x1,
-  eWMOBatch_HasMOCV = 0x2,
-  eWMOBatch_Unlit = 0x4,
-  eWMOBatch_Unfogged = 0x8,
-  eWMOBatch_Collision = 0x10
-};
-
-struct WMOCombinedDrawCall
-{
-  std::vector<int> samplers;
-  std::uint32_t index_start = 0;
-  std::uint32_t index_count = 0;
-  std::uint32_t n_used_samplers = 0;
-  bool backface_cull = false;
-};
 
 struct wmo_batch
 {
@@ -68,6 +47,59 @@ struct wmo_batch
 
   uint8_t flags;
   uint8_t texture;
+};
+
+union wmo_mopy_flags
+{
+    int8_t value;
+    struct
+    {
+        int8_t flag_0x01 : 1; // 0x1
+        int8_t no_cam_collide : 1; // 0x2
+        int8_t detail : 1; // 0x4
+        int8_t collision : 1; // 0x8
+        int8_t hint : 1;
+        int8_t render : 1;
+        int8_t flag_0x40 : 1; // 0x40
+        int8_t collide_hit : 1; // 0x80
+
+    };
+};
+static_assert (sizeof(wmo_mopy_flags) == sizeof(std::int8_t)
+    , "bitfields shall be implemented packed"
+    );
+
+struct wmo_triangle_material_info
+{
+    wmo_mopy_flags flags;
+    uint8_t texture;
+
+    bool isTransFace() { return flags.flag_0x01 && (flags.detail || flags.render); }
+    bool isColor() { return !flags.collision; }
+    bool isRenderFace() { return flags.render && !flags.detail; }
+    bool isCollidable() { return flags.collision || isRenderFace(); }
+
+    bool isCollision() { return texture == 0xff; }
+};
+
+enum wmo_mobn_flags
+{
+    Flag_XAxis = 0x0,
+    Flag_YAxis = 0x1,
+    Flag_ZAxis = 0x2,
+    Flag_AxisMask = 0x3,
+    Flag_Leaf = 0x4,
+    Flag_NoChild = 0xFFFF,
+};
+
+struct wmo_bsp_node
+{
+    uint16_t flags;
+    int16_t negChild;      // index of bsp child node (right in this array)
+    int16_t posChild;
+    uint16_t nFaces;       // num of triangle faces in MOBR
+    uint32_t faceStart;    // index of the first triangle index(in MOBR)
+    float planeDist;
 };
 
 union wmo_group_flags
@@ -131,19 +163,13 @@ struct wmo_group_header
 
 class WMOGroup 
 {
+  friend class Noggit::Rendering::WMOGroupRender;
+
 public:
-  WMOGroup(WMO *wmo, MPQFile* f, int num, char const* names);
+  WMOGroup(WMO *wmo, BlizzardArchive::ClientFile* f, int num, char const* names);
   WMOGroup(WMOGroup const&);
 
   void load();
-
-  void draw( opengl::scoped::use_program& wmo_shader
-           , math::frustum const& frustum
-           , const float& cull_distance
-           , const glm::vec3& camera
-           , bool draw_fog
-           , bool world_has_skies
-           );
 
   /*
   void drawLiquid ( glm::mat4x4 const& transform
@@ -159,6 +185,7 @@ public:
   void intersect (math::ray const&, std::vector<float>* results) const;
 
   // todo: portal culling
+  [[nodiscard]]
   bool is_visible( glm::mat4x4 const& transform_matrix
                  , math::frustum const& frustum
                  , float const& cull_distance
@@ -166,6 +193,7 @@ public:
                  , display_mode display
                  ) const;
 
+  [[nodiscard]]
   std::vector<uint16_t> doodad_ref() const { return _doodad_ref; }
 
   glm::vec3 BoundingBoxMin;
@@ -176,23 +204,29 @@ public:
   bool use_outdoor_lights;
   std::string name;
 
+  [[nodiscard]]
   bool has_skybox() const { return header.flags.skybox; }
 
-  void unload();
+  [[nodiscard]]
+  bool is_indoor() const { return header.flags.indoor; }
+
+  [[nodiscard]]
+  Noggit::Rendering::WMOGroupRender* renderer() { return &_renderer; };
+  ::glm::vec3 center;
 
 private:
-  void load_mocv(MPQFile& f, uint32_t size);
+  void load_mocv(BlizzardArchive::ClientFile& f, uint32_t size);
   void fix_vertex_color_alpha();
 
   WMO *wmo;
   wmo_group_header header;
-  ::glm::vec3 center;
   float rad;
   int32_t num;
   int32_t fog;
   std::vector<uint16_t> _doodad_ref;
   std::unique_ptr<wmo_liquid> lq;
 
+  std::vector <wmo_triangle_material_info> _material_infos;
   std::vector<wmo_batch> _batches;
 
   std::vector<::glm::vec3> _vertices;
@@ -200,31 +234,12 @@ private:
   std::vector<glm::vec2> _texcoords;
   std::vector<glm::vec2> _texcoords_2;
   std::vector<glm::vec4> _vertex_colors;
-  std::vector<unsigned> _render_batch_mapping;
   std::vector<uint16_t> _indices;
-  std::vector<WMORenderBatch> _render_batches;
-  std::vector<WMOCombinedDrawCall> _draw_calls;
 
-  opengl::scoped::deferred_upload_vertex_arrays<1> _vertex_array;
-  GLuint const& _vao = _vertex_array[0];
-  opengl::scoped::deferred_upload_buffers<8> _buffers;
-  GLuint const& _vertices_buffer = _buffers[0];
-  GLuint const& _normals_buffer = _buffers[1];
-  GLuint const& _texcoords_buffer = _buffers[2];
-  GLuint const& _texcoords_buffer_2 = _buffers[3];
-  GLuint const& _vertex_colors_buffer = _buffers[4];
-  GLuint const& _indices_buffer = _buffers[5];
-  GLuint const& _render_batch_mapping_buffer = _buffers[6];
-  GLuint const& _render_batch_tex_buffer = _buffers[7];
+  std::optional<std::vector<wmo_bsp_node>> _bsp_tree_nodes;
+  std::optional<std::vector<uint16_t>> _bsp_indices;
 
-  GLuint _render_batch_tex;
-
-  bool _uploaded = false;
-  bool _vao_is_setup = false;
-
-  void upload();
-
-  void setup_vao(opengl::scoped::use_program& wmo_shader);
+  Noggit::Rendering::WMOGroupRender _renderer;
 };
 
 struct WMOLight {
@@ -236,7 +251,7 @@ struct WMOLight {
 
   glm::vec4 fcolor;
 
-  void init(MPQFile* f);
+  void init(BlizzardArchive::ClientFile* f);
   void setup(GLint light);
 
   static void setupOnce(GLint light, glm::vec3 dir, glm::vec3 light_color);
@@ -267,7 +282,7 @@ struct WMOFog {
   unsigned int color2;
   // read to here (0x30 bytes)
   glm::vec4 color;
-  void init(MPQFile* f);
+  void init(BlizzardArchive::ClientFile* f);
   void setup();
 };
 
@@ -289,50 +304,20 @@ static_assert ( sizeof (mohd_flags) == sizeof (std::uint16_t)
 
 class WMO : public AsyncObject
 {
+  friend class Noggit::Rendering::WMORender;
+
 public:
-  explicit WMO(const std::string& name, noggit::NoggitRenderContext context );
+  explicit WMO(BlizzardArchive::Listfile::FileKey const& file_key, Noggit::NoggitRenderContext context );
 
-  void draw ( opengl::scoped::use_program& wmo_shader
-            , glm::mat4x4 const& model_view
-            , glm::mat4x4 const& projection
-            , glm::mat4x4 const& transform_matrix
-            , glm::mat4x4 const& transform_matrix_transposed
-            , bool boundingbox
-            , math::frustum const& frustum
-            , const float& cull_distance
-            , const glm::vec3& camera
-            , bool draw_doodads
-            , bool draw_fog
-            , int animtime
-            , bool world_has_skies
-            , display_mode display
-            );
+  [[nodiscard]]
+  std::vector<float> intersect (math::ray const&, bool do_exterior = true) const;
 
-  bool draw_skybox(glm::mat4x4 const& model_view
-                  , glm::vec3 const& camera_pos
-                  , opengl::scoped::use_program& m2_shader
-                  , math::frustum const& frustum
-                  , const float& cull_distance
-                  , int animtime
-                  , bool draw_particles
-                  , glm::vec3 aabb_min
-                  , glm::vec3 aabb_max
-                  , std::map<int, std::pair<glm::vec3, glm::vec3>> const& group_extents
-                  ) const;
+  void finishLoading() override;
 
-  std::vector<float> intersect (math::ray const&) const;
+  void waitForChildrenLoaded() override;
 
-  void finishLoading();
-
-  virtual void waitForChildrenLoaded() override;
-
-  void unload();
-
+  [[nodiscard]]
   std::map<uint32_t, std::vector<wmo_doodad_instance>> doodads_per_group(uint16_t doodadset) const;
-
-  bool draw_group_boundingboxes;
-
-  bool _finished_upload;
 
   std::vector<WMOGroup> groups;
   std::vector<WMOMaterial> materials;
@@ -345,27 +330,39 @@ public:
   std::vector<WMOLight> lights;
   glm::vec4 ambient_light_color;
 
+  uint32_t WmoId;
+
   mohd_flags flags;
 
   std::vector<WMOFog> fogs;
 
   std::vector<WMODoodadSet> doodadsets;
 
-  boost::optional<scoped_model_reference> skybox;
+  std::optional<scoped_model_reference> skybox;
 
-  noggit::NoggitRenderContext _context;
+  Noggit::NoggitRenderContext _context;
 
+  [[nodiscard]]
   bool is_hidden() const { return _hidden; }
+
   void toggle_visibility() { _hidden = !_hidden; }
   void show() { _hidden = false ; }
+  void hide() { _hidden = true; }
 
-  virtual bool is_required_when_saving() const
+
+  [[nodiscard]]
+  bool is_required_when_saving()  const override
   {
     return true;
   }
 
+  [[nodiscard]]
+  Noggit::Rendering::WMORender* renderer() { return &_renderer; }
+
 private:
   bool _hidden = false;
+
+  Noggit::Rendering::WMORender _renderer;
 };
 
 class WMOManager
@@ -373,39 +370,39 @@ class WMOManager
 public:
   static void report();
   static void clear_hidden_wmos();
-  static void unload_all(noggit::NoggitRenderContext context);
+  static void unload_all(Noggit::NoggitRenderContext context);
 private:
   friend struct scoped_wmo_reference;
-  static noggit::async_object_multimap_with_normalized_key<WMO> _;
+  static Noggit::AsyncObjectMultimap<WMO> _;
 };
 
 struct scoped_wmo_reference
 {
-  scoped_wmo_reference (std::string const& filename, noggit::NoggitRenderContext context)
+  scoped_wmo_reference (BlizzardArchive::Listfile::FileKey const& file_key, Noggit::NoggitRenderContext context)
     : _valid(true)
-    , _filename(filename)
+    , _file_key(file_key)
     , _context(context)
-    , _wmo (WMOManager::_.emplace(_filename, context))
+    , _wmo (WMOManager::_.emplace(file_key, context))
   {}
 
   scoped_wmo_reference (scoped_wmo_reference const& other)
     : _valid(other._valid)
-    , _filename(other._filename)
-    , _wmo(WMOManager::_.emplace(_filename, other._context))
+    , _file_key(other._file_key)
+    , _wmo(WMOManager::_.emplace(_file_key, other._context))
     , _context(other._context)
   {}
   scoped_wmo_reference& operator= (scoped_wmo_reference const& other)
   {
     _valid = other._valid;
-    _filename = other._filename;
-    _wmo = WMOManager::_.emplace(_filename, other._context);
+    _file_key = other._file_key;
+    _wmo = WMOManager::_.emplace(_file_key, other._context);
     _context = other._context;
     return *this;
   }
 
   scoped_wmo_reference (scoped_wmo_reference&& other)
     : _valid (other._valid)
-    , _filename (other._filename)
+    , _file_key (other._file_key)
     , _wmo (other._wmo)
     , _context (other._context)
   {
@@ -414,7 +411,7 @@ struct scoped_wmo_reference
   scoped_wmo_reference& operator= (scoped_wmo_reference&& other)
   {
     std::swap(_valid, other._valid);
-    std::swap(_filename, other._filename);
+    std::swap(_file_key, other._file_key);
     std::swap(_wmo, other._wmo);
     std::swap(_context, other._context);
     other._valid = false;
@@ -425,7 +422,7 @@ struct scoped_wmo_reference
   {
     if (_valid)
     {
-      WMOManager::_.erase(_filename, _context);
+      WMOManager::_.erase(_file_key, _context);
     }
   }
 
@@ -433,6 +430,8 @@ struct scoped_wmo_reference
   {
     return _wmo;
   }
+
+  [[nodiscard]]
   WMO* get() const
   {
     return _wmo;
@@ -441,7 +440,7 @@ struct scoped_wmo_reference
 private:  
   bool _valid;
 
-  std::string _filename;
+  BlizzardArchive::Listfile::FileKey _file_key;
   WMO* _wmo;
-  noggit::NoggitRenderContext _context;
+  Noggit::NoggitRenderContext _context;
 };

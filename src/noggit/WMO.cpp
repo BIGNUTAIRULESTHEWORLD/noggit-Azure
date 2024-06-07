@@ -7,10 +7,9 @@
 #include <noggit/TextureManager.h> // TextureManager, Texture
 #include <noggit/WMO.h>
 #include <noggit/World.h>
-#include <opengl/primitives.hpp>
+#include <noggit/rendering/Primitives.hpp>
+#include <noggit/application/NoggitApplication.hpp>
 #include <opengl/scoped.hpp>
-
-#include <boost/algorithm/string.hpp>
 
 #include <algorithm>
 #include <iomanip>
@@ -21,18 +20,18 @@
 #include <vector>
 
 
-WMO::WMO(const std::string& filenameArg, noggit::NoggitRenderContext context)
-  : AsyncObject(filenameArg)
-  , _finished_upload(false)
+WMO::WMO(BlizzardArchive::Listfile::FileKey const& file_key, Noggit::NoggitRenderContext context)
+  : AsyncObject(file_key)
   , _context(context)
+  , _renderer(this)
 {
 }
 
 void WMO::finishLoading ()
 {
-  MPQFile f(filename);
+  BlizzardArchive::ClientFile f(_file_key.filepath(), Noggit::Application::NoggitApplication::instance()->clientData());
   if (f.isEof()) {
-    LogError << "Error loading WMO \"" << filename << "\"." << std::endl;
+    LogError << "Error loading WMO \"" << _file_key.stringRepr() << "\"." << std::endl;
     return;
   }
 
@@ -62,7 +61,7 @@ void WMO::finishLoading ()
   assert (fourcc == 'MOHD');
 
   CArgb ambient_color;
-  unsigned int nTextures, nGroups, nP, nLights, nModels, nDoodads, nDoodadSets, nX;
+  unsigned int nTextures, nGroups, nP, nLights, nModels, nDoodads, nDoodadSets;
   // header
   f.read (&nTextures, 4);
   f.read (&nGroups, 4);
@@ -72,7 +71,7 @@ void WMO::finishLoading ()
   f.read (&nDoodads, 4);
   f.read (&nDoodadSets, 4);
   f.read (&ambient_color, 4);
-  f.read (&nX, 4);
+  f.read (&WmoId, 4);
   f.read (ff, 12);
   extents[0] = ::glm::vec3 (ff[0], ff[1], ff[2]);
   f.read (ff, 12);
@@ -106,7 +105,9 @@ void WMO::finishLoading ()
   std::size_t const num_materials (size / 0x40);
   materials.resize (num_materials);
 
-  std::map<std::uint32_t, std::size_t> texture_offset_to_inmem_index;
+  // note: used to map to size_t, but our other values don't support that.
+  //std::map<std::uint32_t, std::size_t> texture_offset_to_inmem_index;
+  std::map<std::uint32_t, std::uint32_t> texture_offset_to_inmem_index;
 
   auto load_texture
     ( [&] (std::uint32_t ofs)
@@ -115,7 +116,7 @@ void WMO::finishLoading ()
           (texbuf[ofs] ? &texbuf[ofs] : "textures/shanecube.blp");
 
         auto const mapping
-          (texture_offset_to_inmem_index.emplace(ofs, textures.size()));
+          (texture_offset_to_inmem_index.emplace(ofs, static_cast<std::uint32_t>(textures.size())));
 
         if (mapping.second)
         {
@@ -158,7 +159,7 @@ void WMO::finishLoading ()
   assert (fourcc == 'MOGI');
 
   groups.reserve(nGroups);
-  for (size_t i (0); i < nGroups; ++i) {
+  for (int i (0); i < nGroups; ++i) {
     groups.emplace_back (this, &f, i, groupnames);
   }
 
@@ -171,12 +172,18 @@ void WMO::finishLoading ()
 
   if (size > 4)
   {
-    std::string path = noggit::mpq::normalized_filename(std::string (reinterpret_cast<char const*>(f.getPointer ())));
-    boost::replace_all(path, "mdx", "m2");
+    std::string path = BlizzardArchive::ClientData::normalizeFilenameInternal(std::string (reinterpret_cast<char const*>(f.getPointer ())));
+    auto from = std::string("mdx");
+    auto to = std::string("m2");
+    size_t start_pos = 0;
+    while ((start_pos = path.find(from, start_pos)) != std::string::npos) {
+        path.replace(start_pos, from.length(), to);
+        start_pos += to.length(); // Handles case where 'to' is a substring of 'from'
+    }
 
     if (path.length())
     {
-      if (MPQFile::exists(path))
+      if (Noggit::Application::NoggitApplication::instance()->clientData()->exists(path))
       {
         skybox = scoped_model_reference(path, _context);
       }
@@ -348,89 +355,7 @@ void WMO::waitForChildrenLoaded()
   }
 }
 
-void WMO::draw ( opengl::scoped::use_program& wmo_shader
-               , glm::mat4x4 const& model_view
-               , glm::mat4x4 const& projection
-               , glm::mat4x4 const& transform_matrix
-               , glm::mat4x4 const& transform_matrix_transposed
-               , bool boundingbox
-               , math::frustum const& frustum
-               , const float& cull_distance
-               , const glm::vec3& camera
-               , bool // draw_doodads
-               , bool draw_fog
-               , int animtime
-               , bool world_has_skies
-               , display_mode display
-               )
-{
-
-  if (!finishedLoading())
-  [[unlikely]]
-  {
-    return;
-  }
-
-  wmo_shader.uniform("ambient_color",glm::vec3(ambient_light_color));
-
-  for (auto& group : groups)
-  {
-
-
-    /*
-    if (!group.is_visible(transform_matrix, frustum, cull_distance, camera, display))
-    {
-      continue;
-    }
-
-     */
-
-    group.draw ( wmo_shader
-               , frustum
-               , cull_distance
-               , camera
-               , draw_fog
-               , world_has_skies
-               );
-
-    /*
-    group.drawLiquid ( transform_matrix_transposed
-                     , render
-                     , draw_fog
-                     , animtime
-                     );
-
-                     */
-  }
-
-  if (boundingbox)
-  {
-    //opengl::scoped::bool_setter<GL_BLEND, GL_TRUE> const blend;
-    //gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    for (auto& group : groups)
-    {
-      opengl::primitives::wire_box::getInstance(_context).draw( model_view
-       , projection
-       , transform_matrix_transposed
-       , {1.0f, 1.0f, 1.0f, 1.0f}
-       , group.BoundingBoxMin
-       , group.BoundingBoxMax
-       );
-    }
-
-    opengl::primitives::wire_box::getInstance(_context).draw ( model_view
-      , projection
-      , transform_matrix_transposed
-      , {1.0f, 0.0f, 0.0f, 1.0f}
-      , glm::vec3(extents[0].x, extents[0].z, -extents[0].y)
-      , glm::vec3(extents[1].x, extents[1].z, -extents[1].y)
-      );
-
-  }
-}
-
-std::vector<float> WMO::intersect (math::ray const& ray) const
+std::vector<float> WMO::intersect (math::ray const& ray, bool do_exterior) const
 {
   std::vector<float> results;
 
@@ -441,72 +366,31 @@ std::vector<float> WMO::intersect (math::ray const& ray) const
 
   for (auto& group : groups)
   {
+    if (!do_exterior && !group.is_indoor())
+          continue;
+
     group.intersect (ray, &results);
+  }
+
+  if (!do_exterior && results.size())
+  {
+      // dirty way to find the furthest face and ignore invisible faces, cleaner way would be to do a direction check on faces
+      // float max = *std::max_element(std::begin(results), std::end(results));
+      // results.clear();
+      // results.push_back(max);
+
+      // other way, ignore the closest intersect, works well
+      if (results.size() > 1)
+      {
+        auto it = std::min_element(results.begin(), results.end());
+        results.erase(it);
+      }
   }
 
   return results;
 }
 
-bool WMO::draw_skybox (glm::mat4x4 const& model_view
-                      , glm::vec3 const& camera_pos
-                      , opengl::scoped::use_program& m2_shader
-                      , math::frustum const& frustum
-                      , const float& cull_distance
-                      , int animtime
-                      , bool draw_particles
-                      , glm::vec3 aabb_min
-                      , glm::vec3 aabb_max
-                      , std::map<int, std::pair<glm::vec3, glm::vec3>> const& group_extents
-                      ) const
-{
 
-
-
-  if (!skybox || !math::is_inside_of(camera_pos,aabb_min, aabb_max))
-  {
-    return false;
-  }
-
-  for (int i=0; i<groups.size(); ++i)
-  {
-    auto const& g = groups[i];
-
-    if (!g.has_skybox())
-    {
-      continue;
-    }
-
-    auto& extent(group_extents.at(i));
-
-    if (math::is_inside_of(camera_pos, extent.first, extent.second))
-    {
-      ModelInstance sky(skybox.get()->filename, _context);
-      sky.pos = camera_pos;
-      sky.scale = 2.f;
-      sky.recalcExtents();
-
-      opengl::M2RenderState model_render_state;
-      model_render_state.tex_arrays = {0, 0};
-      model_render_state.tex_indices = {0, 0};
-      model_render_state.tex_unit_lookups = {-1, -1};
-      gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-      gl.disable(GL_BLEND);
-      gl.depthMask(GL_TRUE);
-      m2_shader.uniform("blend_mode", 0);
-      m2_shader.uniform("unfogged", static_cast<int>(model_render_state.unfogged));
-      m2_shader.uniform("unlit",  static_cast<int>(model_render_state.unlit));
-      m2_shader.uniform("tex_unit_lookup_1", 0);
-      m2_shader.uniform("tex_unit_lookup_2", 0);
-      m2_shader.uniform("pixel_shader", 0);
-
-      skybox->get()->draw(model_view, sky, m2_shader, model_render_state, frustum, cull_distance, camera_pos, animtime, display_mode::in_3D);
-
-      return true;
-    }
-  }  
-
-  return false;
-}
 
 std::map<uint32_t, std::vector<wmo_doodad_instance>> WMO::doodads_per_group(uint16_t doodadset) const
 {
@@ -514,7 +398,7 @@ std::map<uint32_t, std::vector<wmo_doodad_instance>> WMO::doodads_per_group(uint
 
   if (doodadset >= doodadsets.size())
   {
-    LogError << "Invalid doodadset for instance of wmo " << filename << std::endl;
+    LogError << "Invalid doodadset for instance of wmo " << _file_key.stringRepr() << std::endl;
     return doodads;
   }
 
@@ -535,15 +419,7 @@ std::map<uint32_t, std::vector<wmo_doodad_instance>> WMO::doodads_per_group(uint
   return doodads;
 }
 
-void WMO::unload()
-{
-  for (auto& group : groups)
-  {
-    group.unload();
-  }
-}
-
-void WMOLight::init(MPQFile* f)
+void WMOLight::init(BlizzardArchive::ClientFile* f)
 {
   char type[4];
   f->read(&type, 4);
@@ -593,9 +469,10 @@ void WMOLight::setupOnce(GLint, glm::vec3, glm::vec3)
 
 
 
-WMOGroup::WMOGroup(WMO *_wmo, MPQFile* f, int _num, char const* names)
+WMOGroup::WMOGroup(WMO *_wmo, BlizzardArchive::ClientFile* f, int _num, char const* names)
   : wmo(_wmo)
   , num(_num)
+  , _renderer(this)
 {
   // extract group info from f
   std::uint32_t flags; // not used, the flags are in the group header
@@ -636,8 +513,7 @@ WMOGroup::WMOGroup(WMOGroup const& other)
   , _texcoords_2(other._texcoords_2)
   , _vertex_colors(other._vertex_colors)
   , _indices(other._indices)
-  , _render_batch_mapping(other._render_batch_mapping)
-  , _render_batches(other._render_batches)
+  , _renderer(this)
 {
   if (other.lq)
   {
@@ -658,257 +534,6 @@ namespace
   }
 }
 
-void WMOGroup::upload()
-{
-  // render batches
-
-  bool texture_not_uploaded = false;
-
-  std::size_t batch_counter = 0;
-  for (auto& batch : _batches)
-  {
-    WMOMaterial const& mat (wmo->materials.at (batch.texture));
-
-    auto& tex1 = wmo->textures.at(mat.texture1);
-    
-    tex1->wait_until_loaded();
-    tex1->upload();
-
-    std::uint32_t tex_array0 = tex1->texture_array();
-    std::uint32_t array_index0 = tex1->array_index();
-
-    std::uint32_t tex_array1 = 0;
-    std::uint32_t array_index1 = 0;
-    bool use_tex2 = mat.shader == 6 || mat.shader == 5 || mat.shader == 3;
-
-    if (use_tex2)
-    {
-      auto& tex2 = wmo->textures.at(mat.texture2);
-      tex2->wait_until_loaded();
-      tex2->upload();
-
-      tex_array1 = tex2->texture_array();
-      array_index1 = tex2->array_index();
-    }
-
-    _render_batches[batch_counter].tex_array0 = tex_array0;
-    _render_batches[batch_counter].tex_array1 = tex_array1;
-    _render_batches[batch_counter].tex0 = array_index0;
-    _render_batches[batch_counter].tex1 = array_index1;
-
-    batch_counter++;
-  }
-
-  if (texture_not_uploaded)
-  {
-    return;
-  }
-
-  _draw_calls.clear();
-  WMOCombinedDrawCall* draw_call = nullptr;
-  std::vector<WMORenderBatch*> _used_batches;
-
-  batch_counter = 0;
-  for (auto& batch : _batches)
-  {
-    WMOMaterial& mat = wmo->materials.at(batch.texture);
-    bool backface_cull = !mat.flags.unculled;
-    bool use_tex2 = mat.shader == 6 || mat.shader == 5 || mat.shader == 3;
-
-    bool create_draw_call = false;
-    if (draw_call && draw_call->backface_cull == backface_cull && batch.index_start == draw_call->index_start + draw_call->index_count)
-    {
-      // identify if we can fit this batch into current draw_call
-      unsigned n_required_slots = use_tex2 ? 2 : 1;
-      unsigned n_avaliable_slots = draw_call->samplers.size() - draw_call->n_used_samplers;
-      unsigned n_slots_to_be_occupied = 0;
-
-      std::vector<int>::iterator it2;
-      auto it = std::find(draw_call->samplers.begin(), draw_call->samplers.end(), _render_batches[batch_counter].tex_array0);
-
-      if (it == draw_call->samplers.end())
-      {
-        if (n_avaliable_slots)
-          n_slots_to_be_occupied++;
-        else
-          create_draw_call = true;
-      }
- 
-
-      if (!create_draw_call && use_tex2)
-      {
-         it2 = std::find(draw_call->samplers.begin(), draw_call->samplers.end(), _render_batches[batch_counter].tex_array1);
-
-         if (it2 == draw_call->samplers.end())
-         {
-           if (n_slots_to_be_occupied < n_avaliable_slots)
-             n_slots_to_be_occupied++;
-           else
-             create_draw_call = true;
-         }
-
-      }
-
-      if (!create_draw_call)
-      {
-        if (it != draw_call->samplers.end())
-        {
-          _render_batches[batch_counter].tex_array0 = it - draw_call->samplers.begin();
-        }
-        else
-        {
-          draw_call->samplers[draw_call->n_used_samplers] = _render_batches[batch_counter].tex_array0;
-          _render_batches[batch_counter].tex_array0 = draw_call->n_used_samplers;
-          draw_call->n_used_samplers++;
-        }
-
-        if (use_tex2)
-        {
-          if (it2 != draw_call->samplers.end())
-          {
-            _render_batches[batch_counter].tex_array1 = it2 - draw_call->samplers.begin();
-          }
-          else
-          {
-            draw_call->samplers[draw_call->n_used_samplers] = _render_batches[batch_counter].tex_array1;
-            _render_batches[batch_counter].tex_array1 = draw_call->n_used_samplers;
-            draw_call->n_used_samplers++;
-          }
-        }
-      }
-
-    }
-    else
-    {
-      create_draw_call = true;
-    }
-    
-    if (create_draw_call)
-    {
-      // create new combined draw call
-      draw_call = &_draw_calls.emplace_back();
-      draw_call->samplers = std::vector<int>{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
-      draw_call->index_start = batch.index_start;
-      draw_call->index_count = 0;
-      draw_call->n_used_samplers = use_tex2 ? 2 : 1;
-      draw_call->backface_cull = backface_cull;
-
-      draw_call->samplers[0] = _render_batches[batch_counter].tex_array0;
-      _render_batches[batch_counter].tex_array0 = 0;
-
-      if (use_tex2)
-      [[unlikely]]
-      {
-        draw_call->samplers[1] = _render_batches[batch_counter].tex_array1;
-        _render_batches[batch_counter].tex_array1 = 1;
-      }
-
-    }
-
-    draw_call->index_count += batch.index_count;
-
-    batch_counter++;
-  }
-
-  // opengl resources
-  _vertex_array.upload();
-  _buffers.upload();
-  gl.genTextures(1, &_render_batch_tex);
-
-  gl.bufferData<GL_ARRAY_BUFFER> ( _vertices_buffer
-                                 , _vertices.size() * sizeof (*_vertices.data())
-                                 , _vertices.data()
-                                 , GL_STATIC_DRAW
-                                 );
-
-  gl.bufferData<GL_ARRAY_BUFFER> ( _normals_buffer
-                                 , _normals.size() * sizeof (*_normals.data())
-                                 , _normals.data()
-                                 , GL_STATIC_DRAW
-                                 );
-
-  gl.bufferData<GL_ARRAY_BUFFER> ( _texcoords_buffer
-                                 , _texcoords.size() * sizeof (*_texcoords.data())
-                                 , _texcoords.data()
-                                 , GL_STATIC_DRAW
-                                 );
-
-  gl.bufferData<GL_ARRAY_BUFFER> ( _render_batch_mapping_buffer
-      , _render_batch_mapping.size() * sizeof(unsigned)
-      , _render_batch_mapping.data()
-      , GL_STATIC_DRAW
-  );
-
-  gl.bindBuffer(GL_TEXTURE_BUFFER, _render_batch_tex_buffer);
-  gl.bufferData(GL_TEXTURE_BUFFER, _render_batches.size() * sizeof(WMORenderBatch),_render_batches.data(), GL_STATIC_DRAW);
-  gl.bindTexture(GL_TEXTURE_BUFFER, _render_batch_tex);
-  gl.texBuffer(GL_TEXTURE_BUFFER,  GL_RGBA32UI, _render_batch_tex_buffer);
-
-  gl.bufferData<GL_ELEMENT_ARRAY_BUFFER, std::uint16_t>(_indices_buffer, _indices, GL_STATIC_DRAW);
-  
-  if (header.flags.has_two_motv)
-  {
-    gl.bufferData<GL_ARRAY_BUFFER, glm::vec2> ( _texcoords_buffer_2
-                                                    , _texcoords_2
-                                                    , GL_STATIC_DRAW
-                                                    );
-  }
-
-  gl.bufferData<GL_ARRAY_BUFFER> ( _vertex_colors_buffer
-                                 , _vertex_colors.size() * sizeof (*_vertex_colors.data())
-                                 , _vertex_colors.data()
-                                 , GL_STATIC_DRAW
-                                 );
-
-  // free unused data
-  _normals.clear();
-  _texcoords.clear();
-  _texcoords_2.clear();
-  _vertex_colors.clear();
-  _render_batches.clear();
-  _render_batch_mapping.clear();
-
-  _uploaded = true;
-}
-
-void WMOGroup::unload()
-{
-  _vertex_array.unload();
-  _buffers.unload();
-
-  gl.deleteTextures(1, &_render_batch_tex);
-
-  _uploaded = false;
-  _vao_is_setup = false;
-}
-
-void WMOGroup::setup_vao(opengl::scoped::use_program& wmo_shader)
-{
-  opengl::scoped::index_buffer_manual_binder indices (_indices_buffer);
-  {
-    opengl::scoped::vao_binder const _ (_vao);
-
-    wmo_shader.attrib("position", _vertices_buffer, 3, GL_FLOAT, GL_FALSE, 0, 0);
-    wmo_shader.attrib("normal", _normals_buffer, 3, GL_FLOAT, GL_FALSE, 0, 0);
-    wmo_shader.attrib("texcoord", _texcoords_buffer, 2, GL_FLOAT, GL_FALSE, 0, 0);
-    wmo_shader.attribi("batch_mapping", _render_batch_mapping_buffer, 1, GL_UNSIGNED_INT, 0, 0);
-
-    if (header.flags.has_two_motv)
-    {
-      wmo_shader.attrib("texcoord_2", _texcoords_buffer_2, 2, GL_FLOAT, GL_FALSE, 0, 0);
-    }
-
-    // even if the 2 flags are set there's only one vertex color vector, the 2nd chunk is used for alpha only
-    if (header.flags.has_vertex_color || header.flags.use_mocv2_for_texture_blending)
-    {
-      wmo_shader.attrib("vertex_color", _vertex_colors_buffer, 4, GL_FLOAT, GL_FALSE, 0, 0);
-    }
-
-    indices.bind();
-  }
-
-  _vao_is_setup = true;
-}
 
 void WMOGroup::load()
 {
@@ -916,10 +541,10 @@ void WMOGroup::load()
   std::stringstream curNum;
   curNum << "_" << std::setw (3) << std::setfill ('0') << num;
 
-  std::string fname = wmo->filename;
+  std::string fname = wmo->file_key().filepath();
   fname.insert (fname.find (".wmo"), curNum.str ());
 
-  MPQFile f(fname);
+  BlizzardArchive::ClientFile f(fname, Noggit::Application::NoggitApplication::instance()->clientData());
   if (f.isEof()) {
     LogError << "Error loading WMO \"" << fname << "\"." << std::endl;
     return;
@@ -969,7 +594,6 @@ void WMOGroup::load()
   f.read (&size, 4);
 
   assert (fourcc == 'MOPY');
-
   f.seekRelative (size);
 
   // - MOVI ----------------------------------------------
@@ -1028,7 +652,7 @@ void WMOGroup::load()
 
   _normals.resize (size / sizeof (::glm::vec3));
 
-  f.read (_normals.data (), size);
+  f.read (_normals.data(), size);
 
   for (auto& n : _normals)
   {
@@ -1056,66 +680,7 @@ void WMOGroup::load()
   _batches.resize (size / sizeof (wmo_batch));
   f.read (_batches.data (), size);
 
-  _render_batch_mapping.resize(_vertices.size());
-  std::fill(_render_batch_mapping.begin(), _render_batch_mapping.end(), 0);
-
-  _render_batches.resize(_batches.size());
-
-  std::size_t batch_counter = 0;
-  for (auto& batch : _batches)
-  {
-    for (std::size_t i = 0; i < (batch.vertex_end - batch.vertex_start + 1); ++i)
-    {
-      _render_batch_mapping[batch.vertex_start + i] = batch_counter + 1;
-    }
-
-    std::uint32_t flags = 0;
-
-    if (header.flags.exterior_lit || header.flags.exterior)
-    {
-      flags |= WMORenderBatchFlags::eWMOBatch_ExteriorLit;
-    }
-    if (header.flags.has_vertex_color || header.flags.use_mocv2_for_texture_blending)
-    {
-      flags |= WMORenderBatchFlags::eWMOBatch_HasMOCV;
-    }
-
-    WMOMaterial const& mat (wmo->materials.at (batch.texture));
-
-    if (mat.flags.unlit)
-    {
-      flags |= WMORenderBatchFlags::eWMOBatch_Unlit;
-    }
-
-    if (mat.flags.unfogged)
-    {
-      flags |= WMORenderBatchFlags::eWMOBatch_Unfogged;
-    }
-
-    std::uint32_t alpha_test;
-
-    switch (mat.blend_mode)
-    {
-      case 1:
-        alpha_test = 1; // 224/255
-        break;
-      case 2:
-      case 3:
-      case 4:
-      case 5:
-      case 6:
-        alpha_test = 2;
-        break;
-      case 0:
-      default:
-        alpha_test = 0;
-        break;
-    }
-
-    _render_batches[batch_counter] = WMORenderBatch{flags, mat.shader, 0, 0, 0, 0, alpha_test, 0};
-
-    batch_counter++;
-  }
+  _renderer.initRenderBatches();
 
   // - MOLR ----------------------------------------------
   if (header.flags.has_light)
@@ -1165,7 +730,7 @@ void WMOGroup::load()
     }
     else
     {
-      f.seekRelative (size);
+      f.seekRelative(size);
     }
 
   }
@@ -1183,6 +748,10 @@ void WMOGroup::load()
     else
     {
       f.seekRelative (size);
+      // std::vector<uint16_t> bsp_indices;
+      // bsp_indices.resize(size / sizeof(uint16_t));
+      // f.read(bsp_indices.data(), size);
+      // _bsp_indices = bsp_indices;
     }
   }
   
@@ -1280,7 +849,7 @@ void WMOGroup::load()
 
       lq = std::make_unique<wmo_liquid> ( &f
           , hlq
-          , wmo->materials[hlq.material_id]
+          // , wmo->materials[hlq.material_id] // some models have mat_id = -1, eg "world/wmo/dungeon/md_fishinghole/md_fishingholeice_001.wmo"
           , header.group_liquid
           , (bool)wmo->flags.use_liquid_type_dbc_id
           , (bool)header.flags.ocean
@@ -1415,7 +984,7 @@ void WMOGroup::load()
   }
 }
 
-void WMOGroup::load_mocv(MPQFile& f, uint32_t size)
+void WMOGroup::load_mocv(BlizzardArchive::ClientFile& f, uint32_t size)
 {
   uint32_t const* colors = reinterpret_cast<uint32_t const*> (f.getPointer());
   _vertex_colors.resize(size / sizeof(uint32_t));
@@ -1525,70 +1094,6 @@ bool WMOGroup::is_visible( glm::mat4x4 const& transform
   return (dist < cull_distance);
 }
 
-void WMOGroup::draw( opengl::scoped::use_program& wmo_shader
-                   , math::frustum const& // frustum
-                   , const float& //cull_distance
-                   , const glm::vec3& //camera
-                   , bool // draw_fog
-                   , bool // world_has_skies
-                   )
-{
-  if (!_uploaded)
-  [[unlikely]]
-  {
-    upload();
-
-    if (!_uploaded)
-    [[unlikely]]
-    {
-      return;
-    }
-  }
-
-  if (!_vao_is_setup)
-  [[unlikely]]
-  {
-    setup_vao(wmo_shader);
-  }
-
-  opengl::scoped::vao_binder const _ (_vao);
-
-  gl.activeTexture(GL_TEXTURE0);
-  gl.bindTexture(GL_TEXTURE_BUFFER, _render_batch_tex);
-
-  bool backface_cull = true;
-  gl.enable(GL_CULL_FACE);
-
-  for (auto& draw_call : _draw_calls)
-  {
-    if (backface_cull != draw_call.backface_cull)
-    {
-      if (draw_call.backface_cull)
-      {
-        gl.enable(GL_CULL_FACE);
-      }
-      else
-      {
-        gl.disable(GL_CULL_FACE);
-      }
-
-      backface_cull = draw_call.backface_cull;
-    }
-
-    for(std::size_t i = 0; i < draw_call.samplers.size(); ++i)
-    {
-      if (draw_call.samplers[i] < 0)
-        break;
-
-      gl.activeTexture(GL_TEXTURE0 + 1 + i);
-      gl.bindTexture(GL_TEXTURE_2D_ARRAY, draw_call.samplers[i]);
-    }
-
-    gl.drawElements (GL_TRIANGLES, draw_call.index_count, GL_UNSIGNED_SHORT, reinterpret_cast<void*>(sizeof(std::uint16_t)*draw_call.index_start));
-
-  }
-
-}
 
 void WMOGroup::intersect (math::ray const& ray, std::vector<float>* results) const
 {
@@ -1602,6 +1107,8 @@ void WMOGroup::intersect (math::ray const& ray, std::vector<float>* results) con
   {
     for (size_t i (batch.index_start); i < batch.index_start + batch.index_count; i += 3)
     {
+      // TODO : only intersect visible triangles
+      // TODO : option to only check collision
       if ( auto&& distance
          = ray.intersect_triangle ( _vertices[_indices[i + 0]]
                                   , _vertices[_indices[i + 1]]
@@ -1646,7 +1153,7 @@ void WMOGroup::setupFog (bool draw_fog, std::function<void (bool)> setup_fog)
   }
 }
 
-void WMOFog::init(MPQFile* f)
+void WMOFog::init(BlizzardArchive::ClientFile* f)
 {
   f->read(this, 0x30);
   color = glm::vec4(((color1 & 0x00FF0000) >> 16) / 255.0f, ((color1 & 0x0000FF00) >> 8) / 255.0f,
@@ -1669,9 +1176,9 @@ decltype (WMOManager::_) WMOManager::_;
 void WMOManager::report()
 {
   std::string output = "Still in the WMO manager:\n";
-  _.apply ( [&] (std::string const& key, WMO const&)
+  _.apply ( [&] (BlizzardArchive::Listfile::FileKey const& key, WMO const&)
             {
-              output += " - " + key + "\n";
+              output += " - " + key.stringRepr() + "\n";
             }
           );
   LogDebug << output;
@@ -1679,19 +1186,19 @@ void WMOManager::report()
 
 void WMOManager::clear_hidden_wmos()
 {
-  _.apply ( [&] (std::string const&, WMO& wmo)
+  _.apply ( [&] (BlizzardArchive::Listfile::FileKey const&, WMO& wmo)
             {
               wmo.show();
             }
           );
 }
 
-void WMOManager::unload_all(noggit::NoggitRenderContext context)
+void WMOManager::unload_all(Noggit::NoggitRenderContext context)
 {
     _.context_aware_apply(
-        [&] (std::string const&, WMO& wmo)
+        [&] (BlizzardArchive::Listfile::FileKey const&, WMO& wmo)
         {
-            wmo.unload();
+            wmo.renderer()->unload();
         }
         , context
     );

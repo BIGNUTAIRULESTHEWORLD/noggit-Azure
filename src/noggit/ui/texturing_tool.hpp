@@ -1,12 +1,12 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #pragma once
-#include <noggit/bool_toggle_property.hpp>
+#include <noggit/BoolToggleProperty.hpp>
 #include <noggit/Brush.h>
 #include <noggit/TextureManager.h>
 #include <noggit/unsigned_int_property.hpp>
-#include <noggit/Red/UiCommon/ExtendedSlider.hpp>
-#include <noggit/Red/UiCommon/ImageMaskSelector.hpp>
+#include <noggit/ui/tools/UiCommon/ExtendedSlider.hpp>
+#include <noggit/ui/tools/UiCommon/ImageMaskSelector.hpp>
 
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDial>
@@ -19,11 +19,11 @@
 class World;
 class MapView;
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
-    class checkbox;
+    class CheckBox;
     class current_texture;
     class texture_swapper;
 
@@ -39,7 +39,7 @@ namespace noggit
     public:
       texturing_tool ( const glm::vec3* camera_pos
                      , MapView* map_view
-                     , bool_toggle_property* show_quick_palette
+                     , BoolToggleProperty* show_quick_palette
                      , QWidget* parent = nullptr
                      );
 
@@ -62,9 +62,9 @@ namespace noggit
       void change_spray_size (float change);
       void change_spray_pressure (float change);
 
-      noggit::Red::UiCommon::ExtendedSlider* getRadiusSlider() { return _radius_slider; };
-      noggit::Red::UiCommon::ExtendedSlider* getInnerRadiusSlider() { return _hardness_slider; };
-      noggit::Red::UiCommon::ExtendedSlider* getSpeedSlider() { return _pressure_slider; };
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* getRadiusSlider() { return _radius_slider; };
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* getInnerRadiusSlider() { return _hardness_slider; };
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* getSpeedSlider() { return _pressure_slider; };
       QDial* getMaskOrientationDial() { return _image_mask_group->getMaskOrientationDial(); };
 
       void paint (World* world, glm::vec3 const& pos, float dt, scoped_blp_texture_reference texture);      
@@ -85,7 +85,7 @@ namespace noggit
 
       QSize sizeHint() const override;
 
-      noggit::Red::ImageMaskSelector* getImageMaskSelector() { return _image_mask_group; };
+      Noggit::Ui::Tools::ImageMaskSelector* getImageMaskSelector() { return _image_mask_group; };
       QImage* getMaskImage() { return &_mask_image; }
       texturing_mode getTexturingMode() { return _texturing_mode; };
       void updateMaskImage();
@@ -111,18 +111,18 @@ namespace noggit
       float _spray_size;
       float _spray_pressure;
 
-      bool_toggle_property _anim_prop;
+      BoolToggleProperty _anim_prop;
       unsigned_int_property _anim_speed_prop;
       unsigned_int_property _anim_rotation_prop;
-      bool_toggle_property _overbright_prop;
+      BoolToggleProperty _overbright_prop;
 
       texturing_mode _texturing_mode;
 
     private:
       QSlider* _brush_level_slider;
-      noggit::Red::UiCommon::ExtendedSlider* _hardness_slider;
-      noggit::Red::UiCommon::ExtendedSlider* _radius_slider;
-      noggit::Red::UiCommon::ExtendedSlider* _pressure_slider;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _hardness_slider;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _radius_slider;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _pressure_slider;
       QSpinBox* _brush_level_spin;
 
       QCheckBox* _show_unpaintable_chunks_cb;
@@ -139,7 +139,7 @@ namespace noggit
 
       texture_swapper* _texture_switcher;
 
-      noggit::Red::ImageMaskSelector* _image_mask_group;
+      Noggit::Ui::Tools::ImageMaskSelector* _image_mask_group;
 
       QTabWidget* tabs;
 

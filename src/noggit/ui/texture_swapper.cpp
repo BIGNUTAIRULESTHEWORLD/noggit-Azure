@@ -14,9 +14,9 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     texture_swapper::texture_swapper ( QWidget* parent
                                      , const glm::vec3* camera_pos
@@ -36,11 +36,15 @@ namespace noggit
 
       QPushButton* select = new QPushButton("Select", this);
       QPushButton* swap_adt = new QPushButton("Swap ADT", this);
+      QPushButton* swap_global = new QPushButton("Swap Global(All ADTs)", this);
+      QPushButton* remove_text_adt = new QPushButton(tr("Remove this texture from ADT"), this);
 
       layout->addRow(new QLabel("Texture to swap"));
       layout->addRow(_texture_to_swap_display);
       layout->addRow(select);
       layout->addRow(swap_adt);
+      layout->addRow(swap_global);
+      layout->addRow(remove_text_adt);
 
       _brush_mode_group = new QGroupBox("Brush mode", this);
       _brush_mode_group->setCheckable(true);
@@ -50,6 +54,11 @@ namespace noggit
       auto brush_content (new QWidget(_brush_mode_group));
       auto brush_layout (new QFormLayout(brush_content));
       _brush_mode_group->setLayout(brush_layout);
+
+      _swap_entire_chunk = new QCheckBox(brush_content);
+      _swap_entire_chunk->setText(tr("Entire chunk"));
+      _swap_entire_chunk->setCheckState(Qt::CheckState::Unchecked);
+      brush_layout->addRow(_swap_entire_chunk);
 
       _radius_spin = new QDoubleSpinBox(brush_content);
       _radius_spin->setRange (0.f, 100.f);
@@ -65,11 +74,11 @@ namespace noggit
       connect(select, &QPushButton::clicked, [&, map_view]() {
 
         map_view->context()->makeCurrent(map_view->context()->surface());
-        opengl::context::scoped_setter const _ (::gl, map_view->context());
+        OpenGL::context::scoped_setter const _ (::gl, map_view->context());
         _texture_to_swap = selected_texture::get();
         if (_texture_to_swap)
         {
-          _texture_to_swap_display->set_texture(_texture_to_swap.get()->filename);
+          _texture_to_swap_display->set_texture(_texture_to_swap.value()->file_key().filepath());
         }
       });
 
@@ -77,10 +86,27 @@ namespace noggit
         if (_texture_to_swap)
         {
           ActionManager::instance()->beginAction(map_view, ActionFlags::eCHUNKS_TEXTURE);
-          _world->swapTexture (*camera_pos, _texture_to_swap.get());
+          _world->swapTexture (*camera_pos, _texture_to_swap.value());
           ActionManager::instance()->endAction();
         }
       });
+
+      connect(swap_global, &QPushButton::clicked, [this, camera_pos, map_view]() {
+          if (_texture_to_swap)
+          {
+            // TODO : action manager
+              _world->swapTextureGlobal(_texture_to_swap.value());
+          }
+          });
+
+      connect(remove_text_adt, &QPushButton::clicked, [this, camera_pos, map_view]() {
+          if (_texture_to_swap)
+          {
+              ActionManager::instance()->beginAction(map_view, ActionFlags::eCHUNKS_TEXTURE);
+              _world->removeTexture(*camera_pos, _texture_to_swap.value());
+              ActionManager::instance()->endAction();
+          }
+          });
 
       connect ( _radius_spin, qOverload<double> (&QDoubleSpinBox::valueChanged)
               , [&](double v)

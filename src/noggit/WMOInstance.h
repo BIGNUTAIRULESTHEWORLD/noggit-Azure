@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <set>
 
-class MPQFile;
 struct ENTRY_MODF;
 
 class WMOInstance : public SceneObject
@@ -23,6 +22,9 @@ public:
   uint16_t doodadset() const { return _doodadset; }
   void change_doodadset(uint16_t doodad_set);
 
+  [[nodiscard]]
+  std::map<int, std::pair<glm::vec3, glm::vec3>> const& getGroupExtents() { _update_group_extents = true; ensureExtents(); return group_extents; }
+
 private:
   void update_doodads();
 
@@ -30,17 +32,18 @@ private:
 
   std::map<uint32_t, std::vector<wmo_doodad_instance>> _doodads_per_group;
   bool _need_doodadset_update = true;
+  bool _update_group_extents = false;
 
 public:
-  WMOInstance(std::string const& filename, ENTRY_MODF const* d, noggit::NoggitRenderContext context);
+  WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, ENTRY_MODF const* d, Noggit::NoggitRenderContext context);
 
-  explicit WMOInstance(std::string const& filename, noggit::NoggitRenderContext context);
+  explicit WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, Noggit::NoggitRenderContext context);
 
   WMOInstance(WMOInstance const& other) = default;
   WMOInstance& operator=(WMOInstance const& other) = default;
 
   WMOInstance (WMOInstance&& other)
-    : SceneObject(other._type, other._context, other._filename)
+    : SceneObject(other._type, other._context)
     , wmo (std::move (other.wmo))
     , group_extents(other.group_extents)
     , mFlags (other.mFlags)
@@ -58,7 +61,6 @@ public:
 
     _transform_mat = other._transform_mat;
     _transform_mat_inverted = other._transform_mat_inverted;
-    _transform_mat_transposed = other._transform_mat_transposed;
   }
 
   WMOInstance& operator= (WMOInstance&& other)
@@ -77,13 +79,11 @@ public:
     std::swap(_need_doodadset_update, other._need_doodadset_update);
     std::swap(_transform_mat, other._transform_mat);
     std::swap(_transform_mat_inverted, other._transform_mat_inverted);
-    std::swap(_transform_mat_transposed, other._transform_mat_transposed);
     std::swap(_context, other._context);
-    std::swap(_filename, other._filename);
     return *this;
   }
 
-  void draw ( opengl::scoped::use_program& wmo_shader
+  void draw ( OpenGL::Scoped::use_program& wmo_shader
             , glm::mat4x4 const& model_view
             , glm::mat4x4 const& projection
             , math::frustum const& frustum
@@ -97,17 +97,19 @@ public:
             , bool world_has_skies
             , display_mode display
             , bool no_cull = false
+            , bool draw_exterior = true
             );
 
-  void intersect (math::ray const&, selection_result*);
+  void intersect (math::ray const&, selection_result*, bool do_exterior = true);
 
   void recalcExtents() override;
+  void change_nameset(uint16_t name_set);
   void ensureExtents() override;
   bool finishedLoading() override { return wmo->finishedLoading(); };
-  virtual void updateDetails(noggit::ui::detail_infos* detail_widget) override;
+  virtual void updateDetails(Noggit::Ui::detail_infos* detail_widget) override;
 
   [[nodiscard]]
-  AsyncObject* instance_model() override { return wmo.get(); };
+  AsyncObject* instance_model() const override { return wmo.get(); };
 
   std::vector<wmo_doodad_instance*> get_visible_doodads( math::frustum const& frustum
                                                        , float const& cull_distance

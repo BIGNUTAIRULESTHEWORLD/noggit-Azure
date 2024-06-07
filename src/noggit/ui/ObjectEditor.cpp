@@ -1,6 +1,7 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/MapView.h>
+#include <noggit/application/NoggitApplication.hpp>
 #include <noggit/Misc.h>
 #include <noggit/ModelInstance.h>
 #include <noggit/WMOInstance.h> // WMOInstance
@@ -9,11 +10,12 @@
 #include <noggit/ui/ModelImport.h>
 #include <noggit/ui/ObjectEditor.h>
 #include <noggit/ui/RotationEditor.h>
-#include <noggit/ui/checkbox.hpp>
-#include <noggit/Red/UiCommon/expanderwidget.h>
+#include <noggit/ui/Checkbox.hpp>
+#include <noggit/ui/tools/UiCommon/expanderwidget.h>
 #include <util/qt/overload.hpp>
-
-#include <boost/algorithm/string/predicate.hpp>
+#include <noggit/DBC.h>
+#include "noggit/ActionManager.hpp"
+#include "noggit/Action.hpp"
 
 #include <QFormLayout>
 #include <QGridLayout>
@@ -31,19 +33,20 @@
 #include <string>
 #include <sstream>
 
-namespace noggit
+namespace Noggit
 {
-  namespace ui
+  namespace Ui
   {
     object_editor::object_editor ( MapView* mapView
                                  , World* world
-                                 , bool_toggle_property* move_model_to_cursor_position
-                                 , bool_toggle_property* snap_multi_selection_to_ground
-                                 , bool_toggle_property* use_median_pivot_point
+                                 , BoolToggleProperty* move_model_to_cursor_position
+                                 , BoolToggleProperty* snap_multi_selection_to_ground
+                                 , BoolToggleProperty* use_median_pivot_point
                                  , object_paste_params* paste_params
-                                 , bool_toggle_property* rotate_along_ground
-                                 , bool_toggle_property* rotate_along_ground_smooth
-                                 , bool_toggle_property* rotate_along_ground_random
+                                 , BoolToggleProperty* rotate_along_ground
+                                 , BoolToggleProperty* rotate_along_ground_smooth
+                                 , BoolToggleProperty* rotate_along_ground_random
+                                 , BoolToggleProperty* move_model_snap_to_objects
                                  , QWidget* parent
                                  )
             : QWidget(parent)
@@ -52,7 +55,7 @@ namespace noggit
             , helper_models_widget(new helper_models(this))
             , _settings (new QSettings (this))
             , _copy_model_stats (true)
-            , selected()
+            , _model_instance_created()
             , pasteMode(PASTE_ON_TERRAIN)
             , _map_view(mapView)
     {
@@ -62,7 +65,7 @@ namespace noggit
       auto layout = new QVBoxLayout (this);
       layout->setAlignment(Qt::AlignTop);
 
-      QGroupBox* radius_group = new QGroupBox("Radius");
+      QGroupBox* radius_group = new QGroupBox("Selection Brush Radius");
       auto radius_layout = new QFormLayout(radius_group);
 
       _radius_spin = new QDoubleSpinBox (this);
@@ -74,9 +77,52 @@ namespace noggit
       _radius_slider->setRange (0, 100);
       _radius_slider->setSliderPosition (_radius);
 
-      radius_layout->addRow (_radius_slider);
+      radius_layout->addRow(_radius_slider);
       radius_layout->addRow(_radius_spin);
       layout->addWidget(radius_group);
+
+      /*
+      QGroupBox* drag_selection_depth_group = new QGroupBox("Drag Selection Depth");
+      auto drag_selection_depth_layout = new QFormLayout(drag_selection_depth_group);
+
+      _drag_selection_depth_spin = new QDoubleSpinBox(this);
+      _drag_selection_depth_spin->setRange(1.0f, 3000.0f);
+      _drag_selection_depth_spin->setDecimals(2);
+      _drag_selection_depth_spin->setValue(_drag_selection_depth);
+
+      _drag_selection_depth_slider = new QSlider(Qt::Orientation::Horizontal, this);
+      _drag_selection_depth_slider->setRange(1.0f, 3000.0f);
+      _drag_selection_depth_slider->setSliderPosition(_drag_selection_depth);
+      
+
+      drag_selection_depth_layout->addRow(_drag_selection_depth_slider);
+      drag_selection_depth_layout->addRow(_drag_selection_depth_spin);
+      layout->addWidget(drag_selection_depth_group);*/
+
+      QPushButton* asset_browser_btn = new QPushButton("Asset browser", this);
+      layout->addWidget(asset_browser_btn);
+      QPushButton* object_palette_btn = new QPushButton("Object palette", this);
+      layout->addWidget(object_palette_btn);
+
+      _wmo_group = new QGroupBox("Selected WMO Options");
+      auto wmo_layout = new QFormLayout(_wmo_group);
+
+      _doodadSetSelector = new QComboBox(this);
+      _nameSetSelector = new QComboBox(this);
+      layout->addWidget(_wmo_group);
+
+      wmo_layout->addRow("Doodad Set:", _doodadSetSelector);
+      wmo_layout->addRow("Name Set:", _nameSetSelector);
+
+      auto clipboard_box = new QGroupBox("Clipboard");
+      auto clipboard_layout = new QVBoxLayout(clipboard_box);
+
+      _filename = new QLabel(this);
+      _filename->setWordWrap(true);
+      _filename->setText("Empty (0 objects copied)");
+      layout->addWidget(clipboard_box);
+
+      clipboard_layout->addWidget(_filename);
 
       auto *copyBox = new ExpanderWidget( this);
       copyBox->setExpanderTitle("Copy options");
@@ -109,9 +155,6 @@ namespace noggit
       QDoubleSpinBox *tiltRangeEnd = new QDoubleSpinBox(this);
       QDoubleSpinBox *scaleRangeStart = new QDoubleSpinBox(this);
       QDoubleSpinBox *scaleRangeEnd = new QDoubleSpinBox(this);
-
-      _filename = new QLabel (this);
-      _filename->setWordWrap (true);
 
       rotRangeStart->setMaximumWidth(85);
       rotRangeEnd->setMaximumWidth(85);
@@ -175,26 +218,31 @@ namespace noggit
       auto object_movement_layout = new QFormLayout (object_movement_box);
 
       // single model selection
-      auto object_movement_cb ( new checkbox ( "Mouse move follow\ncursor on the ground"
+      auto object_movement_cb ( new CheckBox ( "Mouse move follow\ncursor on the ground"
                                              , move_model_to_cursor_position
                                              , this
                                              )
                               );
 
+      auto object_movement_snap_cb(new CheckBox("Mouse move snaps\nto objects"
+          , move_model_snap_to_objects
+          , this
+      )
+      );
 
-      auto object_rotateground_cb(new checkbox("Rotate following cursor"
+      auto object_rotateground_cb(new CheckBox("Rotate following cursor"
           , rotate_along_ground
           , this
                                   )
       );
 
-      auto object_rotategroundsmooth_cb(new checkbox("Smooth follow rotation"
+      auto object_rotategroundsmooth_cb(new CheckBox("Smooth follow rotation"
           , rotate_along_ground_smooth
           , this
                                         )
       );
 
-      auto object_rotategroundrandom_cb(new checkbox("Random rot/tilt/scale\n on rotate"
+      auto object_rotategroundrandom_cb(new CheckBox("Random rot/tilt/scale\n on rotate"
           , rotate_along_ground_random
           , this
                                         )
@@ -204,18 +252,19 @@ namespace noggit
       object_movement_layout->addRow(object_rotategroundsmooth_cb);
       object_movement_layout->addRow(object_rotategroundrandom_cb);
       object_movement_layout->addRow(object_movement_cb);
+      object_movement_layout->addRow(object_movement_snap_cb);
 
       // multi model selection
       auto multi_select_movement_box(new QGroupBox("Multi Selection Movement", this));
       auto multi_select_movement_layout = new QFormLayout(multi_select_movement_box);
 
-      auto multi_select_movement_cb ( new checkbox( "Mouse move snap\nmodels to the ground"
+      auto multi_select_movement_cb ( new CheckBox( "Mouse move snap\nmodels to the ground"
                                                   , snap_multi_selection_to_ground
                                                   , this
                                                   )
                                     );
 
-      auto object_median_pivot_point (new checkbox ("Rotate around pivot point"
+      auto object_median_pivot_point (new CheckBox ("Rotate around pivot point"
                                                    , use_median_pivot_point
                                                    , this
                                                    )
@@ -225,7 +274,7 @@ namespace noggit
       multi_select_movement_layout->addRow(multi_select_movement_cb);
       multi_select_movement_layout->addRow(object_median_pivot_point);
 
-      auto *selectionOptionsBox = new ExpanderWidget( this);
+      auto *selectionOptionsBox = new ExpanderWidget(this);
       selectionOptionsBox->setExpanderTitle("Movement Options");
       selectionOptionsBox->setExpanded(_settings->value ("object_editor/movement_options", false).toBool());
 
@@ -239,8 +288,10 @@ namespace noggit
       selectionOptions_layout->addWidget(multi_select_movement_box);
 
       QPushButton *rotEditorButton = new QPushButton("Pos/Rotation Editor", this);
-      QPushButton *visToggleButton = new QPushButton("Toggle Hidden Models Visibility", this);
+      // replaced by a button
+      // QPushButton *visToggleButton = new QPushButton("Toggle Hidden Models Visibility", this);
       QPushButton *clearListButton = new QPushButton("Clear Hidden Models List", this);
+      QPushButton *clearGroupsButton = new QPushButton("Clear Selection Groups List", this);
 
       auto importBox = new ExpanderWidget(this);
       auto importBox_content = new QWidget(this);
@@ -254,16 +305,12 @@ namespace noggit
       QPushButton *last_m2_from_wmv = new QPushButton("Last M2 from WMV", this);
       QPushButton *last_wmo_from_wmv = new QPushButton("Last WMO from WMV", this);
       QPushButton *helper_models_btn = new QPushButton("Helper Models", this);
-      QPushButton *asset_browser_btn = new QPushButton("Asset browser", this);
-      QPushButton *object_palette_btn = new QPushButton("Object palette", this);
 
       importBox_content_layout->addWidget(toTxt);
       importBox_content_layout->addWidget(fromTxt);
       importBox_content_layout->addWidget(last_m2_from_wmv);
       importBox_content_layout->addWidget(last_wmo_from_wmv);
       importBox_content_layout->addWidget(helper_models_btn);
-      importBox_content_layout->addWidget(asset_browser_btn);
-      importBox_content_layout->addWidget(object_palette_btn);
 
       importBox->addPage(importBox_content);
 
@@ -271,10 +318,11 @@ namespace noggit
       layout->addWidget(pasteBox);
       layout->addWidget(selectionOptionsBox);
       layout->addWidget(rotEditorButton);
-      layout->addWidget(visToggleButton);
+      // layout->addWidget(visToggleButton);
       layout->addWidget(clearListButton);
+      layout->addWidget(clearGroupsButton);
       layout->addWidget(importBox);
-      layout->addWidget(_filename);
+      // layout->addWidget(_filename);
 
       rotationEditor->use_median_pivot_point = &_use_median_pivot_point;
 
@@ -348,6 +396,24 @@ namespace noggit
                 }
       );
 
+      /*
+      connect(_drag_selection_depth_spin, qOverload<double>(&QDoubleSpinBox::valueChanged)
+          , [&] (double v)
+              {
+                _drag_selection_depth = v;
+                QSignalBlocker const blocker(_drag_selection_depth_slider);
+                _drag_selection_depth_slider->setSliderPosition((int)std::round(v));
+              }
+      );
+      connect(_drag_selection_depth_slider, &QSlider::valueChanged
+          , [&](int v)
+              {
+                _drag_selection_depth = v;
+                QSignalBlocker const blocker(_drag_selection_depth_spin);
+                _drag_selection_depth_spin->setValue(v);
+              }
+      );*/
+
       connect ( rotRangeStart, qOverload<double> (&QDoubleSpinBox::valueChanged)
               , [=] (double v)
                 {
@@ -413,16 +479,21 @@ namespace noggit
       connect(rotEditorButton, &QPushButton::clicked, [=]() {
           rotationEditor->show();
       });
-
+      /*
       connect(visToggleButton, &QPushButton::clicked, [=]() {
           mapView->_draw_hidden_models.set
             (!mapView->_draw_hidden_models.get());
       });
+      */
 
       connect(clearListButton, &QPushButton::clicked, [=]() {
         ModelManager::clear_hidden_models();
         WMOManager::clear_hidden_wmos();
       });
+
+      connect(clearGroupsButton, &QPushButton::clicked, [=]() {
+          _map_view->getWorld()->clear_selection_groups();
+          });
 
       connect(toTxt, &QPushButton::clicked, [=]() {
           SaveObjecttoTXT (world);
@@ -457,6 +528,23 @@ namespace noggit
           , [=]() { mapView->getObjectPalette()->setVisible(mapView->getObjectPalette()->isHidden()); }
       );
 
+      connect(_doodadSetSelector
+          , qOverload<int>(&QComboBox::currentIndexChanged)
+          , [this](int index) {
+              NOGGIT_ACTION_MGR->beginAction(_map_view, Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+              _map_view->change_selected_wmo_doodadset(index);
+              NOGGIT_ACTION_MGR->endAction();
+          });
+
+      connect(_nameSetSelector
+          , qOverload<int>(&QComboBox::currentIndexChanged)
+          , [this](int index) {
+
+              NOGGIT_ACTION_MGR->beginAction(_map_view, Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
+              _map_view->change_selected_wmo_nameset(index);
+              NOGGIT_ACTION_MGR->endAction();
+          });
+
       auto mv_pos = mapView->pos();
       auto mv_size = mapView->size();
 
@@ -468,14 +556,14 @@ namespace noggit
     {
       for (auto& instance : _model_instance_created)
       {
-        auto obj = boost::get<selected_object_type>(instance);
+        auto obj = std::get<selected_object_type>(instance);
 
         if (obj->which() == eMODEL)
         {
           ModelInstance* mi = static_cast<ModelInstance*>(obj);
           delete mi;
         }
-        else if (instance.which() == eWMO)
+        else if (instance.index() == eWMO)
         {
           WMOInstance* wi = static_cast<WMOInstance*>(obj);
           delete wi;
@@ -501,17 +589,17 @@ namespace noggit
     {
       auto last_entry = world->get_last_selected_model();
 
-      for (auto& selection : selected)
+      for (auto& selection : _model_instance_created)
       {
         glm::vec3 pos;
 
-        if (selection.which() != eEntry_Object)
+        if (selection.index() != eEntry_Object)
         {
           LogError << "Invalid selection" << std::endl;
           return;
         }
 
-        auto obj = boost::get<selected_object_type>(selection);
+        auto obj = std::get<selected_object_type>(selection);
 
         glm::vec3 model_pos = obj->pos;
 
@@ -523,7 +611,7 @@ namespace noggit
         case PASTE_ON_SELECTION:
           if (last_entry)
           {
-            glm::vec3 last_entry_pos =  boost::get<selected_object_type>(last_entry.get())->pos;
+            glm::vec3 last_entry_pos =  std::get<selected_object_type>(last_entry.value())->pos;
 
             pos = last_entry_pos + model_pos;
           }
@@ -539,9 +627,13 @@ namespace noggit
           LogDebug << "object_editor::pasteObject: unknown paste mode " << pasteMode << std::endl;
           break;
         }
-        
+
+
+
         if (obj->which() == eMODEL)
         {
+          auto model_instance = static_cast<ModelInstance*>(obj);
+
           float scale(1.f);
           math::degrees::vec3 rotation(math::degrees(0)._, math::degrees(0)._, math::degrees(0)._);
 
@@ -552,12 +644,30 @@ namespace noggit
             rotation = obj->dir;
           }
 
-          world->addM2( obj->getFilename()
-                      , pos
-                      , scale
-                      , rotation
-                      , paste_params
-                      );
+          auto new_obj = world->addM2AndGetInstance( obj->instance_model()->file_key()
+                        , pos
+                        , scale
+                        , rotation
+                        , paste_params
+                        );
+
+          new_obj->model->wait_until_loaded();
+          new_obj->model->waitForChildrenLoaded();
+          new_obj->recalcExtents();
+
+          // check if pos is valid (not in an interior) wmo group
+          // bool is_indoor = world->isInIndoorWmoGroup(new_obj->extents, new_obj->transformMatrix());
+          bool is_indoor = false; // TODO Disabled the indoor check until non axis aligned boxes check is implemented
+          if (is_indoor)
+          {
+              QMessageBox::warning
+              (nullptr
+                  , "Warning"
+                  , "You can't place M2 models inside WMO models interiors, they will not render."
+                  "\nTo place objects inside WMOs, use server side gameobjects or modify the WMO doodads(with wow blender studio)."
+              );
+          }
+
         }
         else if (obj->which() == eWMO)
         {
@@ -568,9 +678,12 @@ namespace noggit
             rotation = obj->dir;
           }
 
-          world->addWMO(obj->getFilename(), pos, rotation);
+          auto new_obj = world->addWMOAndGetInstance(obj->instance_model()->file_key(), pos, rotation);
+          new_obj->wmo->wait_until_loaded();
+          new_obj->wmo->waitForChildrenLoaded();
+          new_obj->recalcExtents();
         }        
-      }
+}
     }
 
     void object_editor::togglePasteMode()
@@ -578,26 +691,26 @@ namespace noggit
       pasteModeGroup->button ((pasteMode + 1) % PASTE_MODE_COUNT)->setChecked (true);
     }   
 
-    void object_editor::replace_selection(std::vector<selection_type> new_selection)
+    void object_editor::update_clipboard()
     {
-      selected = new_selection;
+       // _model_instance_created = new_selection;
 
       std::stringstream ss;
       
-      if (selected.empty())
+      if (_model_instance_created.empty())
       {
-        _filename->setText("");
+        _filename->setText("Empty (0 objects copied)");
         return;
       }
 
-      if (selected.size() == 1)
+      if (_model_instance_created.size() == 1)
       {
         ss << "Model: ";
 
-        auto selectedObject = new_selection.front();
-        if (selectedObject.which() == eEntry_Object)
+        auto selectedObject = _model_instance_created.front();
+        if (selectedObject.index() == eEntry_Object)
         {
-          ss << boost::get<selected_object_type>(selectedObject)->getFilename();
+          ss << std::get<selected_object_type>(selectedObject)->instance_model()->file_key().filepath();
         }
         else
         {
@@ -607,7 +720,7 @@ namespace noggit
       }
       else
       {
-        ss << "Multiple objects selected";
+        ss << _model_instance_created.size() << " objects selected";
       }
 
       _filename->setText(ss.str().c_str());
@@ -615,7 +728,7 @@ namespace noggit
 
     void object_editor::copy(std::string const& filename)
     {
-      if (!MPQFile::exists(filename))
+      if (!Noggit::Application::NoggitApplication::instance()->clientData()->exists(filename))
       {
         QMessageBox::warning
           ( nullptr
@@ -626,25 +739,26 @@ namespace noggit
         return;
       }
 
-      std::vector<selection_type> selected_model;
+      // std::vector<selection_type> selected_model;
+      _model_instance_created.clear();
 
-      if (boost::ends_with (filename, ".m2"))
+      if (filename.ends_with(".m2"))
       {
         ModelInstance* mi = new ModelInstance(filename, _map_view->getRenderContext());
 
         _model_instance_created.push_back(mi);
 
-        selected_model.push_back(mi);
-        replace_selection(selected_model);
+        // selected_model.push_back(mi);
+        update_clipboard();
       }
-      else if (boost::ends_with (filename, ".wmo"))
+      else if (filename.ends_with(".wmo"))
       {
         WMOInstance* wi = new WMOInstance(filename, _map_view->getRenderContext());
 
         _model_instance_created.push_back(wi);
 
-        selected_model.push_back(wi);
-        replace_selection(selected_model);
+        // selected_model.push_back(wi);
+        update_clipboard();
       }
     }
 
@@ -658,41 +772,42 @@ namespace noggit
         return;
       }
 
-      std::vector<selection_type> selected_model;
+      // std::vector<selection_type> selected_model;
+      _model_instance_created.clear();
 
       for (auto& selection : current_selection)
       {
-        if (selection.which() != eEntry_Object)
+        if (selection.index() != eEntry_Object)
         {
           continue;
         }
 
-        auto obj = boost::get<selected_object_type>(selection);
+        auto obj = std::get<selected_object_type>(selection);
 
         if (obj->which() == eMODEL)
         {
           auto original = static_cast<ModelInstance*>(obj);
-          auto clone = new ModelInstance(original->model->filename, _map_view->getRenderContext());
+          auto clone = new ModelInstance(original->model->file_key().filepath(), _map_view->getRenderContext());
           
           clone->scale = original->scale;
           clone->dir = original->dir;
-          clone->pos = pivot ? original->pos - pivot.get() : glm::vec3();
+          clone->pos = pivot ? original->pos - pivot.value() : glm::vec3();
 
-          selected_model.push_back(clone);
+          // selected_model.push_back(clone);
           _model_instance_created.push_back(clone);
         }
         else if (obj->which() == eWMO)
         {
           auto original = static_cast<WMOInstance*>(obj);
-          auto clone = new WMOInstance(original->wmo->filename, _map_view->getRenderContext());
+          auto clone = new WMOInstance(original->wmo->file_key().filepath(), _map_view->getRenderContext());
           clone->dir = original->dir;
-          clone->pos = pivot ? original->pos - pivot.get() : glm::vec3();
+          clone->pos = pivot ? original->pos - pivot.value() : glm::vec3();
 
-          selected_model.push_back(clone);
+          // selected_model.push_back(clone);
           _model_instance_created.push_back(clone);
         }
       }
-      replace_selection(selected_model);
+      update_clipboard();
     }
 
     void object_editor::SaveObjecttoTXT (World* world)
@@ -705,12 +820,12 @@ namespace noggit
       std::ofstream stream(_settings->value("project/import_file", "import.txt").toString().toStdString(), std::ios_base::app);
       for (auto& selection : world->current_selection())
       {
-        if (selection.which() != eEntry_Object)
+        if (selection.index() != eEntry_Object)
         {
           continue;
         }
 
-        std::string path = boost::get<selected_object_type>(selection)->getFilename();
+        std::string path = std::get<selected_object_type>(selection)->instance_model()->file_key().filepath();
 
         stream << path << std::endl;
       }
@@ -775,6 +890,65 @@ namespace noggit
     QSize object_editor::sizeHint() const
     {
       return QSize(215, height());
+    }
+
+    void object_editor::update_selection_ui(World* world)
+    {
+        _wmo_group->setDisabled(true);
+        _wmo_group->hide();
+
+        auto last_entry = world->get_last_selected_model();
+        // for (auto& selection : selected)
+        if (last_entry)
+        {
+            if (last_entry.value().index() != eEntry_Object)
+            {
+                return;
+            }
+            auto obj = std::get<selected_object_type>(last_entry.value());
+
+            if (obj->which() == eMODEL)
+            {
+                // ModelInstance* mi = static_cast<ModelInstance*>(obj);
+            }
+            else if (obj->which() == eWMO)
+            {
+                _wmo_group->setDisabled(false);
+                _wmo_group->setHidden(false);
+                WMOInstance* wi = static_cast<WMOInstance*>(obj);
+
+                QSignalBlocker const doodadsetblocker(_doodadSetSelector);
+                _doodadSetSelector->clear();
+
+                QStringList doodadsetnames;
+                for (auto& doodad_set : wi->wmo->doodadsets)
+                {
+                    doodadsetnames.append(doodad_set.name);
+                }
+                _doodadSetSelector->insertItems(0, doodadsetnames);
+                _doodadSetSelector->setCurrentIndex(wi->doodadset());
+
+                // get names from WMOAreatable, if no name, get from areatable
+                // if no areatable, we have to get the terrain's area
+                QSignalBlocker const namesetblocker(_nameSetSelector);
+                _nameSetSelector->clear();
+                auto wmoid = wi->wmo->WmoId;
+                auto setnames = gWMOAreaTableDB.getWMOAreaNames(wmoid);
+                QStringList namesetnames;
+                for (auto& area_name : setnames)
+                {
+                    if (area_name.empty())
+                    {
+                        auto chunk = world->getChunkAt(wi->pos);
+                        namesetnames.append(gAreaDB.getAreaName(chunk->getAreaID()).c_str());
+                    }
+                    else
+                        namesetnames.append(area_name.c_str());
+                }
+                _nameSetSelector->insertItems(0, namesetnames);
+                _nameSetSelector->setCurrentIndex(wi->mNameset);
+            }
+        }
     }
   }
 }

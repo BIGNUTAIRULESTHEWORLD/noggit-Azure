@@ -1,13 +1,15 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #pragma once
-#include <noggit/MPQ.h>
 #include <noggit/TextureManager.h>
 #include <opengl/scoped.hpp>
 
-#include <boost/optional.hpp>
-
 #include <memory>
+
+namespace BlizzardArchive
+{
+  class ClientFile;
+}
 
 struct CImVector
 {
@@ -98,13 +100,13 @@ struct LiquidVertex {
 class wmo_liquid
 {
 public:
-  wmo_liquid(MPQFile* f, WMOLiquidHeader const& header, WMOMaterial const& mat, int group_liquid, bool use_dbc_type, bool is_ocean);
+  wmo_liquid(BlizzardArchive::ClientFile* f, WMOLiquidHeader const& header, int group_liquid, bool use_dbc_type, bool is_ocean);
   wmo_liquid(wmo_liquid const& other);
 
-  void upload(opengl::scoped::use_program& water_shader);
+  void upload(OpenGL::Scoped::use_program& water_shader);
 
 private:
-  int initGeometry(MPQFile* f);
+  int initGeometry(BlizzardArchive::ClientFile* f);
 
   glm::vec3 pos;
   bool mTransparency;
@@ -120,11 +122,11 @@ private:
 
   bool _uploaded = false;
 
-  opengl::scoped::deferred_upload_buffers<4> _buffer;
+  OpenGL::Scoped::deferred_upload_buffers<4> _buffer;
   GLuint const& _indices_buffer = _buffer[0];
   GLuint const& _vertices_buffer = _buffer[1];
   GLuint const& _depth_buffer = _buffer[2];
   GLuint const& _tex_coord_buffer = _buffer[3];
-  opengl::scoped::deferred_upload_vertex_arrays<1> _vertex_array;
+  OpenGL::Scoped::deferred_upload_vertex_arrays<1> _vertex_array;
   GLuint const& _vao = _vertex_array[0];
 };

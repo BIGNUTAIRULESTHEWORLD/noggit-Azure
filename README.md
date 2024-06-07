@@ -2,22 +2,27 @@
 This software is open source software licensed under GPL3, as found in
 the COPYING file.
 
-# DISCORD #
-You can follow Noggit's development and get the latest build here: https://discord.gg/UbdFHyM
-
 # BUILDING #
-This project requires CMake to be built. It also requires the
+This project requires CMake to be built. 
+
+It also requires the
 following libraries:
 
 * OpenGL
 * StormLib (by Ladislav Zezula)
-* Boost
-* Qt 5
+* CascLib (by Ladislav Zezula)
+* Qt5
+* Lua5.x
+
+On Windows you only need to install Qt5 yourself, the rest of the dependencies are pulled through FetchContent automatically.
+Supporting for Linux and Mac for this feature is coming in the future.
+In case FetchContent is not available (e.g. no internet connection), the find scripts will look for system installed libraries.
 
 Further following libraries are required for MySQL GUID Storage builds:
 
 * LibMySQL
 * MySQLCPPConn
+See below for detailed instructions
 
 ## Windows ##
 Text in `<brackets>` below are up to your choice but shall be replaced
@@ -31,14 +36,6 @@ corresponding versions for other dependencies.
 ### CMake ###
 Any recent CMake 3.x version should work. Just take the latest.
 
-### Boost ###
-Install boost to `<boost-install>`. The easiest is to download a pre-built
-package from https://sourceforge.net/projects/boost/files/boost-binaries/.
-
-* Any version from the last years should work, 1.60 at least.
-* Be sure to pick the right compiler version!
-* CMake may not support the latest version yet, if you have bad timing, try picking the second newest if configuring fails.
-
 ### Qt5 ###
 Install Qt5 to `<Qt-install>`, downloading a pre-built package from
 https://www.qt.io/download-open-source/#section-2.
@@ -48,6 +45,7 @@ also only **one** compiler version. If download size is noticably large
 (more than a few hundred MB), you're probably downloading way too much.
 
 ### StormLib ###
+This step is only required if pulling the dependency from FetchContent is not available.
 Download StormLib from https://github.com/ladislav-zezula/StormLib (any
 recent version).
 
@@ -58,6 +56,20 @@ recent version).
 * build ALL_BUILD
 * build INSTALL
 * Repeat for both release and debug.
+
+### MySQL (Optional) ###
+Optional, required for MySQL GUID Storage builds.
+download MySQL server https://dev.mysql.com/downloads/installer/
+and MySQL C++ Connector https://dev.mysql.com/downloads/connector/cpp/
+* open CMake GUI
+* enable `USE_SQL`
+* set `MYSQL_LIBRARY` (path) to `libmysql.lib` from your MYSQL server install.
+e.g `"C:/Program Files/MySQL/MySQL Server 8.0/lib/libmysql.lib"`
+* set `MYSQLCPPCONN_INCLUDE` (path) to the folder containing `cppconn/driver.h` from your MYSQL Connector C++ install.
+e.g `"C:/Program Files/MySQL/Connector C++ 8.0/include/jdbc"`
+* set `MYSQLCPPCONN_LIBRARY` (path) to `mysqlcppconn.lib` from your MYSQL Connector C++ install.
+e.g `"C:/Program Files/MySQL/Connector C++ 8.0/lib64/vs14/mysqlcppconn.lib"`
+* Don't forget to set your SQL settings and enable the feature in the noggit settings menu to use it.
 
 ### Noggit ###
 * open CMake GUI
@@ -113,101 +125,140 @@ To pull the latest version of submodules use the following command at the root d
 git submodule update --recursive --remote
 ```
 
-# DEVELOPMENT #
-Feel free to ask the owner of the official repository
-(https://github.com/wowdev/noggit3) for write access or
-fork and post a pull request.
-
-There is a bug tracker at https://github.com/wowdev/noggit3/issues which should be used.
-
-Discord, as linked above, may be used for communication.
-
 # CODING GUIDELINES #
-Following is an example for file `src/noggit/ui/foo_ban.hpp`. `.cpp` files
-are similar.
+File naming rules:
+
+```.hpp``` - is used for header files (C++ language).
+
+```.h``` - is used **only** for header files or modules written in C language.
+
+```.c``` - is used **only** for implementation files or modules written in C language.
+
+```.cpp``` - is used for project implementation files. 
+
+```.inl``` - is used for include files providing template instantiations.
+
+```.ui``` - is used for QT UI definitions (output of QtDesigner/QtCreator).
+
+### Project structure: ###
+
+```/src/Noggit``` - is the main directory hosting .cpp, .hpp, .inl, .ui files of the project.
+
+Within this directory the subdirs should correspond to namespace names (case sensitive). 
+
+File names should use PascalCase (e.g. ```FooBan.hpp```) and either correspond to the type defined in the file,
+or represent sematics of the module.
+
+```/src/External``` - is the directory of hosting included libraries and subprojects. This is external or modified
+external code, so no rules from Noggit project apply to its content.
+
+```/src/Glsl``` - is the directory to store .glsl shaders for the OpenGL renderer. It is not recommended, 
+but not strictly prohibited to inline shader code as strings to ```.cpp``` implementation files.
+
+
+### Code style ###
+
+Following is an example for file `src/Noggit/Ui/FooBan.hpp`. 
 
 ```cpp
-// This file is part of Noggit3, licensed under GNU General Public License (version 3).
- 
-//! \note Include guard shall be using #pragma once
-#pragma once
- 
-//! \note Use fully qualified paths rather than "../relative". Order
-//! includes with own first, then external dependencies, then c++ STL.
-#include <noggit/bar.hpp>
- 
-//! \note Namespaces equal directories. (java style packages.)
-namespace noggit
-{
-  namespace ui
-  {
-    //! \note Lower case, underscore separated.
-    class foo_ban : public QWidget
-    {
-      Q_OBJECT;
- 
-    public:
-      //! \note Long parameter list. Would be more than 80 chars.
-      //! chars. Break with comma in front. Use spaces to be
-      //! aligned below the braces.
-      foo_ban ( type name
-              , type_2 const& name_2
-              , type const& name3
-              )
-        : QWidget (nullptr)
-      //! \note Prefer initialization lists over assignment.
-        , _var (std::move (name))
-      {}
+#ifndef INCLUDE_GUARD_BASED_ON_FILENAME
+#define INCLUDE_GUARD_BASED_ON_FILENAME
+// We do not use #pragma once in headers as it is technically not cross-platform.
+// Use include guards instead. For example, CLion IDE creates them automatically on .hpp file creation.
 
-      //! \note Use const where possible. No space between name and
-      //! braces when no arguments are given.
-      void render() const;
- 
-      //! \note If you really need getters and setters, your design
-      //! might be broken. Please avoid them or consider just a
-      //! public data member, or use proper methods with semantics.
-      type const& var() const
-      {
-        return _var;
-      }
-      void var (type var_)
-      {
-        _var = std::move (var_);
-      }
- 
-      //! \note Prefer const where possible. If you need to copy, 
-      //! just take a `T`. Otherwise prefer taking a `T const&`.
-      //! Don't bother when it comes to tiny types.
-      baz_type count_some_numbers ( std::size_t begin
-                                   , std::size_t end
-                                   ) const
-      {
-        bazs_type bazs;
- 
-        //! \note Prefer construction over assignment. Prefer
-        //! preincrement.
-        for (size_t it (begin); it != end; ++it)
-        {
-          bazs.emplace_back (it);
-        }
- 
-        //! \note Prefer STL algorithms over hand written code.
-        assert (!bazs.empty());
-        auto const smallest
-          (std::min_element (bazs.begin(), bazs.end()));
- 
-        return *smallest;
-      }
+// <> are prefered for includes.
+// Local imports go here
+#include <SomeLocalFile.hpp>
+
+// Lib imports go here
+#include <external/SomeLibCode.hpp
+
+// STL imports go here
+#include <string>
+#include <mutex>
+#include <vector> // etc
+
+// Forward declarations in headers are encouraged. That prevents type leaking into bigger scopes
+// Also reduces compile time
+namespace Parent::SomeOtherChild
+{
+  class ForwardDeclaredClass;
+}
+
+// Namespaces are defined as PascalCase names. Namespace concatenation for nested namespaces
+// is adviced, but not strictly enforced.
+namespace Parent::Child
+{
+  // types are name in PascalCase,
+  class Test : public TestBase
+  {
+    public:
+      Test();
+     
+      int x; // public fields like that are discourged, but occur here and there through the project. 
+      // Subject to refactoring.
+      
+      // methods are named in camelCase.
+      // trivial getter methods are declared in the header file.
+      int somePrivateMember() { return _some_private_member; } const;
+
+      // trivial setters are declared in the header file. Preceded by "set" prefix.
+      void setSomePrivateMember(int a) { _some_private_member = a; };
+    
+    // private members are snake lower case, separated by underscore, preceded by underscore to indicate they're private.
+    private:
+      int _some_private_member;
+      ForwardDeclaredClass* _some_other_private_member_using_forward_decl;
+      std::mutex _mutex;
+
+    // static methods
 
     private:
-      //! \note Member variables are prefixed with an underscore.
-      type _var;
-      //! \note Typedef when using complex types. Fully qualify
-      //! types.
-      using baz_type = type_2;
-      using bazs_type = std::vector<baz_type>;
-      bazs_type _bazs;
-    }
-  }
+      static void someStaticMethod();
+    
+  };
 }
+
+#endif
+```
+
+Following is an example for file `src/Noggit/Ui/FooBan.cpp`.
+
+```cpp
+// the header of this .cpp comes first
+// <> are prefered for includes.
+#include <Noggit/Ui/FooBan.hpp>
+
+// same order of includes as in header.
+
+using namespace Parent::Child;
+
+Test::Test()
+: TestBase("some_arg")
+, _some_private_member(0)
+, _some_other_private_member_using_forward_decl(new ForwardDeclaredClass()) // do not forget to import ForwardDeclaredClass in .cpp
+{
+// body of ctor
+}
+
+void Test::someStaticMethod()
+{
+// local variables are named in snake_case, no preceding underscore.
+int local_var = 0;
+
+// preceding underscore is used on variables that are used for RAII patterns, such as scoped stuff (e.g. a scoped mutex)
+std::lock_guard<std::mutex> _lock (_mutex); // _lock is never accessed later, it just needs to live as long as the scope lives.
+// So, it has an underscore prefix.
+
+someFunc(local_var); // free floating functions use the same naming rules as methods
+}
+```
+
+Additional examples:
+
+```cpp
+
+constexpr unsigned SOME_CONSTANT = 10; // constants are named in SCREAMING_CASE
+#define SOME_MACRO // macro definitions are named in SCREAMING_CASE
+
 ```

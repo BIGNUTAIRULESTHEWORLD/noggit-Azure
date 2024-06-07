@@ -3,40 +3,37 @@
 #include <glm/gtx/quaternion.hpp>
 #include <math/bounding_box.hpp>
 #include <math/frustum.hpp>
+#include <glm/glm.hpp>
 #include <noggit/Log.h>
 #include <noggit/Misc.h> // checkinside
 #include <noggit/Model.h> // Model, etc.
 #include <noggit/ModelInstance.h>
 #include <noggit/WMOInstance.h>
 #include <noggit/ContextObject.hpp>
-#include <opengl/primitives.hpp>
+#include <noggit/rendering/Primitives.hpp>
 #include <opengl/scoped.hpp>
 #include <opengl/shader.hpp>
 
-ModelInstance::ModelInstance(std::string const& filename, noggit::NoggitRenderContext context)
-  : SceneObject(SceneObjectTypes::eMODEL, context, filename)
-  , model (filename, context)
+#include <sstream>
+
+ModelInstance::ModelInstance(BlizzardArchive::Listfile::FileKey const& file_key
+                             , Noggit::NoggitRenderContext context)
+  : SceneObject(SceneObjectTypes::eMODEL, context)
+  , model(file_key, context)
 {
 }
 
-ModelInstance::ModelInstance(std::string const& filename, ENTRY_MDDF const*d, noggit::NoggitRenderContext context)
-  : SceneObject(SceneObjectTypes::eMODEL, context, filename)
-  , model (filename, context)
+ModelInstance::ModelInstance(BlizzardArchive::Listfile::FileKey const& file_key
+                             , ENTRY_MDDF const*d, Noggit::NoggitRenderContext context)
+  : SceneObject(SceneObjectTypes::eMODEL, context)
+  , model(file_key, context)
 {
 	uid = d->uniqueID;
 	pos = glm::vec3(d->pos[0], d->pos[1], d->pos[2]);
     dir = math::degrees::vec3( math::degrees(d->rot[0])._, math::degrees(d->rot[1])._, math::degrees(d->rot[2])._);
 	// scale factor - divide by 1024. blizzard devs must be on crack, why not just use a float?
 	scale = d->scale / 1024.0f;
-
-  if (model->finishedLoading())
-  {
-    recalcExtents();
-  }
-  else
-  {
-    _need_recalc_extents = true;
-  }
+  _need_recalc_extents = true;
 }
 
 
@@ -50,25 +47,25 @@ void ModelInstance::draw_box (glm::mat4x4 const& model_view
 
   if (is_current_selection)
   {
-    opengl::primitives::wire_box::getInstance(_context).draw ( model_view
+    Noggit::Rendering::Primitives::WireBox::getInstance(_context).draw ( model_view
       , projection
-      , transformMatrixTransposed()
+      , transformMatrix()
       , { 1.0f, 1.0f, 0.0f, 1.0f }
       , misc::transform_model_box_coords(model->header.collision_box_min)
       , misc::transform_model_box_coords(model->header.collision_box_max)
       );
 
-    opengl::primitives::wire_box::getInstance(_context).draw ( model_view
+    Noggit::Rendering::Primitives::WireBox::getInstance(_context).draw ( model_view
       , projection
-      , transformMatrixTransposed()
+      , transformMatrix()
       , {1.0f, 1.0f, 1.0f, 1.0f}
       , misc::transform_model_box_coords(model->header.bounding_box_min)
       , misc::transform_model_box_coords(model->header.bounding_box_max)
       );
 
-    opengl::primitives::wire_box::getInstance(_context).draw ( model_view
+    Noggit::Rendering::Primitives::WireBox::getInstance(_context).draw ( model_view
       , projection
-      , glm::mat4x4(glm::mat4x4((1)))
+      , glm::mat4x4(1)
       , {0.0f, 1.0f, 0.0f, 1.0f}
       , extents[0]
       , extents[1]
@@ -76,22 +73,24 @@ void ModelInstance::draw_box (glm::mat4x4 const& model_view
   }
   else
   {
-    opengl::primitives::wire_box::getInstance(_context).draw ( model_view
+    const glm::vec4 color = _grouped ? glm::vec4(0.5f, 0.5f, 1.0f, 0.5f) : glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+    Noggit::Rendering::Primitives::WireBox::getInstance(_context).draw ( model_view
       , projection
-      , transformMatrixTransposed()
-      , {0.5f, 0.5f, 0.5f, 1.0f}
+      , transformMatrix()
+      , color
       , misc::transform_model_box_coords(model->header.bounding_box_min)
       , misc::transform_model_box_coords(model->header.bounding_box_max)
       );
   }
 }
 
-void ModelInstance::intersect (glm::mat4x4 const& model_view
+std::vector<std::tuple<int, int, int>> ModelInstance::intersect (glm::mat4x4 const& model_view
                               , math::ray const& ray
                               , selection_result* results
                               , int animtime
                               )
-{
+{  
+  std::vector<std::tuple<int, int, int>> triangle_indices;
   math::ray subray (_transform_mat_inverted, ray);
 
   if ( !subray.intersect_bounds ( fixCoordSystem (model->header.bounding_box_min)
@@ -99,15 +98,17 @@ void ModelInstance::intersect (glm::mat4x4 const& model_view
                                 )
      )
   {
-    return;
+    return triangle_indices;
   }
 
   for (auto&& result : model->intersect (model_view, subray, animtime))
   {
     //! \todo why is only sc important? these are relative to subray,
     //! so should be inverted by model_matrix?
-    results->emplace_back (result * scale, this);
+    results->emplace_back (result.first * scale, this);
+    triangle_indices.emplace_back(result.second);
   }
+  return triangle_indices;
 }
 
 
@@ -197,7 +198,7 @@ void ModelInstance::recalcExtents()
   auto transposedMat = _transform_mat;
   for (auto const& point : corners_in_world)
   {
-    rotated_corners_in_world.push_back(transposedMat * glm::vec4(point, 1.f));
+    rotated_corners_in_world.emplace_back(transposedMat * glm::vec4(point, 1.f));
   }
 
   math::aabb const bounding_of_rotated_points (rotated_corners_in_world);
@@ -228,15 +229,20 @@ glm::vec3* ModelInstance::getExtents()
   return &extents[0];
 }
 
-void ModelInstance::updateDetails(noggit::ui::detail_infos* detail_widget)
+void ModelInstance::updateDetails(Noggit::Ui::detail_infos* detail_widget)
 {
   std::stringstream select_info;
 
-  select_info << "<b>filename:</b> " << model->filename
+  select_info << "<b>filename:</b> " << model->file_key().filepath()
+    // << "<br><b>FileDataID:</b> " << model->file_key().fileDataID() // not in WOTLK
     << "<br><b>unique ID:</b> " << uid
     << "<br><b>position X/Y/Z:</b> {" << pos.x << " , " << pos.y << " , " << pos.z << "}"
     << "<br><b>rotation X/Y/Z:</b> {" << dir.x << " , " << dir.y << " , " << dir.z << "}"
     << "<br><b>scale:</b> " << scale
+
+    << "<br><b>server position X/Y/Z: </b>{" << (ZEROPOINT - pos.z) << ", " << (ZEROPOINT - pos.x) << ", " << pos.y << "}"
+    << "<br><b>server orientation:  </b>" << fabs(2 * glm::pi<float>() - glm::pi<float>() / 180.0 * (float(dir.y) < 0 ? fabs(float(dir.y)) + 180.0 : fabs(float(dir.y) - 180.0)))
+
     << "<br><b>textures Used:</b> " << model->header.nTextures
     << "<br><b>size category:</b><span> " << size_cat;
 
@@ -253,7 +259,7 @@ void ModelInstance::updateDetails(noggit::ui::detail_infos* detail_widget)
     if (error)
       select_info << "<font color=\"Red\">";
 
-    select_info << "<b>" << (j + 1) << ":</b> " << model->_textures[j]->filename;
+    select_info << "<b>" << (j + 1) << ":</b> " << model->_textures[j]->file_key().stringRepr();
 
     if (stuck || error)
       select_info << "</font>";
@@ -264,8 +270,10 @@ void ModelInstance::updateDetails(noggit::ui::detail_infos* detail_widget)
   detail_widget->setText(select_info.str());
 }
 
-wmo_doodad_instance::wmo_doodad_instance(std::string const& filename, MPQFile* f, noggit::NoggitRenderContext context)
-  : ModelInstance(filename, context)
+wmo_doodad_instance::wmo_doodad_instance(BlizzardArchive::Listfile::FileKey const& file_key
+                                         , BlizzardArchive::ClientFile* f
+                                         , Noggit::NoggitRenderContext context)
+  : ModelInstance(file_key, context)
 {
   float ff[4];
 
@@ -311,7 +319,6 @@ void wmo_doodad_instance::update_transform_matrix_wmo(WMOInstance* wmo)
   );
 
   _transform_mat_inverted = glm::inverse(mat);
-  _transform_mat_transposed = mat;
 
   // to compute the size category (used in culling)
   recalcExtents();
