@@ -98,6 +98,12 @@ NoggitProjectCreationDialog::NoggitProjectCreationDialog(ProjectInformation& pro
                        return;
                      }
 
+                     if (project_path == project_path.root_path())
+                     {
+                       QMessageBox::critical(this, "Error", "Project path can't be the root of a drive.\nPoint to a folder, preferrably empty.");
+                       return;
+                     }
+
                      project_information.game_client_version = ui->project_expansion->currentText().toStdString();
 
 
