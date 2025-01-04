@@ -975,8 +975,11 @@ void MapTile::remove_model(uint32_t uid)
   {
     uids.erase(it);
 
-    const auto obj = _world->get_model(uid).value();
-    auto instance = std::get<selected_object_type>(obj);
+    const auto obj = _world->get_model(uid);
+    if (!obj.has_value())
+      return;
+
+    auto instance = std::get<selected_object_type>(obj.value());
 
     auto& instances = object_instances[instance->instance_model()];
     auto it2 = std::find(instances.begin(), instances.end(), instance);
@@ -1032,8 +1035,11 @@ void MapTile::add_model(uint32_t uid)
   {
     uids.push_back(uid);
 
-    const auto& obj = _world->get_model(uid).value();
-    auto instance = std::get<selected_object_type>(obj);
+    const auto obj = _world->get_model(uid);
+    if (!obj)
+      return;
+
+    auto instance = std::get<selected_object_type>(obj.value());
     object_instances[instance->instance_model()].push_back(instance);
 
     if (instance->finishedLoading())
@@ -1584,27 +1590,27 @@ void MapTile::setVertexColorImage(QImage const& baseimage, int mode, bool tiledE
             case 1: // Add
             {
               auto color = image.pixelColor((k * 16) + x, (l * 16) + y);
-              colors[idx].x =  std::min(2.0, std::max(0.0, colors[idx].x + color.redF() * 2.f));
-              colors[idx].y =  std::min(2.0, std::max(0.0, colors[idx].y + color.greenF() * 2.f));
-              colors[idx].z =  std::min(2.0, std::max(0.0, colors[idx].z + color.blueF() * 2.f));
+              colors[idx].x =  std::min(2.0f, std::max(0.0f, colors[idx].x + color.redF() * 2.f));
+              colors[idx].y =  std::min(2.0f, std::max(0.0f, colors[idx].y + color.greenF() * 2.f));
+              colors[idx].z =  std::min(2.0f, std::max(0.0f, colors[idx].z + color.blueF() * 2.f));
               break;
             }
 
             case 2: // Subtract
             {
               auto color = image.pixelColor((k * 16) + x, (l * 16) + y);
-              colors[idx].x =  std::min(2.0, std::max(0.0, colors[idx].x - color.redF() * 2.f));
-              colors[idx].y =  std::min(2.0, std::max(0.0, colors[idx].y - color.greenF() * 2.f));
-              colors[idx].z =  std::min(2.0, std::max(0.0, colors[idx].z - color.blueF() * 2.f));
+              colors[idx].x =  std::min(2.0f, std::max(0.0f, colors[idx].x - color.redF() * 2.f));
+              colors[idx].y =  std::min(2.0f, std::max(0.0f, colors[idx].y - color.greenF() * 2.f));
+              colors[idx].z =  std::min(2.0f, std::max(0.0f, colors[idx].z - color.blueF() * 2.f));
               break;
             }
 
             case 3: // Multiply
             {
               auto color = image.pixelColor((k * 16) + x, (l * 16) + y);
-              colors[idx].x =  std::min(2.0, std::max(0.0, colors[idx].x * color.redF() * 2.f));
-              colors[idx].y =  std::min(2.0, std::max(0.0, colors[idx].y * color.greenF() * 2.f));
-              colors[idx].z =  std::min(2.0, std::max(0.0, colors[idx].z * color.blueF() * 2.f));
+              colors[idx].x =  std::min(2.0f, std::max(0.0f, colors[idx].x * color.redF() * 2.f));
+              colors[idx].y =  std::min(2.0f, std::max(0.0f, colors[idx].y * color.greenF() * 2.f));
+              colors[idx].z =  std::min(2.0f, std::max(0.0f, colors[idx].z * color.blueF() * 2.f));
               break;
             }
           }
@@ -1701,6 +1707,18 @@ void MapTile::recalcExtents()
 
   _extents[0].y = std::numeric_limits<float>::max();
   _extents[1].y = std::numeric_limits<float>::lowest();
+
+  if (!finishedLoading())
+  {
+    _extents_dirty = true;
+    return;
+  }
+
+  if (loading_failed())
+  {
+    _extents_dirty = false;
+    return;
+  }
 
   for (int i = 0; i < 256; ++i)
   {
@@ -1852,6 +1870,18 @@ void MapTile::recalcCombinedExtents()
 {
   if (!_combined_extents_dirty)
     return;
+
+  if (!finishedLoading())
+  {
+    _combined_extents_dirty = true;
+    return;
+  }
+
+  if (loading_failed())
+  {
+    _combined_extents_dirty = false;
+    return;
+  }
 
   // ensure all extents are updated
   {
