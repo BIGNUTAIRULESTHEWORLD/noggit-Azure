@@ -1040,6 +1040,13 @@ void MapIndex::searchMaxUID()
 
       std::stringstream filename;
       filename << "World\\Maps\\" << basename << "\\" << basename << "_" << x << "_" << z << ".adt";
+
+      if (!Noggit::Application::NoggitApplication::instance()->clientData()->exists(filename.str()))
+      {
+        LogError << "searchMaxUID(): ADT(" << x << "_" << z << ") referenced by WDT does not exist. Skipping." << std::endl;
+        continue;
+      }
+
       highestGUID = std::max(highestGUID, getHighestGUIDFromFile(filename.str()));
     }
   }
