@@ -64,6 +64,29 @@ namespace Noggit::Application
 	  auto applicationCurrentPath = std::filesystem::current_path();
 	  Log << "Noggit Relative Path: " << applicationCurrentPath << std::endl;
 
+		auto wpath = applicationCurrentPath.wstring();
+		bool hasOnlyAscii = std::all_of(wpath.begin(), wpath.end(), [](wchar_t c)
+			{
+				return c <= 127;
+			});
+
+		if (!hasOnlyAscii)
+		{
+			LogError << "Error : Application execution path contains special characters.";
+			{
+				QMessageBox msgBox;
+				msgBox.setIcon(QMessageBox::Critical);
+				msgBox.setWindowTitle("Application Path Error");
+				msgBox.setText("Application execution path contains special characters, noggit only supports standard english characters, move Noggit to a valid path."
+					"\nThe application will now close.");
+				msgBox.setStandardButtons(QMessageBox::Ok);
+				msgBox.exec();
+
+				QCoreApplication::exit(EXIT_FAILURE);
+				return false;
+			}
+		}
+
 	  //Locate application configuration file
 	  auto nogginConfigurationPath = applicationCurrentPath / "noggit.json";
 	
