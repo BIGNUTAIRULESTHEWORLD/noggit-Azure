@@ -192,7 +192,7 @@ void PreviewRenderer::draw()
             wmo_program, model_view(), projection(), frustum, culldistance,
             _camera.position, _draw_boxes.get(), _draw_models.get() 
             , false, false, 0, false, display_mode::in_3D
-            , true, true, false, false
+            , true, true, false, false, false
         );
 
         auto doodads = wmo_instance.get_doodads(true);
@@ -450,10 +450,10 @@ QPixmap* PreviewRenderer::renderToPixmap()
   if (async_loader->is_loading())
   {
     // wait for the loader to finish
-    // do
-    // {
-    //   std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    // } while (async_loader->is_loading());
+    do
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (async_loader->is_loading());
 
     // redraw
     gl.clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -694,6 +694,7 @@ void PreviewRenderer::unloadOpenglData()
     return;
   }
 
+  assert(context() != nullptr);
   makeCurrent();
   OpenGL::context::scoped_setter const _ (::gl, context());
 

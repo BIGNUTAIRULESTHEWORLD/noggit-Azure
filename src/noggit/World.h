@@ -101,14 +101,18 @@ public:
 
   selection_result intersect (glm::mat4x4 const& model_view
                              , math::ray const&
-                             , bool only_map
-                             , bool do_objects
-                             , bool draw_terrain
-                             , bool draw_wmo
-                             , bool draw_models
-                             , bool draw_hidden_models
-                             , bool draw_wmo_exterior
-                             , bool animate
+                             , const bool only_map
+                             , const bool do_objects
+                             , const bool draw_terrain
+                             , const bool draw_wmo
+                             , const bool draw_models
+                             , const bool draw_hidden_models
+                             , const bool draw_wmo_exterior
+                             , const bool animate
+                             , const bool first_object_occurence = false
+                             , const bool opaque_only_tris = false
+                             , const float obj_distance_max = 0.0f
+                             , const bool do_wmo_interiors = true
                              );
 
   MapChunk* getChunkAt(glm::vec3 const& pos);
@@ -143,6 +147,7 @@ public:
   void remove_from_selection(std::uint32_t uid, bool skip_group = false, bool update_pivot = true);
   void reset_selection();
   void delete_selected_models();
+  // note : height is Y axis.
   glm::vec3 get_ground_height(glm::vec3 pos);
   void range_add_to_selection(glm::vec3 const& pos, float radius, bool remove);
   Noggit::world_model_instances_storage& getModelInstanceStorage() { return _model_instance_storage; };
@@ -244,6 +249,7 @@ public:
   void paintGroundEffectExclusion(glm::vec3 const& pos, float radius, bool exclusion);
   void setBaseTexture(glm::vec3 const& pos);
   void clear_shadows(glm::vec3 const& pos);
+  void bake_shadows(glm::vec3 const& pos, int mode, const glm::mat4x4& view);
   void clearTextures(glm::vec3 const& pos);
   void swapTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex);
   void swapTextureGlobal(scoped_blp_texture_reference tex);

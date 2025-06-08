@@ -144,6 +144,11 @@ void ViewportGizmo::handleTransformGizmo(MapView* map_view
     }
   }
 
+  // Clamp scale to allowed values
+  new_scale.x = std::clamp(new_scale.x, SceneObject::min_scale(), SceneObject::max_scale());
+  new_scale.y = std::clamp(new_scale.y, SceneObject::min_scale(), SceneObject::max_scale());
+  new_scale.z = std::clamp(new_scale.z, SceneObject::min_scale(), SceneObject::max_scale());
+
   NOGGIT_ACTION_MGR->beginAction(map_view, Noggit::ActionFlags::eOBJECTS_TRANSFORMED,
                                                  Noggit::ActionModalityControllers::eLMB);
 

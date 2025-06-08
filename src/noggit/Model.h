@@ -52,7 +52,7 @@ enum M2GlobalFlags
   // TODO : MOP +
 };
 
-glm::vec3 fixCoordSystem(glm::vec3 v);
+inline glm::vec3 fixCoordSystem(glm::vec3 v);
 
 class Bone {
   Animation::M2Value<glm::vec3> trans;
@@ -159,7 +159,13 @@ public:
 
   Model(const std::string& name, Noggit::NoggitRenderContext context );
 
-  std::vector<std::pair<float, std::tuple<int, int, int>>> intersect (glm::mat4x4 const& model_view, math::ray const&, int animtime, bool calc_anims);
+  std::vector<std::pair<float, std::tuple<int, int, int>>> intersect (
+    glm::mat4x4 const& model_view
+    , math::ray const&
+    , int animtime
+    , bool calc_anims
+    , bool first_occurence
+    , bool only_opaque_tris);
 
   void updateEmitters(float dt);
 

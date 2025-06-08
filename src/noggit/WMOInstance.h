@@ -16,9 +16,16 @@ public:
   scoped_wmo_reference wmo;
 
   uint16_t mFlags;
-  uint16_t mNameset; 
+  uint16_t mNameset;
 
-  uint16_t doodadset() const { return _doodadset; }
+  // TODO figure out a better structure for this
+  // bool hasLowResModel = false;
+  std::optional<scoped_wmo_reference*> lowResWmo;
+  ENTRY_MODF* lowResInstance = nullptr; // assume this is never nullptr when lowResWmo has a value
+  bool render_low_res = false;
+
+
+  uint16_t doodadset() const { return _doodadset; };
   void change_doodadset(uint16_t doodad_set);
 
   [[nodiscard]]
@@ -51,7 +58,12 @@ public:
     , _doodadset (other._doodadset)
     , _doodads_per_group(other._doodads_per_group)
     , _need_doodadset_update(other._need_doodadset_update)
+    , _update_group_extents(other._update_group_extents)
     , _need_recalc_extents(other._need_recalc_extents)
+    // , hasLowResModel(other.hasLowResModel)
+    , render_low_res(other.render_low_res)
+    , lowResInstance(other.lowResInstance)
+    , lowResWmo(other.lowResWmo)
   {
     std::swap (extents, other.extents);
     pos = other.pos;
@@ -82,6 +94,11 @@ public:
     std::swap(_transform_mat_inverted, other._transform_mat_inverted);
     std::swap(_context, other._context);
     std::swap(_need_recalc_extents, other._need_recalc_extents);
+    std::swap(_update_group_extents, other._update_group_extents);
+    // std::swap(hasLowResModel, other.hasLowResModel);
+    std::swap(render_low_res, other.render_low_res);
+    std::swap(lowResInstance, other.lowResInstance);
+    std::swap(lowResWmo, other.lowResWmo);
     return *this;
   }
 
@@ -102,9 +119,10 @@ public:
             , bool draw_exterior
             , bool render_selection_aabb
             , bool render_group_bounds
+            , bool render_low_res
             );
 
-  void intersect (math::ray const&, selection_result*, bool do_exterior = true);
+  void intersect (math::ray const&, selection_result*, bool do_exterior = true, bool do_interior = true, bool first_occurence = false);
 
   std::array<glm::vec3, 2> const& getExtents() override; // axis aligned
   std::array<glm::vec3, 2> const& getLocalExtents() const;

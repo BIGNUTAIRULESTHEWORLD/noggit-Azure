@@ -16,6 +16,10 @@ namespace math
       {
         assert(false);
       }
+      // pre compute ivnerted direction
+      _inverted_direction.x = (_direction.x != 0.0f) ? 1.0f / _direction.x : std::numeric_limits<float>::max();
+      _inverted_direction.y = (_direction.y != 0.0f) ? 1.0f / _direction.y : std::numeric_limits<float>::max();
+      _inverted_direction.z = (_direction.z != 0.0f) ? 1.0f / _direction.z : std::numeric_limits<float>::max();
     }
 
     ray (glm::mat4x4 const& transform, ray const& other)
@@ -35,8 +39,14 @@ namespace math
       return _origin + _direction * distance;
     }
 
+    glm::vec3 const origin() const
+    {
+      return _origin;
+    }
+
   private:
-     glm::vec3 _origin;
-     glm::vec3 _direction;
+     glm::vec3 const _origin;
+     glm::vec3 const _direction;
+     glm::vec3 _inverted_direction;
   };
 }

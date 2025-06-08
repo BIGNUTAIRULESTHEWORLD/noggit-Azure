@@ -89,17 +89,18 @@ void AsyncLoader::process()
         _state_changed.notify_all();
       }
     }
-    catch (BlizzardArchive::Exceptions::FileReadFailedError const&)
+    catch (BlizzardArchive::Exceptions::FileReadFailedError const& e)
     {
       std::lock_guard<std::mutex> const lock(_guard);
-
+    
       object->error_on_loading();
-
+      // LogError << e.what() << std::endl;
+    
       if (object->is_required_when_saving())
       {
         _important_object_failed_loading = true;
       }
-
+    
       _currently_loading.remove(object);
     }
     catch (...)
@@ -107,7 +108,8 @@ void AsyncLoader::process()
       std::lock_guard<std::mutex> const lock(_guard);
 
       object->error_on_loading();
-      LogError << "Caught unknown error." << std::endl;
+      std::string const reason{ util::exception_to_string(std::current_exception()) };
+      LogError << "Caught unknown error: " << reason <<  std::endl;
 
       if (object->is_required_when_saving())
       {

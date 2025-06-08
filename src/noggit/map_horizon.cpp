@@ -9,6 +9,7 @@
 #include <noggit/World.h>
 #include <opengl/context.hpp>
 #include <opengl/context.inl>
+#include <noggit/Misc.h>
 
 #include <sstream>
 #include <bitset>
@@ -92,7 +93,7 @@ static inline uint32_t color_for_height (int16_t height)
 namespace Noggit
 {
 
-map_horizon::map_horizon(const std::string& basename, const MapIndex * const index)
+map_horizon::map_horizon(const std::string& basename, World * const world)
 {
   std::stringstream filename;
   filename << "World\\Maps\\" << basename << "\\" << basename << ".wdl";
@@ -126,10 +127,12 @@ map_horizon::map_horizon(const std::string& basename, const MapIndex * const ind
 
         break;
       }
-      // todo: handle those too ?
+
       case 'MWMO':
       {
         {
+          // TODO : use WMID instead for proper string parsing.
+
             char const* lCurPos = reinterpret_cast<char const*>(wdl_file.getPointer());
             char const* lEnd = lCurPos + size;
         
@@ -143,21 +146,21 @@ map_horizon::map_horizon(const std::string& basename, const MapIndex * const ind
         break;
       }
       case 'MWID':
-          wdl_file.seekRelative(size);
-          break;
           // TODO
+          wdl_file.seekRelative(size); // jump to end of chunk
+          break;
       case 'MODF':
       {
-        wdl_file.seekRelative(size);
+        ENTRY_MODF const* modf_ptr = reinterpret_cast<ENTRY_MODF const*>(wdl_file.getPointer());
+        for (unsigned int i = 0; i < size / sizeof(ENTRY_MODF); ++i)
+        {
+            lWMOInstances.push_back(modf_ptr[i]);
+            if (lWMOInstances[i].scale == 0.0f)
+              lWMOInstances[i].scale = 1024.0f;
+        }
+        
+        wdl_file.seekRelative(size); // jump to end of chunk
         break;
-        // {
-        //     ENTRY_MODF const* modf_ptr = reinterpret_cast<ENTRY_MODF const*>(wdl_file.getPointer());
-        //     for (unsigned int i = 0; i < size / sizeof(ENTRY_MODF); ++i)
-        //     {
-        //         lWMOInstances.push_back(modf_ptr[i]);
-        //     }
-        // }
-        // break;
       }
       case 'MAOF':
       {
@@ -212,9 +215,27 @@ map_horizon::map_horizon(const std::string& basename, const MapIndex * const ind
     }
   } while (!done && !wdl_file.isEof());
 
+  constexpr bool _load_models = true;
+  if (_load_models)
+  {
+    // - Load WMOs -----------------------------------------
+
+    // Don't load them to storage, they share UIDs wth regular models
+
+    // for rendering in unloaded tiles
+    for (auto const& object : lWMOInstances)
+    {
+      // world->add_wmo_instance(WMOInstance(mWMOFilenames[object.nameID],
+      //   &object, world->getRenderContext()), false, false);
+
+      // auto& filepath = mWMOFilenames[object.nameID];
+      // wmos.push_back(scoped_wmo_reference(filepath, world->getRenderContext()));
+    }
+  }
+
   wdl_file.close();
 
-  set_minimap(index);
+  set_minimap(&world->mapIndex);
 }
 
 void map_horizon::update_minimap_tile(int y, int x, bool has_data = false )
@@ -378,25 +399,95 @@ void map_horizon::save_wdl(World* world, bool regenerate)
     curPos += 8 + 0x4;
     //  }
 
+    // WMO objects export code is copy pasta from MapTile
+
+    struct filenameOffsetThing
+    {
+      int nameID;
+      int filenamePosition;
+    };
+
+    filenameOffsetThing nullyThing = { 0, 0 };
+
+    std::map<std::string, filenameOffsetThing> lObjects;
+
+    // avoid duplicates, not really necessary here as we directly used MWMO string list
+    for (auto const& filename : mWMOFilenames)
+    {
+      if (lObjects.find(filename) == lObjects.end())
+      {
+        lObjects.emplace(filename, nullyThing);
+      }
+    }
+
+    int lID = 0;
+    for (auto& object : lObjects)
+    {
+      object.second.nameID = lID++;
+    }
+
     // MWMO
     //  {
+    int lMWMO_Position = curPos;
     wdlFile.Extend(8);
     SetChunkHeader(wdlFile, curPos, 'MWMO', 0);
+
     curPos += 8;
+
+    // MWMO data
+    for (auto& object : lObjects)
+    {
+      object.second.filenamePosition = wdlFile.GetPointer<sChunkHeader>(lMWMO_Position)->mSize;
+      wdlFile.Insert(curPos, static_cast<unsigned long>(object.first.size() + 1), misc::normalize_adt_filename(object.first).c_str());
+      curPos += static_cast<int>(object.first.size() + 1);
+      wdlFile.GetPointer<sChunkHeader>(lMWMO_Position)->mSize += static_cast<int>(object.first.size() + 1);
+      LogDebug << "Added WDL object \"" << object.first << "\"." << std::endl;
+    }
     //  }
 
     // MWID
     //  {
-    wdlFile.Extend(8);
-    SetChunkHeader(wdlFile, curPos, 'MWID', 0);
-    curPos += 8;
+    int lMWID_Size = static_cast<int>(4 * lObjects.size());
+    wdlFile.Extend(8 + lMWID_Size);
+    SetChunkHeader(wdlFile, curPos, 'MWID', lMWID_Size);
+
+    // MWID data
+    auto const lMWID_Data = wdlFile.GetPointer<int>(curPos + 8);
+
+    lID = 0;
+    for (auto const& object : lObjects)
+      lMWID_Data[lID++] = object.second.filenamePosition;
+
+    curPos += 8 + lMWID_Size;
     //  }
 
-    // TODO : MODF
+    // MODF
     //  {
-    wdlFile.Extend(8);
-    SetChunkHeader(wdlFile, curPos, 'MODF', 0);
-    curPos += 8;
+    int lMODF_Size = static_cast<int>(0x40 * lWMOInstances.size());
+    wdlFile.Extend(8 + lMODF_Size);
+    SetChunkHeader(wdlFile, curPos, 'MODF', lMODF_Size);
+
+    // MODF data
+    auto const lMODF_Data = wdlFile.GetPointer<ENTRY_MODF>(curPos + 8);
+
+    lID = 0;
+    for (auto const& object : lWMOInstances)
+    {
+      auto filename_to_offset_and_name = lObjects.find(mWMOFilenames[object.nameID]);
+      if (filename_to_offset_and_name == lObjects.end())
+      {
+        LogError << "There is a problem with saving the WDL objects. We have an object that somehow changed the name during the saving function." << std::endl;
+        return;
+      }
+
+      lMODF_Data[lID] = object;
+      // only need to update name id
+      lMODF_Data[lID].nameID = filename_to_offset_and_name->second.nameID;
+      lID++;
+    }
+    LogDebug << "Added " << lID << " wmos to WDL MODF" << std::endl;
+
+    curPos += 8 + lMODF_Size;
     //  }
 
     //uint32_t mare_offsets[64][64] = { 0 };
@@ -480,6 +571,46 @@ void map_horizon::save_wdl(World* world, bool regenerate)
     f.close();
 
     set_minimap(&world->mapIndex);
+}
+
+bool map_horizon::wmoHasLowRes(WMOInstance* instance)
+{
+  assert(instance->lowResWmo.has_value() == false);
+  if (instance->lowResWmo.has_value())
+    return true;
+
+  int i = 0;
+  for (auto& lowres_wmo : lWMOInstances)
+  {
+    if (lowres_wmo.uniqueID == instance->uid)
+    {
+      auto low_res_model = mWMOFilenames[lowres_wmo.nameID];
+
+      // TODO check positions
+      // need to convert coords?
+      auto dir = math::degrees::vec3{ math::degrees(
+        lowres_wmo.rot[0])._, math::degrees(lowres_wmo.rot[1])._, math::degrees(lowres_wmo.rot[2])._ };
+
+      if (misc::vec3d_equals(glm::vec3(lowres_wmo.pos[0], lowres_wmo.pos[1], lowres_wmo.pos[2]), instance->pos)
+        && misc::deg_vec3d_equals(dir, instance->dir)
+        && misc::float_equals( (lowres_wmo.scale / 1024.0f), instance->scale))
+      {
+        // instance->lowResWmo = scoped_wmo_reference(low_res_model, instance->wmo->_context);
+        instance->lowResInstance = &lowres_wmo;
+        instance->lowResWmo = &wmos[instance->lowResInstance->nameID];
+
+        return true;
+      }
+      else
+      {
+        assert(false);
+      }
+    }
+    
+    i++;
+  }
+
+  return false;
 }
 
 map_horizon::minimap::minimap(const map_horizon& horizon)

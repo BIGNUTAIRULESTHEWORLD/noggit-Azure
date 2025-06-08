@@ -355,7 +355,7 @@ void WMO::waitForChildrenLoaded()
   }
 }
 
-std::vector<float> WMO::intersect (math::ray const& ray, bool do_exterior) const
+std::vector<float> WMO::intersect (math::ray const& ray, bool do_exterior, bool do_interior, bool first_occurence) const
 {
   std::vector<float> results;
 
@@ -367,14 +367,17 @@ std::vector<float> WMO::intersect (math::ray const& ray, bool do_exterior) const
   for (auto& group : groups)
   {
     if (!do_exterior && !group.is_indoor())
-          continue;
+      continue;
 
-    group.intersect (ray, &results);
+    else if (!do_interior && group.is_indoor())
+      continue;
+
+    group.intersect (ray, &results, first_occurence);
   }
 
   if (!do_exterior && results.size())
   {
-      // dirty way to find the furthest face and ignore invisible faces, cleaner way would be to do a direction check on faces
+      // dirty way to find the furthest face and ignore back culled(invisible) faces, cleaner way would be to do a direction check on faces
       // float max = *std::max_element(std::begin(results), std::end(results));
       // results.clear();
       // results.push_back(max);
@@ -1116,7 +1119,7 @@ bool WMOGroup::is_visible( glm::mat4x4 const& transform
 }
 
 
-void WMOGroup::intersect (math::ray const& ray, std::vector<float>* results) const
+void WMOGroup::intersect (math::ray const& ray, std::vector<float>* results, bool first_occurence) const
 {
   if (!ray.intersect_bounds (VertexBoxMin, VertexBoxMax))
   {
@@ -1126,7 +1129,7 @@ void WMOGroup::intersect (math::ray const& ray, std::vector<float>* results) con
   //! \todo Also allow clicking on doodads and liquids.
   for (auto&& batch : _batches)
   {
-    for (size_t i (batch.index_start); i < batch.index_start + batch.index_count; i += 3)
+    for (int i (batch.index_start); i < batch.index_start + batch.index_count; i += 3)
     {
       // TODO : only intersect visible triangles
       // TODO : option to only check collision
@@ -1138,6 +1141,8 @@ void WMOGroup::intersect (math::ray const& ray, std::vector<float>* results) con
          )
       {
         results->emplace_back (*distance);
+        if (first_occurence)
+          return;
       }
     }
   }

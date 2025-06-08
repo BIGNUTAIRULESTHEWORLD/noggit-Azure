@@ -30,6 +30,9 @@ class MapTile;
 class SceneObject : public Selectable
 {
 public:
+  constexpr static float min_scale() { return 1.f / 1024.f; };
+  constexpr static float max_scale() { return static_cast<float>((1 << 16) - 1) / 1024.f; };
+
   SceneObject(SceneObjectTypes type, Noggit::NoggitRenderContext context);
 
   [[nodiscard]]
@@ -79,25 +82,25 @@ public:
 
   glm::vec3 const getServerPos() { return glm::vec3(ZEROPOINT - pos.z, ZEROPOINT - pos.x, pos.y); }
 
-  bool _grouped = false;
-
 public:
   glm::vec3 pos;
 
   glm::vec3 dir;
-  float scale = 1.f;
+  float scale = 1.f; // Note : max scale is uint16 max / 1024 = 63.999
   unsigned int uid;
   int frame;
 
   // Note : First, need to check if the tile that contained it was rendered too
   bool _rendered_last_frame = false;
 
+  bool _grouped = false;
+
 protected:
   SceneObjectTypes _type;
 
   glm::mat4x4 _transform_mat = glm::mat4x4();
   glm::mat4x4 _transform_mat_inverted = glm::mat4x4();
-  std::array<glm::vec3, 2> extents; // axis aligned bounding box mni and max corners
+  std::array<glm::vec3, 2> extents; // axis aligned bounding box min and max corners
   float bounding_radius;
 
   Noggit::NoggitRenderContext _context;

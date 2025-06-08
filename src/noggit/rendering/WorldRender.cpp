@@ -9,6 +9,8 @@
 #include <noggit/project/CurrentProject.hpp>
 #include <noggit/application/NoggitApplication.hpp>
 
+#include <glm/gtx/euler_angles.hpp>
+
 #include <QDir>
 #include <QBuffer>
 #include <QCryptographicHash>
@@ -618,7 +620,8 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       // make this check per WMO or global WMO with tiles may not work
       bool disable_cull = false;
 
-      if (_world->mapIndex.hasAGlobalWMO() && !wmos_to_draw.size())
+      // WDT wmo
+      if (_world->mapIndex.hasAGlobalWMO() && wmos_to_draw.empty())
       {
           auto global_wmo = _world->_model_instance_storage.get_wmo_instance(_world->mWmoEntry.uniqueID);
           if (global_wmo.has_value())
@@ -627,7 +630,91 @@ void WorldRender::draw (glm::mat4x4 const& model_view
             disable_cull = true;
           }
       }
+      // draw wdl models in horizon/fog
+      if (render_settings.draw_fog)
+      {
+        // initialize the models here
+        // if (_world->horizon.wmos.size() < _world->horizon.lWMOInstances.size())
+        // {
+        //   for (int i = 0; i < _world->horizon.lWMOInstances.size(); ++i)
+        //   {
+        //     auto instance = _world->horizon.lWMOInstances[i];
+        //     auto& filepath = _world->horizon.mWMOFilenames[instance.nameID];
+        //     _world->horizon.wmos.push_back(scoped_wmo_reference(filepath, _world->_context));
+        //   }
+        // }
 
+        for (int i = 0; i < _world->horizon.lWMOInstances.size(); ++i)
+        {
+          auto& instance = _world->horizon.lWMOInstances[i];
+
+          auto model = _world->horizon.wmos[instance.nameID];
+
+          if (!model->finishedLoading() || model->loading_failed())
+          {
+            continue;
+          }
+
+          auto pos = glm::vec3(instance.pos[0], instance.pos[1], instance.pos[2]);
+
+          float dist = glm::distance(camera_pos, pos);
+
+          if (render_settings.draw_fog)
+          {
+            // Fog : only render if between cull distance and render distance ?
+            if (dist < _cull_distance || dist > _view_distance)
+            {
+              continue;
+            }
+          }
+          // else if (dist > _view_distance)
+          //   continue;
+
+          // calc transform everytime for now
+          glm::mat4x4 matrix = glm::mat4x4(1.0f);
+
+          matrix = glm::translate(matrix, pos);
+
+          matrix *= glm::eulerAngleYZX(
+            glm::radians(instance.rot[1] - math::degrees(90.0f)._),
+            glm::radians(-instance.rot[0]),
+            glm::radians(instance.rot[2])
+          );
+
+          float scale = instance.scale / 1024.0f;
+          if (scale != 1.0f)
+            matrix = glm::scale(matrix, glm::vec3(scale, scale, scale));
+
+          wmo_program.uniform("transform", matrix);
+
+          model->renderer()->draw(wmo_program
+            , model_view
+            , projection
+            , matrix
+            , false
+            , frustum
+            , _view_distance
+            , camera_pos
+            , false
+            , render_settings.draw_fog
+            , _world->animtime
+            , _skies->hasSkies()
+            , render_settings.display_mode
+            , !render_settings.draw_wmo_exterior
+            , false
+            , false
+          );
+
+          // auto instance = _world->_model_instance_storage.get_wmo_instance(_world->horizon.lWMOInstances[i].uniqueID);
+          // if (instance.has_value())
+          // {
+          //   wmos_to_draw.push_back(instance.value());
+          // }
+        }
+      }
+
+      // TODO setting
+      bool constexpr draw_wdl_models = false;
 
       for (auto& instance: wmos_to_draw)
       {
@@ -695,7 +782,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
               , render_settings.draw_wmo_exterior
               , render_settings.render_select_wmo_aabb
               , render_settings.render_select_wmo_groups_bounds
-
+              , draw_wdl_models // draw wdl model in render dist
           );
         }
       }
@@ -1232,7 +1319,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }
 
     // Draw Sky/Light spheres
-    glCullFace(GL_FRONT);
+    gl.cullFace(GL_FRONT);
     if (!render_settings.draw_only_inside_light_sphere)
     {
       for (Sky const& sky : skies()->skies)
@@ -1271,7 +1358,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }
 
     // now draw the current light (light that we're inside of)
-    glCullFace(GL_BACK);
+    gl.cullFace(GL_BACK);
     for (Sky const& sky : skies()->skies)
     {
       if (sky.global)
@@ -1994,7 +2081,7 @@ bool WorldRender::saveMinimap(TileIndex const& tile_idx, MinimapRenderSettings* 
         , 0.f, 0.f, 0.f, 1.f
     ));
 
-    glFinish();
+    gl.finish();
 
     drawMinimap(mTile
         , look_at
@@ -2064,12 +2151,12 @@ bool WorldRender::saveMinimap(TileIndex const& tile_idx, MinimapRenderSettings* 
       if (use_md5)
       {
           QCryptographicHash md5_hash(QCryptographicHash::Md5);
-          // auto data = reinterpret_cast<char*>(blp_image);
-          md5_hash.addData(reinterpret_cast<char*>(blp_image), file_size);
+          // md5_hash.addData(reinterpret_cast<char*>(blp_image), file_size);
+          QByteArray data(reinterpret_cast<const char*>(blp_image), file_size);
+          md5_hash.addData(data);
           auto resulthex = md5_hash.result().toHex().toStdString() + ".blp";
           tex_name = resulthex;
       }
-
 
       QFile file(dir.filePath(tex_name.c_str()));
       file.open(QIODevice::WriteOnly);

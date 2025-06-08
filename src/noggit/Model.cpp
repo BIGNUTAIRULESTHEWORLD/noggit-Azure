@@ -226,19 +226,19 @@ bool Model::isAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& header
 }
 
 
-glm::vec3 fixCoordSystem(glm::vec3 v)
+inline glm::vec3 fixCoordSystem(glm::vec3 v)
 {
   return glm::vec3(v.x, v.z, -v.y);
 }
 
 namespace
 {
-  glm::vec3 fixCoordSystem2(glm::vec3 v)
+  inline glm::vec3 fixCoordSystem2(glm::vec3 v)
   {
     return glm::vec3(v.x, v.z, v.y);
   }
 
-  glm::quat fixCoordSystemQuat(glm::quat v)
+  inline glm::quat fixCoordSystemQuat(glm::quat v)
   {
     return glm::quat(-v.x, -v.z, v.y, v.w);
   }
@@ -895,7 +895,13 @@ void Bone::calcMatrix(glm::mat4x4 const& model_view
 }
 
 
-std::vector<std::pair<float, std::tuple<int, int, int>>> Model::intersect (glm::mat4x4 const& model_view, math::ray const& ray, int animtime, bool calc_anims)
+std::vector<std::pair<float, std::tuple<int, int, int>>> Model::intersect (
+  glm::mat4x4 const& model_view
+  , math::ray const& ray
+  , int animtime
+  , bool calc_anims
+  , bool first_occurence
+  , bool only_opaque_tris)
 {
   std::vector<std::pair<float, std::tuple<int, int, int>>> results;
 
@@ -934,6 +940,12 @@ std::vector<std::pair<float, std::tuple<int, int, int>>> Model::intersect (glm::
   bool const has_transformed_verts = !transformed_verts.empty();
   for (auto const& pass : _renderer.renderPasses())
   {
+    // todo
+    if (only_opaque_tris && pass.blend_mode != 0)
+    {
+    }
+
+
     for (int i (pass.index_start); i < pass.index_start + pass.index_count; i += 3)
     {
       std::optional<float> distance;
@@ -950,13 +962,12 @@ std::vector<std::pair<float, std::tuple<int, int, int>>> Model::intersect (glm::
                                           transformed_verts[_indices[static_cast<std::size_t>(i + 2)]].position);
       }
 
-      glm::vec3 debug_vert1 = _vertices[_indices[static_cast<std::size_t>(i + 0)]].position; ////
-      glm::vec3 debug_vert2 = _vertices[_indices[static_cast<std::size_t>(i + 1)]].position; ////
-      glm::vec3 debug_vert3 = _vertices[_indices[static_cast<std::size_t>(i + 2)]].position; ////
-
       if (distance)
       {
         results.emplace_back (*distance, std::make_tuple(i, i + 1, 1 + 2));
+
+        if (first_occurence)
+          return results;
       }
     }
   }

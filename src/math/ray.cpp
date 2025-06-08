@@ -13,18 +13,40 @@ namespace math
     float tmin (std::numeric_limits<float>::lowest());
     float tmax (std::numeric_limits<float>::max());
 
-    auto calculate_tmin_tmax = [](float origin, float direction, float min, float max, float& tmin, float& tmax) {
-      if (direction != 0.0f) {
-        float t1 = (min - origin) / direction;
-        float t2 = (max - origin) / direction;
-        tmin = std::max(tmin, std::min(t1, t2));
-        tmax = std::min(tmax, std::max(t1, t2));
-      }
-      };
+    if (_direction.x != 0.0f)
+    {
+      float tx1 = (min.x - _origin.x) * _inverted_direction.x;
+      float tx2 = (max.x - _origin.x) * _inverted_direction.x;
+      // float const tx1((min.x - _origin.x) / _direction.x);
+      // float const tx2((max.x - _origin.x) / _direction.x);
 
-    calculate_tmin_tmax(_origin.x, _direction.x, min.x, max.x, tmin, tmax);
-    calculate_tmin_tmax(_origin.y, _direction.y, min.y, max.y, tmin, tmax);
-    calculate_tmin_tmax(_origin.z, _direction.z, min.z, max.z, tmin, tmax);
+      tmin = std::max(tmin, std::min(tx1, tx2));
+      tmax = std::min(tmax, std::max(tx1, tx2));
+    }
+
+    if (_direction.y != 0.0f)
+    {
+      // float const ty1((min.y - _origin.y) / _direction.y);
+      // float const ty2((max.y - _origin.y) / _direction.y);
+
+      float ty1 = (min.y - _origin.y) * _inverted_direction.y;
+      float ty2 = (max.y - _origin.y) * _inverted_direction.y;
+
+      tmin = std::max(tmin, std::min(ty1, ty2));
+      tmax = std::min(tmax, std::max(ty1, ty2));
+    }
+
+    if (_direction.z != 0.0f)
+    {
+      // float const tz1((min.z - _origin.z) / _direction.z);
+      // float const tz2((max.z - _origin.z) / _direction.z);
+
+      float tz1 = (min.z - _origin.z) * _inverted_direction.z;
+      float tz2 = (max.z - _origin.z) * _inverted_direction.z;
+
+      tmin = std::max(tmin, std::min(tz1, tz2));
+      tmax = std::min(tmax, std::max(tz1, tz2));
+    }
 
     if (tmax >= tmin)
     {

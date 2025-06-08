@@ -142,7 +142,7 @@ namespace Noggit
                              );
 
 
-
+      
       if (world())
       {
         painter.drawImage (drawing_rect, world()->horizon._qt_minimap);
@@ -222,13 +222,17 @@ namespace Noggit
             //! \todo Get actual color from sky.
             //! \todo Get actual radius.
             //! \todo Inner and outer radius?
-            painter.setPen (Qt::blue);
+            // painter.setPen (Qt::blue);
+            auto sky_noon_color =  sky.colorFor(LIGHT_GLOBAL_DIFFUSE, 1441);
+            auto color = QColor::fromRgbF(sky_noon_color.r, sky_noon_color.g, sky_noon_color.b);
+            painter.setPen(color);
+            auto radius = sky.r2 * scale_factor;
 
             painter.drawEllipse ( QPointF ( sky.pos.x * scale_factor
                                           , sky.pos.z * scale_factor
                                           )
-                                , 10.0 // radius
-                                , 10.0
+                                , radius
+                                , radius
                                 );
           }
         }

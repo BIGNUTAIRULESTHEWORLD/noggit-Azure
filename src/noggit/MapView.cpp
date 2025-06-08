@@ -3311,6 +3311,10 @@ selection_result MapView::intersect_result(bool terrain_only)
     , _draw_hidden_models.get()
     , _draw_wmo_exterior.get()
     , _draw_model_animations.get()
+    , false
+    , false
+    , 0.0f
+    , true // !_draw_wmo_exterior.get() // invert so that we only cast interiors if exterior is hidden
     )
   );
 

@@ -78,7 +78,7 @@ public:
   // MapChunkHeader header;
   // uint32_t nLayers = 0;
 
-  float xbase, ybase, zbase; // global coords
+  float xbase, ybase, zbase; // global coords. height = ybase
 
   mcnk_flags header_flags;
   bool use_big_alphamap;

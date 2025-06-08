@@ -37,8 +37,8 @@ WMOInstance::WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, ENT
       scale = 1.0f;
   }
 
-  extents[0] = glm::vec3(d->extents[0][0], d->extents[0][1], d->extents[0][2]);
-  extents[1] = glm::vec3(d->extents[1][0], d->extents[1][1], d->extents[1][2]);
+  extents[0] = d->extents[0];
+  extents[1] = d->extents[1];
 
   _need_recalc_extents = true;
   updateTransformMatrix();
@@ -80,6 +80,7 @@ void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
                        , bool draw_exterior
                        , bool render_selection_aabb
                        , bool render_group_bounds
+                       , bool /*render_lowres*/
                        )
 {
   if (!wmo->finishedLoading() || wmo->loading_failed())
@@ -113,23 +114,50 @@ void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
 
     wmo_shader.uniform("transform", _transform_mat);
 
-    wmo->renderer()->draw( wmo_shader
-              , model_view
-              , projection
-              , _transform_mat
-              , is_selected || _grouped
-              , frustum
-              , cull_distance
-              , camera
-              , draw_doodads
-              , draw_fog
-              , animtime
-              , world_has_skies
-              , display
-              , !draw_exterior
-              , render_group_bounds
-              , _grouped
-              );
+    // render WDL model
+    [[unlikely]]
+    if (render_low_res && lowResWmo.has_value()
+      && lowResWmo.value()->get()->finishedLoading() && !lowResWmo.value()->get()->loading_failed())
+    {
+      lowResWmo.value()->get()->renderer()->draw(wmo_shader
+        , model_view
+        , projection
+        , _transform_mat
+        , is_selected || _grouped
+        , frustum
+        , cull_distance
+        , camera
+        , draw_doodads
+        , draw_fog
+        , animtime
+        , world_has_skies
+        , display
+        , !draw_exterior
+        , render_group_bounds
+        , _grouped
+      );
+    }
+    else // regular model
+    {
+      wmo->renderer()->draw( wmo_shader
+                , model_view
+                , projection
+                , _transform_mat
+                , is_selected || _grouped
+                , frustum
+                , cull_distance
+                , camera
+                , draw_doodads
+                , draw_fog
+                , animtime
+                , world_has_skies
+                , display
+                , !draw_exterior
+                , render_group_bounds
+                , _grouped
+                );
+      }
+
   }
 
   // axis aligned bounding box (extents)
@@ -150,7 +178,7 @@ void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
   }
 }
 
-void WMOInstance::intersect (math::ray const& ray, selection_result* results, bool do_exterior)
+void WMOInstance::intersect (math::ray const& ray, selection_result* results, bool do_exterior, bool do_interior, bool first_occurence)
 {
   if (!finishedLoading() || wmo->loading_failed())
     return;
@@ -164,7 +192,7 @@ void WMOInstance::intersect (math::ray const& ray, selection_result* results, bo
 
   math::ray subray(_transform_mat_inverted, ray);
 
-  for (auto&& result : wmo->intersect(subray, do_exterior))
+  for (auto&& result : wmo->intersect(subray, do_exterior, do_interior, first_occurence))
   {
     results->emplace_back (result, this);
   }
@@ -302,6 +330,24 @@ void WMOInstance::recalcExtents()
   extents[1] = wmo_aabb.max;
 
   bounding_radius = glm::distance(wmo->extents[1], wmo->extents[0]) * scale / 2.0f;
+
+  // Update wdl if needed
+  [[unlikely]]
+  if (lowResWmo.has_value())
+  {
+    lowResInstance->pos[0] = pos.x;
+    lowResInstance->pos[1] = pos.y;
+    lowResInstance->pos[2] = pos.z;
+
+    lowResInstance->rot[0] = dir.x;
+    lowResInstance->rot[1] = dir.y;
+    lowResInstance->rot[2] = dir.z;
+
+    lowResInstance->scale = scale * 1024.0f;
+
+    lowResInstance->extents[0] = extents[0];
+    lowResInstance->extents[1] = extents[1];
+  }
 
   _need_recalc_extents = false;
 }

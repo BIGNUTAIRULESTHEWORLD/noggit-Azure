@@ -112,10 +112,38 @@ namespace Noggit
 
       _doodadSetSelector = new QComboBox(this);
       _nameSetSelector = new QComboBox(this);
+
+      QLabel* horizon_label = new QLabel("Low Res Model:", this);
+
+      QHBoxLayout* horizon_layout = new QHBoxLayout;
+
+      _horizonModel = new QLineEdit(this);
+      _horizonModel->setToolTip("Sets a model that will be rendered in the horizon fog, allowing to render further than normal render distance."
+                                "Used to show landmarks from far away.");
+      horizon_layout->addWidget(_horizonModel, 1);
+
+      QToolButton* validateButton = new QToolButton;
+      validateButton->setIcon(QApplication::style()->standardIcon(QStyle::SP_DialogApplyButton));
+      // validateButton->setIconSize(QSize(24, 24));
+      validateButton->setAutoRaise(true);  // Gives it a flat toolbar-style appearance
+      validateButton->setToolTip("Apply Low Res Model Filepath change.");
+      horizon_layout->addWidget(validateButton, 0);
+
+      _previewButton = new QToolButton;
+      _previewButton->setIcon(Noggit::Ui::FontNoggitIcon(Noggit::Ui::FontNoggit::Icons::VISIBILITY_HIDDEN_MODELS));
+      _previewButton->setToolTip("Preview Low Res Model");
+      _previewButton->setCheckable(true);
+      _previewButton->setChecked(false);
+      // previewButton->setIconSize(QSize(24, 24));  // Set icon size
+      // previewButton->setAutoRaise(true);
+      horizon_layout->addWidget(_previewButton, 0);
+
       layout->addWidget(_wmo_group);
 
       wmo_layout->addRow("Doodad Set:", _doodadSetSelector);
       wmo_layout->addRow("Name Set:", _nameSetSelector);
+      wmo_layout->addRow(horizon_label);
+      wmo_layout->addRow(horizon_layout);
 
       auto clipboard_box = new QGroupBox("Clipboard");
       // clipboard_box->setWindowIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::clipboard));
@@ -178,8 +206,8 @@ namespace Noggit
       rotRangeEnd->setRange (-180.f, 180.f);
       tiltRangeStart->setRange (-180.f, 180.f);
       tiltRangeEnd->setRange (-180.f, 180.f);
-      scaleRangeStart->setRange (-180.f, 180.f);
-      scaleRangeEnd->setRange (-180.f, 180.f);
+      scaleRangeStart->setRange (SceneObject::min_scale(), SceneObject::max_scale());
+      scaleRangeEnd->setRange (SceneObject::min_scale(), SceneObject::max_scale());
       
       rotation_layout->addWidget(rotRangeStart, 0, 0);
       rotation_layout->addWidget(rotRangeEnd, 0 ,1);
@@ -538,7 +566,11 @@ namespace Noggit
           , &QPushButton::clicked
           , [=]() {       
               _map_view->getAssetBrowserWidget()->set_browse_mode(Tools::AssetBrowser::asset_browse_mode::world);
-              mapView->getAssetBrowser()->setVisible(mapView->getAssetBrowser()->isHidden());
+              // mapView->getAssetBrowser()->setVisible(mapView->getAssetBrowser()->isHidden());
+              mapView->getAssetBrowser()->setFloating(true); // if it's not docked
+              mapView->getAssetBrowser()->resize(600, 400);
+              mapView->getAssetBrowser()->move(100, 100);  // make sure it's on screen
+              mapView->getAssetBrowser()->show();
           }
       );
 
@@ -565,6 +597,118 @@ namespace Noggit
               _map_view->change_selected_wmo_nameset(index);
               NOGGIT_ACTION_MGR->endAction();
           });
+
+      QObject::connect(validateButton, &QToolButton::clicked, [&]
+      {
+        if (_horizonModel->text().isEmpty())
+          _previewButton->setEnabled(false);
+
+        auto last_entry = _map_view->getWorld()->get_last_selected_model();
+        // for (auto& selection : selected)
+        if (last_entry)
+        {
+          if (last_entry.value().index() != eEntry_Object)
+          {
+            return;
+          }
+          auto obj = std::get<selected_object_type>(last_entry.value());
+
+          if (obj->which() == eWMO)
+          {
+            WMOInstance* wi = static_cast<WMOInstance*>(obj);
+
+            // verify if model exists if not empty
+            if (!_horizonModel->text().isEmpty())
+            {
+              if (!Noggit::Application::NoggitApplication::instance()->clientData()->exists(_horizonModel->text().toStdString()))
+              {
+                QMessageBox::warning
+                (nullptr
+                  , "Warning"
+                  , QString::fromStdString(_horizonModel->text().toStdString() + " not found.")
+                );
+                return;
+              }
+            }
+            auto world = _map_view->getWorld();
+
+            auto lowresmodel = wi->lowResWmo;
+            if (lowresmodel.has_value()) // had data
+            {
+              // same model
+              if (lowresmodel.value()->get()->file_key().filepath() == _horizonModel->text().toStdString())
+                return;
+
+              if (_horizonModel->text().isEmpty())  // empty text but had a model
+              {
+                // TODO, deleting elements.
+
+                wi->lowResWmo = std::nullopt;
+                // delete wi->lowResInstance;
+                wi->lowResInstance = nullptr;
+                wi->render_low_res = false;
+              }
+              else // text not empty
+              {
+                // add a model instead of replacing, because a filename can be referenced by multiple.
+                // TODO store instances filenames directly for this reason instead of using raw MWMO/MODF
+                world->horizon.mWMOFilenames.push_back(_horizonModel->text().toStdString());
+                world->horizon.wmos.emplace_back(scoped_wmo_reference(_horizonModel->text().toStdString(), _map_view->getRenderContext()));
+
+                wi->lowResInstance->nameID = world->horizon.mWMOFilenames.size() - 1;
+                wi->lowResWmo = &world->horizon.wmos.back();
+              }
+
+            }
+            else if (!_horizonModel->text().isEmpty()) // if had no wdl data
+            {
+              world->horizon.mWMOFilenames.push_back(_horizonModel->text().toStdString());
+              world->horizon.wmos.emplace_back(scoped_wmo_reference(_horizonModel->text().toStdString(), _map_view->getRenderContext()));
+              world->horizon.lWMOInstances.emplace_back(ENTRY_MODF());
+
+              auto& modf_instance = world->horizon.lWMOInstances.back();
+              modf_instance.nameID = world->horizon.mWMOFilenames.size() - 1;
+              modf_instance.uniqueID = wi->uid;
+              modf_instance.scale = 1024;
+              modf_instance.nameSet = 0;
+              modf_instance.flags = 0;
+              modf_instance.doodadSet = 0;
+
+              wi->lowResInstance = &modf_instance;
+              wi->lowResWmo = &world->horizon.wmos.back();
+
+              // recalc extents to update pos, rot, extents in modf_instance
+              wi->recalcExtents();
+            }
+
+            world->horizon.save_wdl(world, false);
+          }
+        }
+      }
+      );
+
+      QObject::connect(_previewButton, &QToolButton::toggled, this, [&](bool checked)
+        {
+          auto last_entry = _map_view->getWorld()->get_last_selected_model();
+          // for (auto& selection : selected)
+          if (last_entry)
+          {
+            if (last_entry.value().index() != eEntry_Object)
+            {
+              return;
+            }
+            auto obj = std::get<selected_object_type>(last_entry.value());
+
+            if (obj->which() == eWMO)
+            {
+              _wmo_group->setDisabled(false);
+              _wmo_group->setHidden(false);
+              WMOInstance* wi = static_cast<WMOInstance*>(obj);
+              wi->render_low_res = checked;
+            }
+          }
+        }
+      );
 
       auto mv_pos = mapView->pos();
       auto mv_size = mapView->size();
@@ -930,10 +1074,19 @@ namespace Noggit
       return QSize(215, height());
     }
 
-    void object_editor::update_selection_ui(World* world)
+    void object_editor::update_selection_ui()
     {
         _wmo_group->setDisabled(true);
         _wmo_group->hide();
+
+        QSignalBlocker const previewblocker(_previewButton);
+        _previewButton->setChecked(false);
+        _previewButton->setDisabled(true);
+
+        auto world = _map_view->getWorld();
+
+        if (world->has_multiple_model_selected())
+          return;
 
         auto last_entry = world->get_last_selected_model();
         // for (auto& selection : selected)
@@ -985,6 +1138,18 @@ namespace Noggit
                 }
                 _nameSetSelector->insertItems(0, namesetnames);
                 _nameSetSelector->setCurrentIndex(wi->mNameset);
+
+                auto lowresmodel = wi->lowResWmo;
+                if (lowresmodel.has_value())
+                {
+                  _horizonModel->setText(lowresmodel.value()->get()->file_key().filepath().c_str());
+                  _previewButton->setDisabled(false);
+                }
+                else
+                  _horizonModel->setText("");
+
+                if (wi->render_low_res)
+                  _previewButton->setChecked(true);
             }
         }
     }

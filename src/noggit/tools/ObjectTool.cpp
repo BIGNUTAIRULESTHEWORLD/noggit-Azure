@@ -118,7 +118,7 @@ namespace Noggit
             });
 
         QObject::connect(mapView(), &MapView::selectionUpdated, [=](auto) {
-            _objectEditor->update_selection_ui(mapView()->getWorld());
+            _objectEditor->update_selection_ui();
             });
 
         using AssetBrowser = Noggit::Ui::Tools::AssetBrowser::Ui::AssetBrowserWidget;

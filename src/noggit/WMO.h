@@ -182,7 +182,7 @@ public:
 
   void setupFog (bool draw_fog, std::function<void (bool)> setup_fog);
 
-  void intersect (math::ray const&, std::vector<float>* results) const;
+  void intersect (math::ray const&, std::vector<float>* results, bool first_occurence) const;
 
   // todo: portal culling
   [[nodiscard]]
@@ -310,7 +310,7 @@ public:
   explicit WMO(BlizzardArchive::Listfile::FileKey const& file_key, Noggit::NoggitRenderContext context );
 
   [[nodiscard]]
-  std::vector<float> intersect (math::ray const&, bool do_exterior = true) const;
+  std::vector<float> intersect (math::ray const&, bool do_exterior = true, bool do_interior = true, bool first_occurence = false) const;
 
   void finishLoading() override;
 

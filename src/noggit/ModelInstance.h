@@ -22,9 +22,6 @@ class WMOInstance;
 class ModelInstance : public SceneObject
 {
 public:
-  constexpr static float min_scale() { return 1.f / 1024.f; };
-  constexpr static float max_scale() { return static_cast<float>((1 << 16) - 1) / 1024.f; };
-
   scoped_model_reference model;
 
   glm::vec3 light_color = { 1.f, 1.f, 1.f };
@@ -89,6 +86,8 @@ public:
       , selection_result*
       , int animtime
       , bool animate
+      , bool first_occurence
+      , bool only_opaque_tris
   );
 
   bool isInFrustum(math::frustum const& frustum);

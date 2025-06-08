@@ -144,6 +144,8 @@ void ModelInstance::intersect (glm::mat4x4 const& model_view
                               , selection_result* results
                               , int animtime
                               , bool animate
+                              , bool first_occurence
+                              , bool only_opaque_tris
                               )
 {  
   if (!finishedLoading() || model->loading_failed())
@@ -162,7 +164,7 @@ void ModelInstance::intersect (glm::mat4x4 const& model_view
     return;
   }
 
-  for (auto&& result : model->intersect (model_view, subray, animtime, animate))
+  for (auto&& result : model->intersect (model_view, subray, animtime, animate, first_occurence, only_opaque_tris))
   {
     //! \todo why is only sc important? these are relative to subray,
     //! so should be inverted by model_matrix?

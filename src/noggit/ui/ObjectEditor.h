@@ -83,7 +83,7 @@ namespace Noggit
       helper_models* helper_models_widget;
       QSize sizeHint() const override;
 
-      void update_selection_ui(World* world);
+      void update_selection_ui();
 
     signals:
       void objectPaletteBtnPressed();
@@ -102,6 +102,8 @@ namespace Noggit
       QGroupBox* _wmo_group;
       QComboBox* _doodadSetSelector;
       QComboBox* _nameSetSelector;
+      QLineEdit* _horizonModel;
+      QToolButton* _previewButton;
 
       QSettings* _settings;
 

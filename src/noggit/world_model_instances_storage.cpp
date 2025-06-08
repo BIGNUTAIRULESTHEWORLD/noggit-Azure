@@ -55,6 +55,7 @@ namespace Noggit
     }
 
     // the uid is already used for another model/wmo, use a new one
+    LogDebug << "UID " << uid << " is already in use (" << instance.model->file_key().stringRepr() << ")" << std::endl;
     _uid_duplicates_found = true;
     instance.uid = _world->mapIndex.newGUID();
 
@@ -74,7 +75,15 @@ namespace Noggit
 
     if (from_reloading || uid_after != uid)
     {
-      _world->updateTilesWMO(&_wmos.at(uid_after), model_update::add);
+      WMOInstance* wmo_instance = &_wmos.at(uid_after);
+      _world->updateTilesWMO(wmo_instance, model_update::add);
+
+      // update WDL uid if it changed
+      [[unlikely]]
+      if (wmo_instance->lowResWmo.has_value())
+      {
+        wmo_instance->lowResInstance->uniqueID = uid_after;
+      }
     }
 
     return uid_after;
@@ -104,6 +113,7 @@ namespace Noggit
     }
 
     // the uid is already used for another model/wmo, use a new one
+    LogDebug << "UID " << uid << " is already in use (" << instance.wmo->file_key().stringRepr() << ")" << std::endl;
     _uid_duplicates_found = true;
     instance.uid = _world->mapIndex.newGUID();
 

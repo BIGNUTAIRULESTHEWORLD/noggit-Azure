@@ -108,7 +108,7 @@ World::World(const std::string& name, int map_id, Noggit::NoggitRenderContext co
     , _model_instance_storage(this)
     , _tile_update_queue(this)
     , mapIndex(name, map_id, this, context, create_empty)
-    , horizon(name, &mapIndex)
+    , horizon(name, this)
     , mWmoFilename(mapIndex.globalWMOName)
     , mWmoEntry(mapIndex.wmoEntry)
     , animtime(0)
@@ -120,6 +120,17 @@ World::World(const std::string& name, int map_id, Noggit::NoggitRenderContext co
 {
   LogDebug << "Loading world \"" << name << "\"." << std::endl;
   _loaded_tiles_buffer[0] = std::make_pair<std::pair<int, int>, MapTile*>(std::make_pair(0, 0), nullptr);
+
+  // initialize wdl models here
+  if (horizon.wmos.size() < horizon.lWMOInstances.size())
+  {
+    for (int i = 0; i < horizon.mWMOFilenames.size(); ++i)
+    {
+      // auto instance = horizon.lWMOInstances[i];
+      auto& filepath = horizon.mWMOFilenames[i];
+      horizon.wmos.push_back(scoped_wmo_reference(filepath, _context));
+    }
+  }
 }
 
 void World::LoadSavedSelectionGroups()
@@ -778,6 +789,8 @@ void World::scale_selected_models(float v, object_scaling_type type)
   if (!_selected_model_count)
       return;
 
+  v = std::clamp(v, SceneObject::min_scale(), SceneObject::max_scale());
+
   bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
 
   for (auto& entry : _current_selection)
@@ -1131,14 +1144,18 @@ bool World::isInIndoorWmoGroup(std::array<glm::vec3, 2> obj_bounds, glm::mat4x4 
 
 selection_result World::intersect (glm::mat4x4 const& model_view
                                   , math::ray const& ray
-                                  , bool pOnlyMap
-                                  , bool do_objects
-                                  , bool draw_terrain
-                                  , bool draw_wmo
-                                  , bool draw_models
-                                  , bool draw_hidden_models
-                                  , bool draw_wmo_exterior
-                                  , bool animate
+                                  , const bool pOnlyMap
+                                  , const bool do_objects
+                                  , const bool draw_terrain
+                                  , const bool draw_wmo
+                                  , const bool draw_models
+                                  , const bool draw_hidden_models
+                                  , const bool draw_wmo_exterior
+                                  , const bool animate
+                                  , const bool first_object_occurence
+                                  , const bool opaque_only_tris
+                                  , const float obj_distance_max
+                                  , const bool do_wmo_interiors
                                   )
 {
   ZoneScopedN("World::intersect()");
@@ -1172,28 +1189,82 @@ selection_result World::intersect (glm::mat4x4 const& model_view
 
   if (!pOnlyMap && do_objects)
   {
-    if (draw_models)
-    {
-      ZoneScopedN("World::intersect() : intersect M2s");
-      _model_instance_storage.for_each_m2_instance([&] (ModelInstance& model_instance)
-      {
-        if (draw_hidden_models || !model_instance.model->is_hidden())
-        {
-          model_instance.intersect(model_view, ray, &results, animtime, animate);
-        }
-      });
-    }
+    if (!draw_models && !draw_wmo)
+      return std::move(results);
 
-    if (draw_wmo)
+    ////////////// Optimized version, can iterate the same objects multiple times if they are on borders though
+
+    // store in a set container to avoid duplicates, this is pretty slow, doing a few extra rays is much faster if duplicates aren't a problem
+    // std::unordered_set<ModelInstance*> modelInstances;
+    // std::unordered_set<WMOInstance*> wmoInstances;
+
+    for (auto& pair : _loaded_tiles_buffer)
     {
-      ZoneScopedN("World::intersect() : intersect WMOs");
-      _model_instance_storage.for_each_wmo_instance([&] (WMOInstance& wmo_instance)
+      MapTile* tile = pair.second;
+
+      if (!tile)
+        break;
+
+      TileIndex index{ static_cast<std::size_t>(pair.first.first)
+                , static_cast<std::size_t>(pair.first.second) };
+
+      // add some distance check ?
+      // if (tile-> > )
+      //   continue;
+
+      if (!mapIndex.tileLoaded(index) || mapIndex.tileAwaitingLoading(index))
+        continue;
+
+      if (!tile->finishedLoading())
+        continue;
+
+      tile->recalcCombinedExtents();
+
+      if (!ray.intersect_bounds(tile->getCombinedExtents()[0], tile->getCombinedExtents()[1]))
       {
-        if (draw_hidden_models || !wmo_instance.wmo->is_hidden())
+        continue;
+      }
+
+      for (auto& pair : tile->getObjectInstances())
+      {
+        if (pair.second[0]->which() == eMODEL && draw_models)
         {
-          wmo_instance.intersect(ray, &results, draw_wmo_exterior);
+          
+          for (auto& instance : pair.second)
+          {
+            auto model_instance = static_cast<ModelInstance*>(instance);
+
+            if (obj_distance_max != 0.0f)
+            {
+              const float distance = glm::distance(ray.origin(), instance->pos);
+              if ((distance - instance->getBoundingRadius()) > obj_distance_max)
+                continue;
+            }
+
+            if (draw_hidden_models || !model_instance->model->is_hidden())
+              // modelInstances.insert(model_instance);
+              model_instance->intersect(model_view, ray, &results, animtime, animate, first_object_occurence, opaque_only_tris);
+          }
         }
-      });
+        else if (pair.second[0]->which() == eWMO && draw_wmo)
+        {
+          for (auto& instance : pair.second)
+          {
+            auto wmo_instance = static_cast<WMOInstance*>(instance);
+
+            if (obj_distance_max != 0.0f)
+            {
+              const float distance = glm::distance(ray.origin(), instance->pos);
+              if ((distance - instance->getBoundingRadius()) > obj_distance_max)
+                continue;
+            }
+
+            if (draw_hidden_models || !wmo_instance->wmo->is_hidden())
+              // wmoInstances.insert(wmo_instance);
+              wmo_instance->intersect(ray, &results, draw_wmo_exterior, do_wmo_interiors, first_object_occurence);
+          }
+        }
+      }
     }
   }
 
@@ -2147,7 +2218,25 @@ std::uint32_t World::add_model_instance(ModelInstance model_instance, bool from_
 std::uint32_t World::add_wmo_instance(WMOInstance wmo_instance, bool from_reloading, bool action)
 {
   ZoneScoped;
+  // Check if WMO has a low resolution model
+  // also sets up all attributes currently
+  bool haslowres = horizon.wmoHasLowRes(&wmo_instance);
+
   return _model_instance_storage.add_wmo_instance(std::move(wmo_instance), from_reloading, action);
+
+  // if (haslowres)
+  // {
+  //   const auto obj = get_model(uid_after);
+  //   assert(obj);
+  //   if (obj)
+  //   {
+  //     WMOInstance* instance = static_cast<WMOInstance*>(std::get<selected_object_type>(obj.value()));
+  // 
+  //     int breakpoint = 0;
+  //   }
+  // }
+  // 
+  // return uid_after;
 }
 
 std::optional<selection_type> World::get_model(std::uint32_t uid)
@@ -2694,6 +2783,8 @@ void World::clear_shadows(glm::vec3 const& pos)
     chunk->clear_shadows();
   });
 }
+
+constexpr float HALFSHADOWSIZE = (TEXDETAILSIZE / 2.0f);
 
 void World::swapTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex)
 {
@@ -3735,6 +3826,7 @@ void World::select_objects_in_area(
 
   glm::mat4 VPmatrix = projection * view;
   glm::mat4x4 const invertedProjViewMatrix = glm::inverse(VPmatrix);
+  auto const transposed_view = glm::transpose(view);
 
   constexpr int max_position_raycast_processing = 10000;
   constexpr int max_bounds_raycast_processing = 5000; // when selecting large amount of objects, avoid doing complex ray calculations to not freeze
@@ -3864,7 +3956,7 @@ void World::select_objects_in_area(
             // processed_obj_count++;
             // 3: check if center point is occluded by terrain
             if (processed_obj_count < max_position_raycast_processing && 
-              !is_point_occluded_by_terrain(aabb_center, view, VPmatrix, viewport_width, viewport_height, camera_position))
+              !is_point_occluded_by_terrain(aabb_center, transposed_view, VPmatrix, viewport_width, viewport_height, camera_position))
             {
               // if not occluded success! select it and skip other checks
               add_to_selection(instance, false, false);
@@ -3997,7 +4089,7 @@ void World::select_objects_in_area(
 
         // 4.5 2nd raycast. Check if center of the intersection box is visible
         // TODO : for WMOs this is way to generous due to their more complex shape, it would be better to iterate the bounding box of each group
-        if (!is_point_occluded_by_terrain(intersectionCenter_pos, view, VPmatrix, viewport_width, viewport_height
+        if (!is_point_occluded_by_terrain(intersectionCenter_pos, transposed_view, VPmatrix, viewport_width, viewport_height
           , camera_position, (distance - instance->getBoundingRadius())))
         {
           // if not occluded success! select it and skip other checks
@@ -4061,7 +4153,7 @@ void World::select_objects_in_area(
               continue;
 
             bool corner_occluded = is_point_occluded_by_terrain(corner
-              , view
+              , transposed_view
               , VPmatrix
               , viewport_width
               , viewport_height
@@ -4095,7 +4187,7 @@ void World::select_objects_in_area(
 
 
 bool World::is_point_occluded_by_terrain(const glm::vec3& point,
-  const glm::mat4x4& view,
+  const glm::mat4x4& transposed_view,
   const glm::mat4& VPmatrix,
   float viewport_width,
   float viewport_height,
@@ -4117,7 +4209,7 @@ bool World::is_point_occluded_by_terrain(const glm::vec3& point,
   // intersect only terrain with a ray to object's position
   selection_result terrain_intersect_results
   (intersect
-  (glm::transpose(view)
+  (transposed_view
     , ray
     , true
     , false
