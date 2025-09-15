@@ -1,12 +1,15 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #pragma once
 #include <noggit/SceneObject.hpp>
-#include <math/ray.hpp>
 #include <noggit/WMO.h>
 #include <noggit/ContextObject.hpp>
 
 #include <cstdint>
-#include <set>
+
+namespace math
+{
+  struct ray;
+}
 
 struct ENTRY_MODF;
 
@@ -29,6 +32,7 @@ public:
   void change_doodadset(uint16_t doodad_set);
 
   [[nodiscard]]
+  std::map<int, std::pair<glm::vec3, glm::vec3>> const& getGroupExtents();
   std::map<int, std::pair<glm::vec3, glm::vec3>> const& getGroupExtents() { _update_group_extents = true; ensureExtents(); return group_extents; }
 
 private:
@@ -58,8 +62,8 @@ public:
     , _doodadset (other._doodadset)
     , _doodads_per_group(other._doodads_per_group)
     , _need_doodadset_update(other._need_doodadset_update)
+  WMOInstance (WMOInstance&& other) noexcept;
     , _update_group_extents(other._update_group_extents)
-    , _need_recalc_extents(other._need_recalc_extents)
     // , hasLowResModel(other.hasLowResModel)
     , render_low_res(other.render_low_res)
     , lowResInstance(other.lowResInstance)
@@ -76,6 +80,7 @@ public:
     _transform_mat_inverted = other._transform_mat_inverted;
   }
 
+  WMOInstance& operator= (WMOInstance&& other) noexcept;
   WMOInstance& operator= (WMOInstance&& other)
   {
     std::swap(wmo, other.wmo);
@@ -103,6 +108,8 @@ public:
   }
 
   void draw ( OpenGL::Scoped::use_program& wmo_shader
+            , glm::mat4x4 const& model_view
+            , glm::mat4x4 const& projection
             , const glm::mat4x4 const& model_view
             , const glm::mat4x4 const& projection
             , math::frustum const& frustum
@@ -135,6 +142,7 @@ public:
   virtual void updateDetails(Noggit::Ui::detail_infos* detail_widget) override;
 
   [[nodiscard]]
+  AsyncObject* instance_model() const override;;
   AsyncObject* instance_model() const override { return wmo.get(); };
 
   std::vector<wmo_doodad_instance*> get_visible_doodads( math::frustum const& frustum

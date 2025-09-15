@@ -1,14 +1,15 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include "Tool.hpp"
-#include <noggit/MapView.h>
-#include <noggit/BoolToggleProperty.hpp>
 #include <noggit/ActionManager.hpp>
-#include <noggit/MinimapRenderSettings.hpp>
+#include <noggit/BoolToggleProperty.hpp>
+#include <noggit/MapView.h>
 
 #include <QAction>
-#include <QObject>
+#include <QLabel>
 #include <QMenu>
+#include <QObject>
+#include <QWidgetAction>
 
 namespace Noggit
 {
@@ -99,6 +100,10 @@ namespace Noggit
     }
 
     void Tool::postRender()
+    {
+    }
+
+    void Tool::renderImGui(ImGuizmo::MODE mode, ImGuizmo::OPERATION operation)
     {
     }
 

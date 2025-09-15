@@ -3,41 +3,32 @@
 #pragma once
 
 #include <math/ray.hpp>
-#include <noggit/Misc.h>
-#include <noggit/Selection.h>
+#include <noggit/BoolToggleProperty.hpp>
 #include <noggit/Camera.hpp>
+#include <noggit/Selection.h>
+#include <noggit/StringHash.hpp>
 #include <noggit/tool_enums.hpp>
-#include <noggit/ui/UidFixWindow.hpp>
-#include <noggit/ui/tools/AssetBrowser/Ui/AssetBrowser.hpp>
 #include <noggit/ui/tools/ViewportGizmo/ViewportGizmo.hpp>
 #include <noggit/ui/tools/ViewportManager/ViewportManager.hpp>
-#include <noggit/TabletManager.hpp>
-#include <external/qtimgui/QtImGui.h>
-#include <opengl/texture.hpp>
+#include <noggit/ui/uid_fix_mode.hpp>
 #include <opengl/scoped.hpp>
-#include <noggit/Tool.hpp>
 
 #include <QtCore/QElapsedTimer>
-#include <QtCore/QSettings>
 #include <QtCore/QTimer>
-#include <QtWidgets/QDockWidget>
-#include <QtWidgets/QLabel>
-#include <QtWidgets/QOpenGLWidget>
-#include <QWidgetAction>
-#include <QOpenGLContext>
 
-#include <forward_list>
-#include <map>
-#include <unordered_map>
-#include <unordered_set>
-#include <thread>
 #include <array>
-#include <optional>
-
-#include <ui_MapViewOverlay.h>
+#include <forward_list>
 
 
+class DBCFile;
 class World;
+struct ImGuiContext;
+
+class QSettings;
+class QDockWidget;
+class QLabel;
+class QWidgetAction;
+class QOpenGLContext;
 
 namespace Noggit::Ui::Windows
 {
@@ -47,6 +38,12 @@ namespace Noggit::Ui::Windows
 namespace Noggit
 {
   class Tool;
+  class TabletManager;
+
+  namespace Project
+  {
+    class NoggitProject;
+  }
 
   namespace Ui::Tools::ViewToolbar::Ui
   {
@@ -56,10 +53,12 @@ namespace Noggit
   namespace Ui::Tools
   {
     class ToolPanel;
+
+    namespace AssetBrowser::Ui
+    {
+      class AssetBrowserWidget;
+    }
   }
-
-  class Camera;
-
 	
   namespace Ui
   {
@@ -68,6 +67,15 @@ namespace Noggit
     class minimap_widget;
     class toolbar;
   }
+}
+
+namespace OpenGL
+{
+  class texture;
+}
+
+namespace Ui {
+  class MapViewOverlay;
 }
 
 enum class save_mode
@@ -147,12 +155,6 @@ private:
   void update_cursor_pos();
 
   display_mode _display_mode;
-
-  [[nodiscard]]
-  glm::mat4x4 model_view(bool use_debug_cam = false) const;
-
-  [[nodiscard]]
-  glm::mat4x4 projection() const;
 
   void draw_map();
 
@@ -247,15 +249,15 @@ public:
   void change_selected_wmo_nameset(int set);
   void change_selected_wmo_doodadset(int set);
   auto setBrushTexture(QImage const* img) -> void;
-  Noggit::Camera* getCamera() { return &_camera; };
+  Noggit::Camera* getCamera();;
   void onSettingsSave();
-  void setCameraDirty() { _camera_moved_since_last_draw = true; };
+  void setCameraDirty();;
 
   [[nodiscard]]
-  Noggit::Ui::minimap_widget* getMinimapWidget() const { return _minimap;  }
+  Noggit::Ui::minimap_widget* getMinimapWidget() const;
 
   void set_editing_mode (editing_mode);
-  editing_mode get_editing_mode() { return terrainMode; };
+  editing_mode get_editing_mode() const;;
 
   [[nodiscard]]
   QWidget *getSecondaryToolBar();
@@ -264,19 +266,24 @@ public:
   QWidget *getLeftSecondaryToolbar();
 
   [[nodiscard]]
-  Noggit::NoggitRenderContext getRenderContext() { return _context; };
+  Noggit::NoggitRenderContext getRenderContext();;
 
   [[nodiscard]]
-  World* getWorld() { return _world.get(); };
+  World* getWorld() const;;
 
   [[nodiscard]]
-  QDockWidget* getAssetBrowser() {return _asset_browser_dock; };
+  QDockWidget* getAssetBrowser();;
 
   [[nodiscard]]
-  Noggit::Ui::Tools::AssetBrowser::Ui::AssetBrowserWidget* getAssetBrowserWidget() { return _asset_browser; };
+  Noggit::Ui::Tools::AssetBrowser::Ui::AssetBrowserWidget* getAssetBrowserWidget();;
 
   glm::vec3 cursorPosition() const;
   void cursorPosition(glm::vec3 position);
+
+  void enableGizmoBar();
+  void disableGizmoBar();
+
+  void setDbcDirty(DBCFile* dbc);
 
 private:
   enum Modifier
@@ -355,8 +362,6 @@ private:
   Noggit::Ui::minimap_widget* _minimap;
   QDockWidget* _minimap_dock;
 
-  void move_camera_with_auto_height (glm::vec3 const&);
-
   void setToolPropertyWidgetVisibility(editing_mode mode);
 
   void unloadOpenglData() override;
@@ -391,6 +396,8 @@ private:
 
   glm::mat4x4 _model_view;
   glm::mat4x4 _projection;
+
+  std::vector<DBCFile*> _dirty_dbcs;
 
 public:
 
@@ -464,4 +471,12 @@ private:
 
   [[nodiscard]]
   float timeSpeed() const;
+
+  [[nodiscard]]
+  glm::mat4x4 model_view(bool use_debug_cam = false) const;
+
+  [[nodiscard]]
+  glm::mat4x4 projection() const;
+
+  void move_camera_with_auto_height(glm::vec3 const&);
 };

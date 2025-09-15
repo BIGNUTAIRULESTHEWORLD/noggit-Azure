@@ -1,16 +1,20 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include "Action.hpp"
+#include <noggit/ChunkWater.hpp>
+#include <noggit/ContextObject.hpp>
 #include <noggit/MapChunk.h>
 #include <noggit/MapView.h>
+#include <noggit/SceneObject.hpp>
 #include <noggit/texture_set.hpp>
-#include <noggit/ContextObject.hpp>
-#include <noggit/Log.h>
+#include <noggit/World.h>
+
 #include <cstring>
 
 
 Noggit::Action::Action(MapView* map_view)
 : QObject()
+, _flags{0}
 , _map_view(map_view)
 {
 }
@@ -229,6 +233,21 @@ void Noggit::Action::undo(bool redo)
 
           pair.first->registerChunkUpdate(ChunkUpdateFlags::GROUND_EFFECT);
       }
+  }
+  if (_flags & ActionFlags::eAREA_TRIGGER_TRANSFORMED)
+  {
+    for (auto& pair : redo ? _transformed_area_trigger_post : _transformed_area_trigger_pre)
+    {
+      for (auto&& record : gAreaTriggerDB)
+      {
+        area_trigger trigger{ record };
+        if (trigger.id == pair.first)
+        {
+          trigger = pair.second;
+          trigger.write_to_dbc();
+        }
+      }
+    }
   }
 
 }
@@ -543,6 +562,26 @@ void Noggit::Action::finish()
       std::memcpy(post.second.data(), &post.first->_shadow_map, 64 * 64 * sizeof(std::uint8_t));
     }
   }
+  if (_flags & ActionFlags::eAREA_TRIGGER_TRANSFORMED)
+  {
+    _transformed_area_trigger_post.resize(_transformed_area_trigger_pre.size());
+
+    for (int i = 0; i < _transformed_area_trigger_pre.size(); ++i)
+    {
+      auto& post = _transformed_area_trigger_post.at(i);
+      auto& pre = _transformed_area_trigger_pre.at(i);
+      post.first = pre.first;
+
+      for (auto&& record : gAreaTriggerDB)
+      {
+        area_trigger trigger{ record };
+        if (trigger.id == pre.first)
+        {
+          post.second = trigger;
+        }
+      }
+    }
+  }
 
   if (_post)
       _post();
@@ -582,6 +621,26 @@ bool Noggit::Action::getBlockCursor() const
 void Noggit::Action::setPostCallback(std::function<void()> function)
 {
   _post = function;
+}
+
+ bool Noggit::Action::getTag()
+{
+  return _tag;
+}
+
+ void Noggit::Action::setTag(bool tag)
+{
+  _tag = tag;
+}
+
+ bool Noggit::Action::checkAdressTag(std::uintptr_t address)
+{
+  return std::find(_address_tag.begin(), _address_tag.end(), address) != _address_tag.end();
+}
+
+ void Noggit::Action::tagAdress(std::uintptr_t address)
+{
+  _address_tag.push_back(address);
 }
 
 
@@ -845,6 +904,18 @@ void Noggit::Action::registerAllChunkChanges(MapChunk* chunk)
   registerChunkShadowChange(chunk);
   registerChunkLayerInfoChange(chunk);
   registerChunkDetailDoodadExclusionChange(chunk);
+}
+
+void Noggit::Action::registerAreaTriggerTransformed(area_trigger* trigger)
+{
+  _flags |= ActionFlags::eAREA_TRIGGER_TRANSFORMED;
+  for (auto& pair : _transformed_area_trigger_pre)
+  {
+    if (pair.first == trigger->id)
+      return;
+  }
+
+  _transformed_area_trigger_pre.emplace_back(trigger->id, *trigger);
 }
 
 Noggit::Action::~Action()

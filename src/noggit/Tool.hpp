@@ -8,12 +8,14 @@
 
 #include <noggit/ui/FontNoggit.hpp>
 
+#include <external/qtimgui/imgui/imgui.h>
+#include <external/imguizmo/ImGuizmo.h>
+
 #include <glm/vec3.hpp>
 
 #include <QLineF>
 #include <QPoint>
 
-#include <string>
 #include <functional>
 #include <unordered_map>
 
@@ -53,7 +55,11 @@ namespace Noggit
     {
         Qt::MouseButton button = Qt::MouseButton::NoButton;
         QPoint mouse_position;
+        bool mod_shift_down = false;
         bool mod_ctrl_down = false;
+        bool mod_alt_down = false;
+        bool mod_num_down = false;
+        bool mod_space_down = false;
     };
 
     struct MouseReleaseParameters
@@ -168,6 +174,9 @@ namespace Noggit
 
         // will be called after the map got drawn
         virtual void postRender();
+
+        // Imgui specific draw-calls (e.g. gizmo related stuff) can be made here
+        virtual void renderImGui(ImGuizmo::MODE mode, ImGuizmo::OPERATION operation);
 
         // will be called whenever a mouse button is pressed
         virtual void onMousePress(MousePressParameters const& params);

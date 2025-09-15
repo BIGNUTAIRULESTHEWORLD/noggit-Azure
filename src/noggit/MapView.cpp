@@ -7,7 +7,11 @@
 #include <noggit/TextureManager.h> // TextureManager, Texture
 #include <noggit/WMOInstance.h> // WMOInstance
 #include <noggit/World.h>
+#include <noggit/MapTile.h>
 #include <noggit/map_index.hpp>
+#include <noggit/TabletManager.hpp>
+#include <opengl/texture.hpp>
+#include <noggit/Tool.hpp>
 #include <noggit/uid_storage.hpp>
 #include <noggit/ui/CurrentTexture.h>
 #include <noggit/ui/DetailInfos.h> // detailInfos
@@ -46,6 +50,7 @@
 #include <external/tracy/Tracy.hpp>
 #include <noggit/ui/object_palette.hpp>
 #include <external/glm/gtc/type_ptr.hpp>
+#include <external/qtimgui/QtImGui.h>
 #include <opengl/types.hpp>
 #include <limits>
 #include <variant>
@@ -68,14 +73,15 @@
 #include <noggit/tools/LightTool.hpp>
 #include <noggit/tools/ScriptingTool.hpp>
 #include <noggit/tools/ChunkTool.hpp>
+#include <noggit/tools/AreaTriggerTool.hpp>
 #include <noggit/StringHash.hpp>
 #include <noggit/application/NoggitApplication.hpp>
 
 #ifdef USE_MYSQL_UID_STORAGE
 #include <mysql/mysql.h>
 
-#include <QtCore/QSettings>
 #endif
+#include <QtCore/QSettings>
 
 #include <noggit/scripting/scripting_tool.hpp>
 #include <noggit/scripting/script_settings.hpp>
@@ -85,12 +91,17 @@
 
 #include <noggit/ui/FontNoggit.hpp>
 
+#include <ui_MapViewOverlay.h>
+
 #include "revision.h"
 
 #include <QtCore/QTimer>
 #include <QtGui/QMouseEvent>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QDockWidget>
+#include <QtWidgets/QLabel>
 #include <QtWidgets/QMenuBar>
+#include <QtWidgets/QOpenGLWidget>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QStatusBar>
 #include <QWidgetAction>
@@ -103,14 +114,16 @@
 #include <QFileDialog>
 #include <QProgressDialog>
 #include <QClipboard>
+#include <QOpenGLContext>
 #include <QProcess>
+#include <QWidgetAction>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
-
+#include <fstream>
 #include <vector>
 #include <random>
 #include <format>
@@ -295,6 +308,11 @@ void MapView::set_editing_mode(editing_mode mode)
   _tool_panel_dock->setWindowTitle(activeTool()->name());
 
   _world->renderer()->markTerrainParamsUniformBlockDirty();
+}
+
+editing_mode MapView::get_editing_mode() const
+{
+  return terrainMode;
 }
 
 void MapView::setToolPropertyWidgetVisibility(editing_mode mode)
@@ -942,12 +960,30 @@ void MapView::setupEditMenu()
   edit_menu->addSeparator();
   edit_menu->addAction(createTextSeparator("Selected object"));
   edit_menu->addSeparator();
-  ADD_ACTION (edit_menu, "Delete", Qt::Key_Delete, [this]
-  {
-    NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eOBJECTS_REMOVED);
-    DeleteSelectedObjects();
-    NOGGIT_ACTION_MGR->endAction();
-  });
+  ADD_ACTION(edit_menu, "Delete", Qt::Key_Delete, [this]
+    {
+      if (get_editing_mode() == editing_mode::object)
+      {
+        NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eOBJECTS_REMOVED);
+        DeleteSelectedObjects();
+        NOGGIT_ACTION_MGR->endAction();
+      }
+      else
+      {
+        for (auto&& hotkey : hotkeys)
+        {
+          if (Qt::Key_Delete == hotkey.key && hotkey.condition())
+          {
+            makeCurrent();
+            OpenGL::context::scoped_setter const _(::gl, context());
+
+            hotkey.onPress();
+            return;
+          }
+        }
+      }
+    }
+  );
 
   ADD_ACTION (edit_menu, "Reset rotation", "Ctrl+R",
               [this]
@@ -2304,6 +2340,8 @@ void MapView::setupHotkeys()
   addHotkey(Qt::Key_Minus, MOD_num, "decreaseSelectedScale"_hash);
 
   addHotkey(Qt::Key_F, MOD_none, "setAreaId"_hash);
+
+  addHotkey(Qt::Key_Delete, MOD_none, "deleteSelection"_hash);
 }
 
 void MapView::setupMinimap()
@@ -2399,8 +2437,9 @@ void MapView::createGUI()
   _tools.emplace_back(std::make_unique<Noggit::MinimapTool>(this))->setupUi(_tool_panel_dock);
   _tools.emplace_back(std::make_unique<Noggit::StampTool>(this))->setupUi(_tool_panel_dock);
   _tools.emplace_back(std::make_unique<Noggit::LightTool>(this))->setupUi(_tool_panel_dock);
-  // _tools.emplace_back(std::make_unique<Noggit::ScriptingTool>(this))->setupUi(_tool_panel_dock);
-  // _tools.emplace_back(std::make_unique<Noggit::ChunkTool>(this))->setupUi(_tool_panel_dock);
+  _tools.emplace_back(std::make_unique<Noggit::ScriptingTool>(this))->setupUi(_tool_panel_dock);
+  _tools.emplace_back(std::make_unique<Noggit::ChunkTool>(this))->setupUi(_tool_panel_dock);
+  _tools.emplace_back(std::make_unique<Noggit::AreaTriggerTool>(this))->setupUi(_tool_panel_dock);
 
   // End combined dock
 
@@ -2629,6 +2668,11 @@ auto MapView::setBrushTexture(QImage const* img) -> void
   gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
+Noggit::Camera* MapView::getCamera()
+{
+  return &_camera;
+}
+
 void MapView::move_camera_with_auto_height (glm::vec3 const& pos)
 {
   makeCurrent();
@@ -2780,15 +2824,12 @@ void MapView::paintGL()
   {
     lock = true;
     draw_map();
+    activeTool()->postRender();
     lock = false;
     tick (now - _last_update);
   }
 
   _last_update = now;
-
-  lock = true;
-  activeTool()->postRender();
-  lock = false;
 
   if (_gizmo_on.get() && _world->has_selection())
   {
@@ -2816,6 +2857,7 @@ void MapView::paintGL()
     _transform_gizmo.handleTransformGizmo(this, _world->current_selection(), _model_view, _projection);
 
     // _world->update_selection_pivot();
+    activeTool()->renderImGui(_gizmo_mode, _gizmo_operation);
 
     ImGui::End();
 
@@ -3603,7 +3645,7 @@ void MapView::draw_map()
                   _model_view
                 , _projection
                 , _cursor_pos
-                , cursor_color
+                , cursorColor
                 , ref_pos
                 , _camera.position
                 , &minimapRenderSettings
@@ -3956,7 +3998,11 @@ void MapView::mousePressEvent(QMouseEvent* event)
   activeTool()->onMousePress({
       .button = event->button(),
       .mouse_position = event->pos(),
+      .mod_shift_down = _mod_shift_down,
       .mod_ctrl_down = _mod_ctrl_down,
+      .mod_alt_down = _mod_alt_down,
+      .mod_num_down = _mod_num_down,
+      .mod_space_down = _mod_space_down,
       });
 
   switch (event->button())
@@ -4171,10 +4217,13 @@ void MapView::save(save_mode mode)
     // write wdl, we update wdl data prior in the mapIndex saving fucntions above
     _world->horizon.save_wdl(_world.get());
 
+    for (auto&& dbc : _dirty_dbcs)
+    {
+      dbc->save();
+    }
 
     NOGGIT_ACTION_MGR->purge();
     AsyncLoader::instance->reset_object_fail();
-
 
     _main_window->statusBar()->showMessage("Map saved", 2000);
 
@@ -4242,6 +4291,30 @@ QWidget* MapView::getLeftSecondaryToolbar()
     return _viewport_overlay_ui->leftSecondaryToolbarHolder;
 }
 
+[[nodiscard]]
+Noggit::NoggitRenderContext MapView::getRenderContext()
+{
+  return _context;
+}
+
+[[nodiscard]]
+World* MapView::getWorld() const
+{
+  return _world.get();
+}
+
+[[nodiscard]]
+QDockWidget* MapView::getAssetBrowser()
+{
+  return _asset_browser_dock;
+}
+
+[[nodiscard]]
+Noggit::Ui::Tools::AssetBrowser::Ui::AssetBrowserWidget* MapView::getAssetBrowserWidget()
+{
+  return _asset_browser;
+}
+
 glm::vec3 MapView::cursorPosition() const
 {
     return _cursor_pos;
@@ -4250,6 +4323,29 @@ glm::vec3 MapView::cursorPosition() const
 void MapView::cursorPosition(glm::vec3 position)
 {
     _cursor_pos = position;
+}
+
+void MapView::enableGizmoBar()
+{
+  _viewport_overlay_ui->gizmoBar->show();
+}
+
+void MapView::disableGizmoBar()
+{
+  _viewport_overlay_ui->gizmoBar->hide();
+}
+
+void MapView::setDbcDirty(DBCFile* dbc)
+{
+  for (auto&& dirty_dbc : _dirty_dbcs)
+  {
+    if (dirty_dbc == dbc)
+    {
+      return;
+    }
+  }
+
+  _dirty_dbcs.emplace_back(dbc);
 }
 
 // also called when loading world/viewport in MapView::initializeGL()
@@ -4308,6 +4404,17 @@ void MapView::onSettingsSave()
   auto app_config = Noggit::Application::NoggitApplication::instance()->getConfiguration();
   app_config->modern_features = _settings->value("modern_features", false).toBool();
 
+}
+
+void MapView::setCameraDirty()
+{
+  _camera_moved_since_last_draw = true;
+}
+
+[[nodiscard]]
+Noggit::Ui::minimap_widget* MapView::getMinimapWidget() const
+{
+  return _minimap;
 }
 
 void MapView::ShowContextMenu(QPoint pos) 
