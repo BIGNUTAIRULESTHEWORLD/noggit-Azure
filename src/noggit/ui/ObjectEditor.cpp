@@ -30,6 +30,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QLineEdit>
 #include <QSettings>
 #include <QtWidgets/qcombobox.h>
 #include <QtWidgets/QDoubleSpinBox>

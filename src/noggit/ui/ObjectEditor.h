@@ -13,6 +13,7 @@ class QGroupBox;
 class QLabel;
 class QSettings;
 class QSlider;
+class QLineEdit;
 class World;
 
 namespace Noggit
