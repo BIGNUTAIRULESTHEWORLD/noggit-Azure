@@ -32,25 +32,26 @@ namespace math
     {
       assert(false);
     }
+    // pre compute inverted direction
+    _inverted_direction.x = (_direction.x != 0.0f) ? 1.0f / _direction.x : std::numeric_limits<float>::max();
+    _inverted_direction.y = (_direction.y != 0.0f) ? 1.0f / _direction.y : std::numeric_limits<float>::max();
+    _inverted_direction.z = (_direction.z != 0.0f) ? 1.0f / _direction.z : std::numeric_limits<float>::max();
+
   }
 
   std::optional<float> ray::intersect_bounds
     (glm::vec3 const& min, glm::vec3 const& max) const noexcept
   {
-<<<<<<< HEAD
+
     float tmin (std::numeric_limits<float>::lowest());
     float tmax (std::numeric_limits<float>::max());
 
     if (_direction.x != 0.0f)
     {
-      float tx1 = (min.x - _origin.x) * _inverted_direction.x;
-      float tx2 = (max.x - _origin.x) * _inverted_direction.x;
+      const float tx1 = (min.x - _origin.x) * _inverted_direction.x;
+      const float tx2 = (max.x - _origin.x) * _inverted_direction.x;
       // float const tx1((min.x - _origin.x) / _direction.x);
       // float const tx2((max.x - _origin.x) / _direction.x);
-=======
-    float tmin(std::numeric_limits<float>::lowest());
-    float tmax(std::numeric_limits<float>::max());
->>>>>>> origin/ground_effects_editor
 
       tmin = std::max(tmin, std::min(tx1, tx2));
       tmax = std::min(tmax, std::max(tx1, tx2));

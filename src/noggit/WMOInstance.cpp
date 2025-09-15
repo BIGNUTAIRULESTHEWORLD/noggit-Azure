@@ -76,7 +76,11 @@ WMOInstance::WMOInstance(WMOInstance&& other) noexcept
   , _doodadset(other._doodadset)
   , _doodads_per_group(other._doodads_per_group)
   , _need_doodadset_update(other._need_doodadset_update)
-  , _need_recalc_extents(other._need_recalc_extents)
+  , _update_group_extents(other._update_group_extents)
+  // , hasLowResModel(other.hasLowResModel)
+  , render_low_res(other.render_low_res)
+  , lowResInstance(other.lowResInstance)
+  , lowResWmo(other.lowResWmo)
 {
   std::swap(extents, other.extents);
   pos = other.pos;
@@ -107,6 +111,11 @@ WMOInstance& WMOInstance::operator= (WMOInstance&& other) noexcept
   std::swap(_transform_mat_inverted, other._transform_mat_inverted);
   std::swap(_context, other._context);
   std::swap(_need_recalc_extents, other._need_recalc_extents);
+  std::swap(_update_group_extents, other._update_group_extents);
+  // std::swap(hasLowResModel, other.hasLowResModel);
+  std::swap(render_low_res, other.render_low_res);
+  std::swap(lowResInstance, other.lowResInstance);
+  std::swap(lowResWmo, other.lowResWmo);
   return *this;
 }
 

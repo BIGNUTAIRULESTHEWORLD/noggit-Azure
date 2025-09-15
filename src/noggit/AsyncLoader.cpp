@@ -6,6 +6,7 @@
 #include <noggit/AsyncObject.h>
 #include <noggit/errorHandling.h>
 #include <noggit/Log.h>
+#include <util/exception_to_string.hpp>
 
 #include <QtCore/QSettings>
 

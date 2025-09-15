@@ -1336,7 +1336,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }
 
     // Draw Sky/Light spheres
-    gl.cullFace(GL_FRONT);
+    glCullFace(GL_FRONT);
     if (!render_settings.draw_only_inside_light_sphere)
     {
       for (Sky const& sky : skies()->skies)
@@ -1375,7 +1375,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }
 
     // now draw the current light (light that we're inside of)
-    gl.cullFace(GL_BACK);
+    glCullFace(GL_BACK);
     for (Sky const& sky : skies()->skies)
     {
       if (sky.global)
@@ -2114,7 +2114,7 @@ bool WorldRender::saveMinimap(TileIndex const& tile_idx, MinimapRenderSettings* 
         , 0.f, 0.f, 0.f, 1.f
     ));
 
-    gl.finish();
+    glFinish();
 
     drawMinimap(mTile
         , look_at
