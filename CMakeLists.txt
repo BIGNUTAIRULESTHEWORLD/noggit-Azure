@@ -6,8 +6,9 @@
 # ░███  ░░█████ ░░███     ███ ░░███  ░░███ ░░███  ░░███  ░███     ░███        ░███    ░███  ░███ ░   █ ░███    ███
 # █████  ░░█████ ░░░███████░   ░░█████████  ░░█████████  █████    █████       █████   █████ ██████████ ██████████
 #░░░░░    ░░░░░    ░░░░░░░      ░░░░░░░░░    ░░░░░░░░░  ░░░░░    ░░░░░       ░░░░░   ░░░░░ ░░░░░░░░░░ ░░░░░░░░░░
-CMAKE_MINIMUM_REQUIRED(VERSION 3.3)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.11)
 CMAKE_POLICY(SET CMP0057 NEW) # "Support new IN_LIST if() operator."
+cmake_policy(SET CMP0135 NEW)
 SET(CMAKE_CXX_STANDARD 20)
 SET(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -87,7 +88,7 @@ SET(LIBARY_OUTPUT_PATH bin)
 SET(EXTERNAL_SOURCE_DIR src/external)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
-OPTION(USE_SQL "Enable sql uid save ? (require mysql installed)" OFF)
+# OPTION(USE_SQL "Enable sql uid save ? (require mysql installed)" OFF)
 OPTION(VALIDATE_OPENGL_PROGRAMS "Validate Opengl programs" OFF)
 
 IF(VALIDATE_OPENGL_PROGRAMS)
@@ -116,13 +117,20 @@ FetchContent_MakeAvailable(FastNoise2)
 FIND_PACKAGE(Sol2 REQUIRED)
 FIND_PACKAGE(Qt5 COMPONENTS Widgets OpenGLExtensions Gui Network Xml Multimedia REQUIRED)
 
-IF(USE_SQL)
+# IF(USE_SQL)
   FIND_LIBRARY(MYSQL_LIBRARY NAMES libmysql
               HINTS "${CMAKE_SOURCE_DIR}/../Noggit3libs/mysql")
   FIND_LIBRARY(MYSQLCPPCONN_LIBRARY NAMES mysqlcppconn
               HINTS "${CMAKE_SOURCE_DIR}/../Noggit3libs/mysql/connector")
   FIND_PATH(MYSQLCPPCONN_INCLUDE NAMES cppconn/driver.h
               HINTS "${CMAKE_SOURCE_DIR}/../Noggit3libs/mysql/connector")
+
+  # Ensure we always include the parent of 'cppconn' folder
+  if(EXISTS "${MYSQLCPPCONN_INCLUDE}/cppconn")
+    set(MYSQLCPPCONN_INCLUDE "${MYSQLCPPCONN_INCLUDE}")
+  elseif(EXISTS "${MYSQLCPPCONN_INCLUDE}/driver.h")
+    get_filename_component(MYSQLCPPCONN_INCLUDE "${MYSQLCPPCONN_INCLUDE}" DIRECTORY)
+  endif()
 
   IF(MYSQL_LIBRARY AND MYSQLCPPCONN_LIBRARY AND MYSQLCPPCONN_INCLUDE)
     ADD_DEFINITIONS(-DUSE_MYSQL_UID_STORAGE)
@@ -132,7 +140,7 @@ IF(USE_SQL)
   ELSE()
     MESSAGE(FATAL_ERROR "MySQL lib or connector not found")
   ENDIF()
-ENDIF()
+# ENDIF()
 
 ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/qt-color-widgets")
 ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/framelesshelper")

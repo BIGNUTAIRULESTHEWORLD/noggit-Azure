@@ -5,50 +5,54 @@
 
 #include <QtCore/QSettings>
 
-#include <driver.h>
-#include <prepared_statement.h>
-// #include <cppconn/driver.h>
-// #include <cppconn/prepared_statement.h>
+#include <cppconn/driver.h>
+#include <cppconn/prepared_statement.h>
+#include <cppconn/exception.h>
 
 namespace
 {
   std::unique_ptr<sql::Connection> connect()
   {
-	QSettings settings;
+		QSettings settings;
 
-	// if using release SQL binaries in debug mode it will crash https://bugs.mysql.com/bug.php?id=91238 unless using sql strings
-	// tcp://127.0.0.1:3306
-	sql::SQLString hostname = "tcp://" + settings.value("project/mysql/server").toString().toStdString() + ":" + settings.value("project/mysql/port", "3306").toString().toStdString();
-	sql::SQLString userName = settings.value("project/mysql/user").toString().toStdString();
-	sql::SQLString password = settings.value("project/mysql/pwd").toString().toStdString();
-	sql::SQLString schema = settings.value("project/mysql/db").toString().toStdString();
+		// if using release SQL binaries in debug mode it will crash https://bugs.mysql.com/bug.php?id=91238 unless using sql strings
+		// tcp://127.0.0.1:3306
+		const sql::SQLString hostname = "tcp://" + settings.value("project/mysql/server").toString().toStdString() + ":" + settings.value("project/mysql/port", "3306").toString().toStdString();
+		const sql::SQLString userName = settings.value("project/mysql/user").toString().toStdString();
+		const sql::SQLString password = settings.value("project/mysql/pwd").toString().toStdString();
+		const sql::SQLString schema = settings.value("project/mysql/db").toString().toStdString();
 
-	try
-	{
-		std::unique_ptr<sql::Connection> Con(get_driver_instance()->connect(hostname, userName, password));
+		try
+		{
+			std::unique_ptr<sql::Connection> Con(get_driver_instance()->connect(hostname, userName, password));
 
-		// crete database if it doesn't exist
-		std::string createdb_statement = "CREATE DATABASE IF NOT EXISTS " + schema;
-		std::unique_ptr<sql::PreparedStatement> dbpstmt(Con->prepareStatement(createdb_statement));
-		std::unique_ptr<sql::ResultSet> res(dbpstmt->executeQuery());
-		
-		Con->setSchema(schema);
+			// crete database if it doesn't exist
+			std::string createdb_statement = "CREATE DATABASE IF NOT EXISTS " + schema;
+			std::unique_ptr<sql::PreparedStatement> dbpstmt(Con->prepareStatement(createdb_statement));
+			std::unique_ptr<sql::ResultSet> res(dbpstmt->executeQuery());
+			
+			Con->setSchema(schema);
 
-		// create table if it doesn't exist, querries from src/sql
-		std::unique_ptr<sql::PreparedStatement> tablepstmt(Con->prepareStatement("CREATE TABLE IF NOT EXISTS `UIDs` ("
-											"`_map_id` int(11) NOT NULL,"
-											"`UID` int(11) NOT NULL,"
-											"PRIMARY KEY(`_map_id`)"
-											") ENGINE = InnoDB DEFAULT CHARSET = latin1;"));
-		std::unique_ptr<sql::ResultSet> tableres(tablepstmt->executeQuery());
+			// create table if it doesn't exist, querries from src/sql
+			std::unique_ptr<sql::PreparedStatement> tablepstmt(Con->prepareStatement("CREATE TABLE IF NOT EXISTS `UIDs` ("
+												"`_map_id` int(11) NOT NULL,"
+												"`UID` int(11) NOT NULL,"
+												"PRIMARY KEY(`_map_id`)"
+												") ENGINE = InnoDB DEFAULT CHARSET = latin1;"));
+			std::unique_ptr<sql::ResultSet> tableres(tablepstmt->executeQuery());
 
-		return Con;
-	}
-	catch (sql::SQLException& e)
-	{
+			return Con;
+		}
+		catch (sql::SQLException& e)
+		{
 
-		return nullptr;
-	}
+			return nullptr;
+		}
+		catch (std::exception& e)
+		{
+			std::cerr << "SQL Other exception: " << e.what() << std::endl;
+			return nullptr;
+		}
   }
 }
 
@@ -58,17 +62,17 @@ namespace mysql
   {
 	  QSettings settings;
 	  // if using release SQL binaries in debug mode it will crash https://bugs.mysql.com/bug.php?id=91238 unless using sql strings
-	  sql::SQLString hostname = "tcp://" + settings.value("project/mysql/server").toString().toStdString() + ":" + settings.value("project/mysql/port", "3306").toString().toStdString();
-	  sql::SQLString userName = settings.value("project/mysql/user").toString().toStdString();
-	  sql::SQLString password = settings.value("project/mysql/pwd").toString().toStdString();
-	  sql::SQLString schema = settings.value("project/mysql/db").toString().toStdString();
-
+	  const sql::SQLString hostname = "tcp://" + settings.value("project/mysql/server").toString().toStdString() + ":" + settings.value("project/mysql/port", "3306").toString().toStdString();
+	  const sql::SQLString userName = settings.value("project/mysql/user").toString().toStdString();
+	  const sql::SQLString password = settings.value("project/mysql/pwd").toString().toStdString();
 
 	  QMessageBox prompt;
 	  prompt.setWindowFlag(Qt::WindowStaysOnTopHint);
 	  try
 	  {
-		  std::unique_ptr<sql::Connection> Con(get_driver_instance()->connect(hostname, userName, password));
+			sql::Driver* driver = get_driver_instance();
+			sql::Connection* connection = driver->connect(hostname, userName, password);
+			std::unique_ptr<sql::Connection> Con(connection);
 
 		  prompt.setIcon(QMessageBox::Information);
 		  prompt.setText("Succesfully connected to MySQL database.");
@@ -97,6 +101,11 @@ namespace mysql
 
 		  return false;
 	  }
+		catch (std::exception& e)
+		{
+			std::cerr << "SQL Other exception: " << e.what() << std::endl;
+			return false;
+		}
   }
 
   bool hasMaxUIDStoredDB(std::size_t mapID)
