@@ -13,6 +13,7 @@ class QGroupBox;
 class QLabel;
 class QSettings;
 class QSlider;
+class QToolButton;
 class QLineEdit;
 class World;
 

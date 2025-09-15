@@ -5,6 +5,8 @@
 #include <math/frustum.hpp>
 
 #include <noggit/tool_enums.hpp>
+#include <noggit/WMO.h>
+#include <noggit/MapHeaders.h>
 
 #include <opengl/texture.hpp>
 #include <opengl/scoped.hpp>

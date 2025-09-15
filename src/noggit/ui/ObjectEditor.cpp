@@ -16,9 +16,10 @@
 #include <noggit/ui/ModelImport.h>
 #include <noggit/ui/ObjectEditor.h>
 #include <noggit/ui/RotationEditor.h>
+#include <noggit/ui/FontNoggit.hpp>
 #include <noggit/ui/tools/AssetBrowser/Ui/AssetBrowser.hpp>
 #include <noggit/ui/tools/UiCommon/expanderwidget.h>
-#include <noggit/WMOInstance.h> // WMOInstance
+#include <noggit/WMOInstance.h>
 #include <noggit/World.h>
 
 #include <QButtonGroup>
@@ -30,8 +31,10 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QToolButton>
 #include <QLineEdit>
 #include <QSettings>
+#include <QApplication>
 #include <QtWidgets/qcombobox.h>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/qgroupbox.h>

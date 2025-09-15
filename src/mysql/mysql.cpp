@@ -3,7 +3,8 @@
 #include <mysql/mysql.h>
 #include <noggit/world.h>
 
-#include <QtCore/QSettings>
+#include <QSettings>
+#include <QMessageBox>
 
 #include <cppconn/driver.h>
 #include <cppconn/prepared_statement.h>
