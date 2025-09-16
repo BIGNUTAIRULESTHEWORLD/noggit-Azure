@@ -117,13 +117,25 @@ FetchContent_MakeAvailable(FastNoise2)
 FIND_PACKAGE(Sol2 REQUIRED)
 FIND_PACKAGE(Qt5 COMPONENTS Widgets OpenGLExtensions Gui Network Xml Multimedia REQUIRED)
 
+set(MYSQL_HINTS "${CMAKE_SOURCE_DIR}/../Noggit3libs/mysql")
+if(MYSQL_ROOT)
+  set(MYSQL_HINTS "${MYSQL_ROOT}/lib" "${MYSQL_HINTS}")
+endif()
+
+set(MYSQLCPPCONN_HINTS "${CMAKE_SOURCE_DIR}/../Noggit3libs/mysql/connector")
+set(MYSQLCPPCONN_INCLUDE_HINTS "${CMAKE_SOURCE_DIR}/../Noggit3libs/mysql/connector")
+if(MYSQLCPPCONN_ROOT)
+  set(MYSQLCPPCONN_HINTS "${MYSQLCPPCONN_ROOT}/lib64/vs14/debug" "${MYSQLCPPCONN_HINTS}")
+  set(MYSQLCPPCONN_INCLUDE_HINTS "${MYSQLCPPCONN_ROOT}/include/jdbc" "${MYSQLCPPCONN_INCLUDE_HINTS}")
+endif()
+
 # IF(USE_SQL)
   FIND_LIBRARY(MYSQL_LIBRARY NAMES libmysql
-              HINTS "${CMAKE_SOURCE_DIR}/../Noggit3libs/mysql")
+              HINTS "${MYSQL_HINTS}")
   FIND_LIBRARY(MYSQLCPPCONN_LIBRARY NAMES mysqlcppconn
-              HINTS "${CMAKE_SOURCE_DIR}/../Noggit3libs/mysql/connector")
+              HINTS "${MYSQLCPPCONN_HINTS}")
   FIND_PATH(MYSQLCPPCONN_INCLUDE NAMES cppconn/driver.h
-              HINTS "${CMAKE_SOURCE_DIR}/../Noggit3libs/mysql/connector")
+              HINTS "${MYSQLCPPCONN_INCLUDE_HINTS}")
 
   # Ensure we always include the parent of 'cppconn' folder
   if(EXISTS "${MYSQLCPPCONN_INCLUDE}/cppconn")
@@ -138,7 +150,7 @@ FIND_PACKAGE(Qt5 COMPONENTS Widgets OpenGLExtensions Gui Network Xml Multimedia 
     SET (mysql_headers src/mysql/mysql.h)
     SOURCE_GROUP("mysql"  FILES ${mysql_sources} ${mysql_headers})
   ELSE()
-    MESSAGE(FATAL_ERROR "MySQL lib or connector not found")
+    MESSAGE(FATAL_ERROR "MySQL lib or connector not found ${MYSQL_LIBRARY} ${MYSQLCPPCONN_LIBRARY} ${MYSQLCPPCONN_INCLUDE}")
   ENDIF()
 # ENDIF()
 
