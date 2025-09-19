@@ -9,13 +9,11 @@
 #include <noggit/ActionManager.hpp>
 #include <noggit/Action.hpp>
 #include <noggit/project/CurrentProject.hpp>
-#ifdef USE_MYSQL_UID_STORAGE
-  #include <mysql/mysql.h>
-#endif
 #include <noggit/map_index.hpp>
 #include <noggit/uid_storage.hpp>
 #include <noggit/application/NoggitApplication.hpp>
 #include <ClientFile.hpp>
+#include <noggit/sql/SqlUIDStorage.h>
 
 #include <QtCore/QSettings>
 #include <QByteArray>
@@ -776,14 +774,13 @@ uint32_t MapIndex::newGUID()
 {
   std::unique_lock<std::mutex> lock (_mutex);
 
-#ifdef USE_MYSQL_UID_STORAGE
   QSettings settings;
 
   if (settings.value ("project/mysql/enabled", false).toBool())
   {
-    mysql::updateUIDinDB(_map_id, highestGUID + 1); // update the highest uid in db, note that if the user don't save these uid won't be used (not really a problem tho) 
+    // update the highest uid in db, note that if the user don't save these uid won't be used (not really a problem tho) 
+    Noggit::Sql::SqlUIDStorage::updateUIDinDB(_map_id, highestGUID + 1);
   }
-#endif
   return ++highestGUID;
 }
 
@@ -1135,21 +1132,19 @@ void MapIndex::searchMaxUID()
 
 void MapIndex::saveMaxUID()
 {
-#ifdef USE_MYSQL_UID_STORAGE
   QSettings settings;
 
   if (settings.value ("project/mysql/enabled", false).toBool())
   {
-    if (mysql::hasMaxUIDStoredDB(_map_id))
+    if (Noggit::Sql::SqlUIDStorage::hasMaxUIDStoredDB(_map_id))
     {
-	    mysql::updateUIDinDB(_map_id, highestGUID);
+      Noggit::Sql::SqlUIDStorage::updateUIDinDB(_map_id, highestGUID);
     }
     else
     {
-	    mysql::insertUIDinDB(_map_id, highestGUID);
+      Noggit::Sql::SqlUIDStorage::insertUIDinDB(_map_id, highestGUID);
     }
   }
-#endif
   // save the max UID on the disk (always save to sync with the db if used
   uid_storage::saveMaxUID (_map_id, highestGUID);
 }
@@ -1157,16 +1152,14 @@ void MapIndex::saveMaxUID()
 void MapIndex::loadMaxUID()
 {
   highestGUID = uid_storage::getMaxUID (_map_id);
-#ifdef USE_MYSQL_UID_STORAGE
   QSettings settings;
 
   if (settings.value ("project/mysql/enabled", false).toBool())
   {
-    highestGUID = std::max(mysql::getGUIDFromDB(_map_id), highestGUID);
+    highestGUID = std::max(Noggit::Sql::SqlUIDStorage::getGUIDFromDB(_map_id), highestGUID);
     // save to make sure the db and disk uid are synced
     saveMaxUID();
   }
-#endif
 }
 
 void MapIndex::loadMinimapMD5translate()

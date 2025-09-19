@@ -21,6 +21,8 @@
 #include <noggit/ui/windows/settingsPanel/SettingsPanel.h>
 #include <noggit/uid_storage.hpp>
 #include <noggit/World.h>
+#include <noggit/sql/SqlUIDStorage.h>
+#include <noggit/sql/ClientDatabase.h>
 
 #include <string>
 #include <blizzard-archive-library/include/Exception.hpp>
@@ -43,15 +45,10 @@
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
+#include <QtCore/QSettings>
 
 #include <chrono>
 #include <sstream>
-
-#ifdef USE_MYSQL_UID_STORAGE
-#include <mysql/mysql.h>
-
-#include <QtCore/QSettings>
-#endif
 
 #include "revision.h"
 
@@ -84,17 +81,31 @@ namespace Noggit::Ui::Windows
         LogError << "NoggitWindow() : Unsupported project version, skipping loading DBCs." << std::endl;
     }
 
+    _settings = new settings(this);
+
+    QSettings settings;
+    // connect to databases
+    bool use_mysql = settings.value("project/mysql/enabled", false).toBool();
+    if (use_mysql)
+    {
+      auto host = settings.value("project/mysql/server").toString();
+      auto port = settings.value("project/mysql/port", "3306").toInt();
+      auto db_name = settings.value("project/mysql/db").toString();  // schema name
+      auto user = settings.value("project/mysql/user").toString();
+      auto pass = settings.value("project/mysql/pwd").toString();
+
+      auto& db_manager = Sql::DatabaseManager::instance();
+      db_manager.initializeDb(Sql::SQLDbType::Noggit, host, port, db_name, user, pass);
+    }
+
     setCentralWidget(_null_widget);
 
     // The default value is AnimatedDocks | AllowTabbedDocks.
     setDockOptions(AnimatedDocks | AllowNestedDocks | AllowTabbedDocks | GroupedDragging);
 
     _about = new about(this);
-    _settings = new settings(this);
 
     _menuBar = menuBar();
-
-    QSettings settings;
 
     if (!settings.value("systemWindowFrame", true).toBool())
     {
@@ -159,16 +170,9 @@ namespace Noggit::Ui::Windows
 
     unsigned int world_map_id = getWorld()->getMapID();
 
-#ifdef USE_MYSQL_UID_STORAGE
     bool use_mysql = settings.value("project/mysql/enabled", false).toBool();
 
-    bool valid_conn = false;
-    if (use_mysql)
-    {
-        valid_conn = mysql::testConnection(true);
-    }
-
-    if ((valid_conn && mysql::hasMaxUIDStoredDB(world_map_id))
+    if ((Noggit::Sql::SqlUIDStorage::hasMaxUIDStoredDB(world_map_id))
       || uid_storage::hasMaxUIDStored(world_map_id)
        )
     {
@@ -176,7 +180,8 @@ namespace Noggit::Ui::Windows
       getWorld()->mapIndex.loadMaxUID();
       enterMapAt(pos, camera_pitch, camera_yaw, uid_fix_mode::none, from_bookmark);
     }
-#else
+    // old if no mysql block
+    /*
     if (uid_storage::hasMaxUIDStored(world_map_id))
     {
       if (settings.value("uid_startup_check", true).toBool())
@@ -187,8 +192,7 @@ namespace Noggit::Ui::Windows
         getWorld()->mapIndex.loadMaxUID();
         enterMapAt(pos, camera_pitch, camera_yaw, uid_fix_mode::none, from_bookmark);
       }
-    }
-#endif
+    }*/
     else
     {
       auto uid_fix_window(new UidFixWindow(pos, camera_pitch, camera_yaw));

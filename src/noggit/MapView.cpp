@@ -76,11 +76,8 @@
 #include <noggit/tools/AreaTriggerTool.hpp>
 #include <noggit/StringHash.hpp>
 #include <noggit/application/NoggitApplication.hpp>
+#include <noggit/sql/DatabaseManager.h>
 
-#ifdef USE_MYSQL_UID_STORAGE
-#include <mysql/mysql.h>
-
-#endif
 #include <QtCore/QSettings>
 
 #include <noggit/scripting/scripting_tool.hpp>
@@ -2472,17 +2469,23 @@ void MapView::createGUI()
   set_editing_mode (editing_mode::ground);
 
   // do we need to do this every tick ?
-#ifdef USE_MYSQL_UID_STORAGE
   if (_settings->value("project/mysql/enabled").toBool())
   {
-      if (mysql::hasMaxUIDStoredDB(_world->getMapID()))
-      {
-        _status_database->setText("MySQL UID sync enabled: "
-            + _settings->value("project/mysql/server").toString() + ":"
-            + _settings->value("project/mysql/port").toString());
-      }
+    auto& db_mgr = Noggit::Sql::DatabaseManager::instance();
+
+    if (db_mgr.testConnection(Noggit::Sql::SQLDbType::Noggit))
+    {
+       _status_database->setText("UID SQL Database is active: "
+           + _settings->value("project/mysql/server").toString() + ":"
+           + _settings->value("project/mysql/port").toString());
+    }
+    else
+    {
+      _status_database->setText("UID SQL Database is not working: "
+        + _settings->value("project/mysql/server").toString() + ":"
+        + _settings->value("project/mysql/port").toString());
+    }
   }
-#endif
 }
 
 void MapView::on_exit_prompt()

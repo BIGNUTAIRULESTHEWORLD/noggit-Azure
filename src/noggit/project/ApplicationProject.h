@@ -117,6 +117,8 @@ namespace Noggit::Project
     NoggitExtraMapData ExtraMapData;
     NoggitProject();
 
+    unsigned int buildId();
+
     void createBookmark(const NoggitProjectBookmarkMap& bookmark);
 
     void deleteBookmark();

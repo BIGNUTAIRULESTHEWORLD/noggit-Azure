@@ -259,6 +259,11 @@ namespace Noggit::Project
       _projectWriter = std::make_shared<ApplicationProjectWriter>();
     }
 
+    unsigned int NoggitProject::buildId()
+    {
+      return ClientDatabase->getBuild();
+    }
+
     void NoggitProject::createBookmark(const NoggitProjectBookmarkMap& bookmark)
     {
       Bookmarks.push_back(bookmark);

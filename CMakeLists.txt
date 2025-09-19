@@ -88,7 +88,6 @@ SET(LIBARY_OUTPUT_PATH bin)
 SET(EXTERNAL_SOURCE_DIR src/external)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
-# OPTION(USE_SQL "Enable sql uid save ? (require mysql installed)" OFF)
 OPTION(VALIDATE_OPENGL_PROGRAMS "Validate Opengl programs" OFF)
 
 IF(VALIDATE_OPENGL_PROGRAMS)
@@ -115,32 +114,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(FastNoise2)
 
 FIND_PACKAGE(Sol2 REQUIRED)
-FIND_PACKAGE(Qt5 COMPONENTS Widgets OpenGLExtensions Gui Network Xml Multimedia REQUIRED)
-
-# IF(USE_SQL)
-  FIND_LIBRARY(MYSQL_LIBRARY NAMES libmysql
-              HINTS "${CMAKE_SOURCE_DIR}/../Noggit3libs/mysql")
-  FIND_LIBRARY(MYSQLCPPCONN_LIBRARY NAMES mysqlcppconn
-              HINTS "${CMAKE_SOURCE_DIR}/../Noggit3libs/mysql/connector")
-  FIND_PATH(MYSQLCPPCONN_INCLUDE NAMES cppconn/driver.h
-              HINTS "${CMAKE_SOURCE_DIR}/../Noggit3libs/mysql/connector")
-
-  # Ensure we always include the parent of 'cppconn' folder
-  if(EXISTS "${MYSQLCPPCONN_INCLUDE}/cppconn")
-    set(MYSQLCPPCONN_INCLUDE "${MYSQLCPPCONN_INCLUDE}")
-  elseif(EXISTS "${MYSQLCPPCONN_INCLUDE}/driver.h")
-    get_filename_component(MYSQLCPPCONN_INCLUDE "${MYSQLCPPCONN_INCLUDE}" DIRECTORY)
-  endif()
-
-  IF(MYSQL_LIBRARY AND MYSQLCPPCONN_LIBRARY AND MYSQLCPPCONN_INCLUDE)
-    ADD_DEFINITIONS(-DUSE_MYSQL_UID_STORAGE)
-    SET (mysql_sources src/mysql/mysql.cpp)
-    SET (mysql_headers src/mysql/mysql.h)
-    SOURCE_GROUP("mysql"  FILES ${mysql_sources} ${mysql_headers})
-  ELSE()
-    MESSAGE(FATAL_ERROR "MySQL lib or connector not found")
-  ENDIF()
-# ENDIF()
+FIND_PACKAGE(Qt5 COMPONENTS Widgets OpenGLExtensions Gui Network Xml Multimedia Sql REQUIRED)
 
 ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/qt-color-widgets")
 ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/framelesshelper")
@@ -297,7 +271,6 @@ ADD_EXECUTABLE(noggit
   ${opengl_sources}
   ${math_sources}
   ${external_sources}
-  ${mysql_sources}
   ${os_sources}
   ${util_sources}
   ${util_headers}
@@ -311,7 +284,6 @@ ADD_EXECUTABLE(noggit
   ${opengl_headers}
   ${math_headers}
   ${external_headers}
-  ${mysql_headers}
   ${os_headers}
   ${png_blp_headers}
   ${ResFiles}
@@ -355,6 +327,7 @@ TARGET_LINK_LIBRARIES (noggit
   Qt5::Xml
   Qt5::Network
   Qt5::Multimedia
+  Qt5::Sql
   ColorWidgets-qt5
   FramelessHelper
   qt_imgui_widgets
@@ -370,6 +343,78 @@ TARGET_LINK_LIBRARIES (noggit
   blizzard-archive-library
   blizzard-database-library
   rapidfuzz::rapidfuzz
+)
+include(ExternalProject)
+
+
+# Fetch qsqlmysql.dll plugin based on Qt version #####
+execute_process(
+    COMMAND ${Qt5Core_DIR}/../../../bin/qmake -query QT_VERSION
+    OUTPUT_VARIABLE QT_FULL_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+message(STATUS "Qt full version: ${QT_FULL_VERSION}")
+
+# prebuilds available at : https://github.com/thecodemonkey86/qt_mysql_driver/releases
+# get direct download links
+if(WIN32)
+  if(MSVC)
+        set(QMYSQL_PREBUILT_DRIVER_URL
+            "https://github.com/thecodemonkey86/qt_mysql_driver/files/5575770/qsqlmysql.dll_Qt_SQL_driver_${QT_FULL_VERSION}_MSVC2019_64-bit.zip"
+        )
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU") # MinGW
+        set(QMYSQL_PREBUILT_DRIVER_URL
+            "https://github.com/thecodemonkey86/qt_mysql_driver/files/5575769/qsqlmysql.dll_Qt_SQL_driver_${QT_FULL_VERSION}_MinGW_8.1.0_64-bit.zip"
+        )
+    else()
+        message(WARNING "Unsupported Windows compiler for prebuilt MySQL Qt driver")
+  endif()
+elseif(UNIX)
+  set(QMYSQL_PREBUILT_DRIVER_URL
+      "https://github.com/thecodemonkey86/qt_mysql_driver/files/6388052/libqsqlmysql.so_Qt_SQL_driver_${QT_FULL_VERSION}_gcc64.zip"
+)
+else()
+  message(WARNING "Unsupported platform for prebuilt MySQL Qt driver")
+endif()
+
+set(QMYSQL_PREBUILT_DIR "${CMAKE_BINARY_DIR}/_deps/qt_mysql_driver")
+set(QMYSQL_EXTRACT_DIR "${QMYSQL_PREBUILT_DIR}/sqldrivers")
+set(QMYSQL_ZIP "${QMYSQL_PREBUILT_DIR}/qsqlmysql_prebuilt.zip")
+
+# Download zip only if not already present
+if(NOT EXISTS "${QMYSQL_ZIP}")
+  message(STATUS "qt MySQL DRIVER zip not found. Downloading qmysql from : ${QMYSQL_PREBUILT_DRIVER_URL}")
+
+  file(DOWNLOAD
+      ${QMYSQL_PREBUILT_DRIVER_URL}
+      ${QMYSQL_ZIP}
+      # SHOW_PROGRESS
+      STATUS DOWNLOAD_STATUS
+      TLS_VERIFY ON
+  )
+
+  list(GET DOWNLOAD_STATUS 0 STATUS_CODE)
+  if(NOT STATUS_CODE EQUAL 0)
+      message(WARNING "Failed to download prebuilt qt MySQL driver: ${DOWNLOAD_STATUS}")
+      message(WARNING "You can manually download it from https://github.com/thecodemonkey86/qt_mysql_driver/releases or build qsqlmysql.dll yourself from QT source.")
+  endif()
+else()
+    message(STATUS "Prebuilt MySQL Qt driver zip already exists, skipping download")
+endif()
+
+# Extract zip
+file(ARCHIVE_EXTRACT
+    INPUT ${QMYSQL_ZIP}
+    DESTINATION ${QMYSQL_EXTRACT_DIR}
+)
+message(STATUS "Extracted prebuilt MySQL Qt driver at ${QMYSQL_EXTRACT_DIR}. Deps will be deploeyd after build.")
+
+  
+# deploy
+add_custom_command(TARGET noggit POST_BUILD
+COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${QMYSQL_EXTRACT_DIR}"
+    "$<TARGET_FILE_DIR:noggit>"
 )
 
 #add distribution themes
@@ -450,11 +495,6 @@ ENDIF()
 
 IF(APPLE)
   TARGET_LINK_LIBRARIES (noggit "-framework Cocoa" "-framework AppKit" "-framework Foundation")
-ENDIF()
-
-IF(MYSQL_LIBRARY AND MYSQLCPPCONN_LIBRARY AND MYSQLCPPCONN_INCLUDE)
-  TARGET_LINK_LIBRARIES(noggit ${MYSQL_LIBRARY} ${MYSQLCPPCONN_LIBRARY})
-  TARGET_INCLUDE_DIRECTORIES(noggit SYSTEM PRIVATE ${MYSQLCPPCONN_INCLUDE})
 ENDIF()
 
 IF(NOGGIT_LOGTOCONSOLE AND WIN32)

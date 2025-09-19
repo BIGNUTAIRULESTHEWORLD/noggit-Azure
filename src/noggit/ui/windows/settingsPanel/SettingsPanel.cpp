@@ -3,6 +3,7 @@
 #include <noggit/Log.h>
 #include <noggit/ui/FramelessWindow.hpp>
 #include <noggit/ui/windows/settingsPanel/SettingsPanel.h>
+#include <noggit/sql/DatabaseManager.h>
 
 #include <QDir>
 #include <QtCore/QSettings>
@@ -10,13 +11,10 @@
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QPushButton>
 
-#ifdef USE_MYSQL_UID_STORAGE
-#include <mysql/mysql.h>
-#endif
-
 #include <ui_SettingsPanel.h>
 
 #include <sstream>
+#include <QMessageBox>
 
 
 namespace Noggit
@@ -79,11 +77,9 @@ namespace Noggit
       );
 
 
-#ifdef USE_MYSQL_UID_STORAGE
       ui->MySQL_box->setEnabled(true);
       ui->MySQL_box->setCheckable(true);
       ui->mysql_warning->setVisible(false);
-#endif
 
       ui->_theme->addItem("System");
 
@@ -170,10 +166,55 @@ namespace Noggit
 
       connect(ui->mysql_connect_test, &QPushButton::clicked, [this]
           {
-              save_changes();
-              #ifdef USE_MYSQL_UID_STORAGE
-              mysql::testConnection();
-              #endif
+              // test button for noggit db only !
+
+              // save_changes(); // old method saved and only used qsetting
+
+              auto& db_manager = Sql::DatabaseManager::instance();
+
+              if (!db_manager.isDriverAvailable())
+              {
+                qDebug() << "Available drivers:" << QSqlDatabase::drivers();
+
+                // SPECIAL MISSING/currupted driver DLL POPUP
+                QMessageBox prompt;
+                prompt.setWindowFlag(Qt::WindowStaysOnTopHint);
+                prompt.setIcon(QMessageBox::Critical);
+                prompt.setText("mySQL driver could not be loaded.");
+                prompt.setWindowTitle("Noggit Database Error");
+
+                std::stringstream promptText;
+                promptText << "Make sure <Noggit/sqldrivers/qsqlmysql.dll>  exists.\n";
+                promptText << "If not, it can be downloaded at https://github.com/thecodemonkey86/qt_mysql_driver/releases \n";
+                promptText << "Noggit Qt version :" << QT_VERSION_STR;
+
+                prompt.setInformativeText("Make sure Noggit/sqldrivers/qsqlmysql.dll exists."
+                "If not, it can be downloaded at ");
+                prompt.exec();
+                return;
+              }
+
+              QString host = ui->_mysql_server_field->text();
+              QString user = ui->_mysql_user_field->text();
+              QString pass = ui->_mysql_pwd_field->text();
+              QString db_name = ui->_mysql_db_field->text();
+              int port = ui->_mysql_port_field->value();
+
+              // test temporary connection from text fields
+              bool test1 = db_manager.initializeDb(Sql::SQLDbType::Noggit, host, port, db_name, user, pass);
+              bool test2 = db_manager.testConnectionWithPopup(Sql::SQLDbType::Noggit, false);
+
+              // reconnect to saved db from settings
+              QSettings settings;
+              host = settings.value("project/mysql/server").toString();
+              port = settings.value("project/mysql/port", "3306").toInt();
+              db_name = settings.value("project/mysql/db").toString();  // schema name
+              user = settings.value("project/mysql/user").toString();
+              pass = settings.value("project/mysql/pwd").toString();
+
+              bool test3 = db_manager.initializeDb(Sql::SQLDbType::Noggit, host, port, db_name, user, pass);
+              assert(db_manager.testConnection(Sql::SQLDbType::Noggit));
+
           }
       );
 
@@ -234,15 +275,13 @@ namespace Noggit
       ui->_wmo_aabb->setChecked(_settings->value("render/wmo_aabb", false).toBool());
       ui->_wmo_group_bounds->setChecked(_settings->value("render/wmo_groups_bounds", false).toBool());
 
-
-#ifdef USE_MYSQL_UID_STORAGE
       ui->MySQL_box->setChecked (_settings->value ("project/mysql/enabled").toBool());
 
       auto server_str = _settings->value("project/mysql/server", "127.0.0.1").toString();
-      auto user_str = _settings->value("project/mysql/user", "127.0.0.1").toString();
-      auto pwd_str = _settings->value("project/mysql/pwd", "127.0.0.1").toString();
-      auto db_str = _settings->value("project/mysql/db", "127.0.0.1").toString();
-      auto port_int = _settings->value("project/mysql/port", "127.0.0.1").toInt();
+      auto user_str = _settings->value("project/mysql/user", "root").toString();
+      auto pwd_str = _settings->value("project/mysql/pwd", "root").toString();
+      auto db_str = _settings->value("project/mysql/db", "noggit").toString();
+      auto port_int = _settings->value("project/mysql/port", "3306").toInt();
 
       // set some default
       if (server_str.isEmpty())
@@ -261,7 +300,6 @@ namespace Noggit
       ui->_mysql_pwd_field->setText (pwd_str);
       ui->_mysql_db_field->setText (db_str);
       ui->_mysql_port_field->setValue (port_int);
-#endif
 
       bool wireframe_type = _settings->value("wireframe/type", false).toBool();
 
@@ -308,14 +346,12 @@ namespace Noggit
       _settings->setValue("modern_features", ui->_modern_features->isChecked());
       _settings->setValue("use_mclq_liquids_export", ui->_use_mclq_liquids_export->isChecked());
 
-#ifdef USE_MYSQL_UID_STORAGE
       _settings->setValue ("project/mysql/enabled", ui->MySQL_box->isChecked());
       _settings->setValue ("project/mysql/server", ui->_mysql_server_field->text());
       _settings->setValue ("project/mysql/user", ui->_mysql_user_field->text());
       _settings->setValue ("project/mysql/pwd", ui->_mysql_pwd_field->text());
       _settings->setValue ("project/mysql/db", ui->_mysql_db_field->text());
       _settings->setValue ("project/mysql/port", ui->_mysql_port_field->text());
-#endif
 
       _settings->setValue("wireframe/type", ui->radio_wire_cursor->isChecked());
       _settings->setValue("wireframe/radius", ui->_wireframe_radius->value());
@@ -337,6 +373,18 @@ namespace Noggit
       _settings->setValue("render/wmo_groups_bounds", ui->_wmo_group_bounds->isChecked());
 
       _settings->sync();
+
+      // reinitialize db on save
+      auto& db_manager = Sql::DatabaseManager::instance();
+      QString host = _settings->value("project/mysql/server").toString();
+      int port = _settings->value("project/mysql/port", "3306").toInt();
+      QString db_name = _settings->value("project/mysql/db").toString();
+      QString user = _settings->value("project/mysql/user").toString();
+      QString pass = _settings->value("project/mysql/pwd").toString();
+
+      bool test1 = db_manager.initializeDb(Sql::SQLDbType::Noggit, host, port, db_name, user, pass);
+      bool test2 = db_manager.testConnectionWithPopup(Sql::SQLDbType::Noggit, true);
+
 
       // calls MapView::onSettingsSave()
       emit saved();
