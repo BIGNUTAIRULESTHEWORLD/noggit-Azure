@@ -39,7 +39,7 @@ namespace Noggit
   
     static std::optional<Structures::BlizzardDatabaseRow> getRowById(const std::string& tableName, unsigned int id); // constructs a row either from db or client
   
-    static bool testUploadDBCtoDB(BlizzardDatabaseLib::BlizzardDatabaseTable& table);
+    static bool testUploadDBCtoDB(const BlizzardDatabaseLib::BlizzardDatabaseTable& table);
   
     static void TODODeploySqlToClient();
   

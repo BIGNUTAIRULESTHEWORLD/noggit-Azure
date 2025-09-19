@@ -25,7 +25,7 @@ void BuildMapListComponent::buildMapList(Noggit::Ui::Windows::NoggitWindow* pare
   }
 
   const auto& table = std::string("Map");
-  auto map_table = parent->_project->ClientDatabase->LoadTable(table, readFileAsIMemStream);
+  auto& map_table = parent->_project->ClientDatabase->LoadTable(table, readFileAsIMemStream);
 
   auto iterator = map_table.Records();
   auto pinned_maps = std::vector<Widget::MapListData>();

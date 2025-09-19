@@ -9,6 +9,12 @@
 
 namespace Noggit
 {
+	// namespace Sql
+		auto escapeSqlString = [](const QString& str) -> QString {
+			QString result = str;
+			result.replace("'", "''"); // double single quotes for SQL
+			return "'" + result + "'";
+			};
 
 
 	std::optional<Structures::BlizzardDatabaseRow> ClientDatabase::getRowById(const std::string& tableName, unsigned int id)
@@ -28,7 +34,7 @@ namespace Noggit
 			return row;
 	}
 
-	bool ClientDatabase::testUploadDBCtoDB(BlizzardDatabaseLib::BlizzardDatabaseTable& table)
+	bool ClientDatabase::testUploadDBCtoDB(const BlizzardDatabaseLib::BlizzardDatabaseTable& table)
 	{
 
 		auto& db_mgr = Noggit::Sql::DatabaseManager::instance();
@@ -95,7 +101,6 @@ namespace Noggit
 
 		// insert if fresh_table, otherwise replace?
 
-		// TODOOOOOOOOOOOOOOOOOOOOOOO : fill db with data
 		auto row_definition = table.GetRecordDefinition();
 		auto sql_record_format = recordFormat(table_name);
 
@@ -106,139 +111,109 @@ namespace Noggit
 		{
 			column_names.append(sql_column_format.Name.c_str());
 		}
-
-		// INSERT INTO table (col1, col2, ...) VALUES (?, ?, ...)
-		QString sql = QString("INSERT INTO `%1` (%2) VALUES (%3)")
-			.arg(sql_table_name)
-			.arg(column_names.join(", "))
-			.arg(QString("?, ").repeated(column_names.size()).chopped(2));
-
-		QSqlQuery query(noggit_db);
-		if (!query.prepare(sql))
-		{
-			qWarning() << "Prepare failed:" << query.lastError().text();
-			return false;
-		}
+		int colCount = column_names.size();
 
 		QElapsedTimer timer;
 		timer.start();
 
-		// using transaction to speed up bulk query
-		// noggit_db.transaction();
+		const int batchSize = 2000;
+		int rowCount = 0;
+		int currentSize = 0;
 
-		// batching:
-		// One QVariantList per column
-		std::vector<QVariantList> columnData(column_names.size());
+		noggit_db.transaction();
+		QStringList rowBuffer; // holds each row as a string
+		rowBuffer.reserve(batchSize); // reserve for batch size
 
 		while (client_table_iterator.HasRecords())
 		{
 			auto& record = client_table_iterator.Next();
-			int colIndex = 0;
+			QStringList colValues;
+			colValues.reserve(column_names.size()); // reserve columns per row
 
 			for (auto& column_def : row_definition.ColumnDefinitions)
 			{
-				if (column_def.Type == "int" && column_def.isID) // id column isn't saved in the map
+				if (column_def.Type == "int" && column_def.isID)
 				{
-					// query.addBindValue(record.RecordId);
-					columnData[colIndex++].append(record.RecordId); // batching
+					colValues.append(QString::number(record.RecordId));
 					continue;
 				}
 
 				auto& rowColumn = record.Columns.at(column_def.Name);
 
-				if (column_def.Type == "int")
+				if (column_def.Type == "locstring")
 				{
-					if (column_def.arrLength > 1)
-					{
-						for (int i = 0; i < column_def.arrLength; i++)
-						{
-							// int Value = std::stoi(rowColumn.Values[i]);
-							// query.addBindValue(QString::fromStdString(rowColumn.Values[i]).toInt());
-							columnData[colIndex++].append(QString::fromStdString(rowColumn.Value).toInt());
-						}
-					}
-					else
-					{
-						// int Value = std::stoi(rowColumn.Value);
-						// query.addBindValue(QString::fromStdString(rowColumn.Value).toInt());
-						columnData[colIndex++].append(QString::fromStdString(rowColumn.Value).toInt());
-					}
-				}
-				else if (column_def.Type == "float")
-				{
-					if (column_def.arrLength > 1)
-					{
-						for (int i = 0; i < column_def.arrLength; i++)
-						{
-							// float Value = std::stof(rowColumn.Values[i]);
-							// query.addBindValue(QString::fromStdString(rowColumn.Values[i]).toFloat());
-							columnData[colIndex++].append(QString::fromStdString(rowColumn.Values[i]).toFloat());
-						}
-					}
-					else
-					{
-						// float Value = std::stof(rowColumn.Value);
-						// query.addBindValue(QString::fromStdString(rowColumn.Value).toFloat());
-						columnData[colIndex++].append(QString::fromStdString(rowColumn.Value).toFloat());
-					}
-				}
-				else if (column_def.Type == "string")
-				{
-					if (column_def.arrLength > 1)
-					{
-						for (int i = 0; i < column_def.arrLength; i++)
-						{
-							// std::string value = rowColumn.Values[i];
-							// query.addBindValue(QString::fromStdString(rowColumn.Values[i]));
-							columnData[colIndex++].append(QString::fromStdString(rowColumn.Values[i]));
-						}
-					}
-					else
-					{
-						// std::string Value = rowColumn.Value;
-						// query.addBindValue(QString::fromStdString(rowColumn.Value));
-						columnData[colIndex++].append(QString::fromStdString(rowColumn.Value));
-					}
-				}
-				else if (column_def.Type == "locstring")
-				{
-					for (int i = 0; i < 16; i++)
-					{
-						// query.addBindValue(QString::fromStdString(rowColumn.Values[i]));
-						columnData[colIndex++].append(QString::fromStdString(rowColumn.Values[i]));
-					}
+					for (int i = 0; i < 16; ++i)
+						colValues.append(escapeSqlString(QString::fromStdString(rowColumn.Values[i])));
 
-					auto& flagValue = record.Columns.at(column_def.Name + "_flags");
-					// query.addBindValue(QString::fromStdString(flagValue.Value).toInt());
-					columnData[colIndex++].append(QString::fromStdString(flagValue.Value).toInt());
+					auto& flagValue = record.Columns.at(column_def.Name + "_flags").Value;
+					colValues.append(QString::fromStdString(flagValue));
+				}
+				else
+				{
+					int len = (column_def.arrLength > 1) ? column_def.arrLength : 1;
+					for (int i = 0; i < len; ++i)
+					{
+						if (column_def.Type == "string")
+							colValues.append(escapeSqlString((len > 1) ? QString::fromStdString(rowColumn.Values[i])
+								: QString::fromStdString(rowColumn.Value)));
+						else // int/float
+							colValues.append((len > 1) ? QString::fromStdString(rowColumn.Values[i])
+								: QString::fromStdString(rowColumn.Value));
+					}
 				}
 			}
 
-			// if (!query.exec())
-			// {
-			// 	qWarning() << "Insert failed:" << query.lastError().text();
-			// 	noggit_db.rollback();
-			// 	return false;
-			// }
+
+			currentSize += colValues.size();
+
+			// append row as a single string
+			rowBuffer.append("(" + colValues.join(", ") + ")");
+			rowCount++;
+
+			// flush batch
+			if (rowCount % batchSize == 0)
+			{
+				QString sql;
+				sql.reserve(1024 * 64); // reserve ~64KB, adjust if rows are big
+				sql = QString("INSERT INTO `%1` (%2) VALUES ")
+					.arg(sql_table_name)
+					.arg(column_names.join(", "));
+				sql += rowBuffer.join(", ");
+
+				QSqlQuery query(noggit_db);
+				if (!query.exec(sql))
+				{
+					qWarning() << "Batch insert failed:" << query.lastError().text();
+					noggit_db.rollback();
+					return false;
+				}
+				rowBuffer.clear();
+			}
 		}
 
-		// Bind all columnData at once
-		for (auto& col : columnData)
-			query.addBindValue(col);
-
-		noggit_db.transaction();
-
-		if (!query.execBatch(QSqlQuery::ValuesAsColumns))
+		// flush remaining rows
+		if (!rowBuffer.isEmpty())
 		{
-			qWarning() << "Batch insert failed:" << query.lastError().text();
-			noggit_db.rollback();
-			return false;
+			QString sql;
+			sql.reserve(1024 * 64); // 64kb
+			sql = QString("INSERT INTO `%1` (%2) VALUES ")
+				.arg(sql_table_name)
+				.arg(column_names.join(", "));
+			sql += rowBuffer.join(", ");
+
+			QSqlQuery query(noggit_db);
+			if (!query.exec(sql))
+			{
+				qWarning() << "Final batch insert failed:" << query.lastError().text();
+				noggit_db.rollback();
+				return false;
+			}
 		}
 
 		noggit_db.commit();
 
+		// benchmark
 		qint64 elapsedMs = timer.elapsed();
-
 		qDebug() << "Inserted" << table.RecordCount() << "rows in"
 			<< elapsedMs << "ms ("
 			<< (table.RecordCount() * 1000.0 / elapsedMs) << " rows/sec)";

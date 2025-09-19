@@ -85,7 +85,7 @@ MapCreationWizard::MapCreationWizard(std::shared_ptr<Project::NoggitProject> pro
   // Fill selector combo
 
   const auto& table = std::string("Map");
-  auto mapTable = _project->ClientDatabase->LoadTable(table, readFileAsIMemStream);
+  auto& mapTable = _project->ClientDatabase->LoadTable(table, readFileAsIMemStream);
 
   int count = 0;
   auto iterator = mapTable.Records();
@@ -630,19 +630,21 @@ void MapCreationWizard::selectMap(int map_id)
 
   // int map_id = world->getMapID();
 
-  auto table = _project->ClientDatabase->LoadTable("Map", readFileAsIMemStream);
+  auto& table = _project->ClientDatabase->LoadTable("Map", readFileAsIMemStream);
   auto record = table.RecordById(map_id);
 
 
-  /// test area, delete later
-  // auto table = _project->ClientDatabase->GetTable("Map");
+  /// test area, delete later /////////////
   QSettings settings;
-
   bool use_mysql = settings.value("project/mysql/enabled", false).toBool();
   if (use_mysql)
   {
     // bool valid_conn = mysql::testConnection(true);
-    Noggit::ClientDatabase::testUploadDBCtoDB(table);
+    auto& test_table = _project->ClientDatabase->LoadTable("ItemDisplayInfo", readFileAsIMemStream);
+    Noggit::ClientDatabase::testUploadDBCtoDB(test_table);
+
+    // TODO : crashes if not unloading
+    //_project->ClientDatabase->UnloadTable("AreaTable");
 
   }
   ///////////////////////////////
@@ -741,7 +743,7 @@ void MapCreationWizard::selectMap(int map_id)
 
   _project->ClientDatabase->UnloadTable("Map");
 
-  auto difficulty_table = _project->ClientDatabase->LoadTable("MapDifficulty", readFileAsIMemStream);
+  auto& difficulty_table = _project->ClientDatabase->LoadTable("MapDifficulty", readFileAsIMemStream);
 
   auto iterator = difficulty_table.Records();
 
@@ -778,7 +780,7 @@ void MapCreationWizard::selectMapDifficulty()
     if (!selected_difficulty_id)
         return;
 
-    auto difficulty_table = _project->ClientDatabase->LoadTable("MapDifficulty", readFileAsIMemStream);
+    auto& difficulty_table = _project->ClientDatabase->LoadTable("MapDifficulty", readFileAsIMemStream);
     auto record = difficulty_table.RecordById(selected_difficulty_id);
 
     //_difficulty_type;

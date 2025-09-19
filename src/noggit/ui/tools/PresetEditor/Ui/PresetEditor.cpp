@@ -85,7 +85,7 @@ PresetEditorWidget::PresetEditorWidget(std::shared_ptr<Project::NoggitProject> p
   ui->worldSelector->setItemData(0, QVariant(-1));
 
   const auto& table = std::string("Map");
-  auto mapTable = _project->ClientDatabase->LoadTable(table, readFileAsIMemStream);
+  auto& mapTable = _project->ClientDatabase->LoadTable(table, readFileAsIMemStream);
 
   int count = 1;
   auto iterator = mapTable.Records();
