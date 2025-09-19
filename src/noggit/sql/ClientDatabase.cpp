@@ -1,6 +1,7 @@
 #include "ClientDatabase.h"
 #include <noggit/project/CurrentProject.hpp>
 #include <noggit/application/Utils.hpp>
+#include <noggit/Log.h>
 
 #include <QString>
 #include <QSqlRecord>
@@ -106,6 +107,10 @@ namespace Noggit
 
 		auto client_table_iterator = table.Records();
 
+		// empty table, nothing to insert
+		if (!client_table_iterator.HasRecords())
+			return false;
+
 		QStringList column_names;
 		for (auto& sql_column_format : sql_record_format)
 		{
@@ -113,16 +118,26 @@ namespace Noggit
 		}
 		int colCount = column_names.size();
 
+
+		// Start bulk insert ///////////////////////////////
 		QElapsedTimer timer;
 		timer.start();
 
 		const int batchSize = 2000;
 		int rowCount = 0;
-		int currentSize = 0;
+
+		QSqlQuery query(noggit_db);
 
 		noggit_db.transaction();
+
+		// Disable constraints & indexes for faster bulk load
+		// query.exec("SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0");
+		// query.exec("SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0");
+		// query.exec("LOCK TABLES `" + sql_table_name + "` WRITE");
+		// query.exec("ALTER TABLE `" + sql_table_name + "` DISABLE KEYS");
+
 		QStringList rowBuffer; // holds each row as a string
-		rowBuffer.reserve(batchSize); // reserve for batch size
+		rowBuffer.reserve(batchSize);
 
 		while (client_table_iterator.HasRecords())
 		{
@@ -137,9 +152,7 @@ namespace Noggit
 					colValues.append(QString::number(record.RecordId));
 					continue;
 				}
-
 				auto& rowColumn = record.Columns.at(column_def.Name);
-
 				if (column_def.Type == "locstring")
 				{
 					for (int i = 0; i < 16; ++i)
@@ -163,52 +176,58 @@ namespace Noggit
 				}
 			}
 
-
-			currentSize += colValues.size();
-
 			// append row as a single string
-			rowBuffer.append("(" + colValues.join(", ") + ")");
+			rowBuffer.append("(" + colValues.join(",") + ")");
 			rowCount++;
 
 			// flush batch
 			if (rowCount % batchSize == 0)
 			{
+				int min_size = rowCount * ((column_names.size()*2) + 2); // 2 chars minimum per column (value and comma)
+				// qDebug() << "min size" << min_size;
 				QString sql;
-				sql.reserve(1024 * 64); // reserve ~64KB, adjust if rows are big
+				sql.reserve(min_size);
 				sql = QString("INSERT INTO `%1` (%2) VALUES ")
 					.arg(sql_table_name)
 					.arg(column_names.join(", "));
-				sql += rowBuffer.join(", ");
+				sql += rowBuffer.join(",");
 
-				QSqlQuery query(noggit_db);
 				if (!query.exec(sql))
 				{
 					qWarning() << "Batch insert failed:" << query.lastError().text();
+					// query.exec("UNLOCK TABLES");
 					noggit_db.rollback();
 					return false;
 				}
 				rowBuffer.clear();
+				rowCount = 0;
 			}
 		}
 
 		// flush remaining rows
 		if (!rowBuffer.isEmpty())
 		{
+			int min_size = rowCount * ((column_names.size() * 2) + 2);
 			QString sql;
-			sql.reserve(1024 * 64); // 64kb
+			sql.reserve(min_size);
 			sql = QString("INSERT INTO `%1` (%2) VALUES ")
 				.arg(sql_table_name)
 				.arg(column_names.join(", "));
-			sql += rowBuffer.join(", ");
+			sql += rowBuffer.join(",");
 
-			QSqlQuery query(noggit_db);
 			if (!query.exec(sql))
 			{
 				qWarning() << "Final batch insert failed:" << query.lastError().text();
+				// query.exec("UNLOCK TABLES");
 				noggit_db.rollback();
 				return false;
 			}
 		}
+
+		// query.exec("ALTER TABLE `" + sql_table_name + "` ENABLE KEYS");
+		// query.exec("UNLOCK TABLES");
+		// query.exec("SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS");
+		// query.exec("SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS");
 
 		noggit_db.commit();
 
