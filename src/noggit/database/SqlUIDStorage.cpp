@@ -2,7 +2,7 @@
 
 bool Noggit::Sql::SqlUIDStorage::hasMaxUIDStoredDB(std::size_t mapID)
 {
-	auto& db_mgr = DatabaseManager::instance();
+	auto& db_mgr = SqlDatabaseManager::instance();
 
 	bool valid_conn = db_mgr.testConnection(SQLDbType::Noggit);
 	if (!valid_conn)
@@ -25,7 +25,7 @@ bool Noggit::Sql::SqlUIDStorage::hasMaxUIDStoredDB(std::size_t mapID)
 
 std::uint32_t Noggit::Sql::SqlUIDStorage::getGUIDFromDB(std::size_t mapID)
 {
-	auto& db_mgr = Sql::DatabaseManager::instance();
+	auto& db_mgr = Sql::SqlDatabaseManager::instance();
 
 	bool valid_conn = db_mgr.testConnection(SQLDbType::Noggit);
 	if (!valid_conn)
@@ -66,7 +66,7 @@ std::uint32_t Noggit::Sql::SqlUIDStorage::getGUIDFromDB(std::size_t mapID)
 
 void Noggit::Sql::SqlUIDStorage::insertUIDinDB(std::size_t mapID, std::uint32_t NewUID)
 {
-	auto& db_mgr = Sql::DatabaseManager::instance();
+	auto& db_mgr = Sql::SqlDatabaseManager::instance();
 	bool valid_conn = db_mgr.testConnection(SQLDbType::Noggit);
 	if (!valid_conn)
 	{
@@ -88,7 +88,7 @@ void Noggit::Sql::SqlUIDStorage::insertUIDinDB(std::size_t mapID, std::uint32_t 
 
 void Noggit::Sql::SqlUIDStorage::updateUIDinDB(std::size_t mapID, std::uint32_t NewUID)
 {
-	auto& db_mgr = Sql::DatabaseManager::instance();
+	auto& db_mgr = Sql::SqlDatabaseManager::instance();
 
 	if (!db_mgr.testConnection(SQLDbType::Noggit))
 		return;

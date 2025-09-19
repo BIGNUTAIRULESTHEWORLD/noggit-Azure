@@ -76,7 +76,7 @@
 #include <noggit/tools/AreaTriggerTool.hpp>
 #include <noggit/StringHash.hpp>
 #include <noggit/application/NoggitApplication.hpp>
-#include <noggit/sql/DatabaseManager.h>
+#include <noggit/database/SqlDatabaseManager.h>
 
 #include <QtCore/QSettings>
 
@@ -2471,7 +2471,7 @@ void MapView::createGUI()
   // do we need to do this every tick ?
   if (_settings->value("project/mysql/enabled").toBool())
   {
-    auto& db_mgr = Noggit::Sql::DatabaseManager::instance();
+    auto& db_mgr = Noggit::Sql::SqlDatabaseManager::instance();
 
     if (db_mgr.testConnection(Noggit::Sql::SQLDbType::Noggit))
     {

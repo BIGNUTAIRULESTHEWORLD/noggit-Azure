@@ -21,8 +21,8 @@
 #include <noggit/ui/windows/settingsPanel/SettingsPanel.h>
 #include <noggit/uid_storage.hpp>
 #include <noggit/World.h>
-#include <noggit/sql/SqlUIDStorage.h>
-#include <noggit/sql/ClientDatabase.h>
+#include <noggit/database/SqlUIDStorage.h>
+#include <noggit/database/ClientDatabase.h>
 
 #include <string>
 #include <blizzard-archive-library/include/Exception.hpp>
@@ -94,8 +94,8 @@ namespace Noggit::Ui::Windows
       auto user = settings.value("project/mysql/user").toString();
       auto pass = settings.value("project/mysql/pwd").toString();
 
-      auto& db_manager = Sql::DatabaseManager::instance();
-      db_manager.initializeDb(Sql::SQLDbType::Noggit, host, port, db_name, user, pass);
+      auto& db_manager = Sql::SqlDatabaseManager::instance();
+      db_manager.initializeDbConnection(Sql::SQLDbType::Noggit, host, port, db_name, user, pass);
     }
 
     setCentralWidget(_null_widget);

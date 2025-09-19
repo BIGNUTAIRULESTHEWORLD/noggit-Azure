@@ -2,7 +2,7 @@
 #include <blizzard-database-library/include/BlizzardDatabase.h>
 #include <blizzard-database-library/include/structures/FileStructures.h>
 
-#include <noggit/sql/DatabaseManager.h>
+#include <noggit/database/SqlDatabaseManager.h>
 
 #include <optional>
 
@@ -25,6 +25,49 @@ namespace Noggit
     bool isID = false;
     bool isRelation = false;
     bool isSigned = true;
+  };
+
+  // interface table that gets data either from sql or raw dbc
+  class ClientDatabaseTable
+  {
+  private:
+    const std::string _tableName;
+
+  public:
+    unsigned int RecordCount() const;
+
+    // column count from file header, not definition file
+    int ColumnCount() const
+    {
+      return static_cast<int>(_tableReader->FieldCount());
+    }
+
+    std::string Name() const
+    {
+      return _tableName;
+    }
+
+    Structures::BlizzardDatabaseRow RecordById(unsigned int id) const
+    {
+      return _tableReader->RecordById(id);
+    }
+
+    Structures::BlizzardDatabaseRow RecordByPosition(unsigned int positionId) const
+    {
+      return _tableReader->Record(positionId);
+    }
+
+    BlizzardDatabaseRecordCollection Records() const
+    {
+      return BlizzardDatabaseRecordCollection(_tableReader);
+    }
+
+    Structures::BlizzardDatabaseRowDefinition GetRecordDefinition() const
+    {
+      return _tableReader->RecordDefinition();
+    }
+
+
   };
 
   // calls client or server db adaptively. so /sql/ is not really a good location

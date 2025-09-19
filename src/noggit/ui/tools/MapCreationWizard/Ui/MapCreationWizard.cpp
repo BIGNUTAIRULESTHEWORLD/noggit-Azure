@@ -14,7 +14,7 @@
 #include <noggit/World.h>
 
 #include <blizzard-database-library/include/BlizzardDatabase.h>
-#include <noggit/sql/ClientDatabase.h>
+#include <noggit/database/ClientDatabase.h>
 
 #include <QApplication>
 #include <QButtonGroup>
@@ -648,7 +648,6 @@ void MapCreationWizard::selectMap(int map_id)
 
   }
   ///////////////////////////////
-
 
   _cur_map_id = map_id;
 

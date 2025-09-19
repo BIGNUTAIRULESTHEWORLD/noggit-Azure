@@ -1,5 +1,5 @@
 #pragma once
-#include <noggit/sql/DatabaseManager.h>
+#include <noggit/database/SqlDatabaseManager.h>
 
 namespace Noggit::Sql
 {

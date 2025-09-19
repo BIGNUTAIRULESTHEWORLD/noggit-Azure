@@ -33,16 +33,16 @@ namespace Noggit::Sql
     QString password;
   };
 
-  class DatabaseManager
+  class SqlDatabaseManager
   {
   public:
-    static DatabaseManager& instance()
+    static SqlDatabaseManager& instance()
     {
-      static DatabaseManager _instance;
+      static SqlDatabaseManager _instance;
       return _instance;
     }
   
-    bool initializeDb(SQLDbType type,
+    bool initializeDbConnection(SQLDbType type,
       const QString& host, int port,
       const QString& dbName, const QString& user, const QString& password)
     {
@@ -116,7 +116,7 @@ namespace Noggit::Sql
         qWarning() << "No configuration for database type" << static_cast<int>(type);
       }
 
-      QSqlDatabase db = database(type);
+      QSqlDatabase db = databaseConnection(type);
       if (db.isValid() && db.isOpen())
         return true;
 
@@ -170,9 +170,9 @@ namespace Noggit::Sql
         // disable if connection is not valid
         // settings.value("project/mysql/enabled") = false;
 
-        promptText << database(type).lastError().text().toStdString() << std::endl;
-        promptText << database(type).lastError().nativeErrorCode().toStdString() << std::endl;
-        promptText << database(type).lastError().databaseText().toStdString() << std::endl;
+        promptText << databaseConnection(type).lastError().text().toStdString() << std::endl;
+        promptText << databaseConnection(type).lastError().nativeErrorCode().toStdString() << std::endl;
+        promptText << databaseConnection(type).lastError().databaseText().toStdString() << std::endl;
 
         prompt.setInformativeText(promptText.str().c_str());
         prompt.exec();
@@ -187,26 +187,26 @@ namespace Noggit::Sql
       return availableDrivers.contains(driverToString(_sql_driver), Qt::CaseInsensitive);
     }
 
-    QSqlDatabase database(SQLDbType type) const
+    QSqlDatabase databaseConnection(SQLDbType type) const
     {
       return QSqlDatabase::database(connectionName(type));
     }
   
     QSqlDatabase noggitDatabase() const
     {
-      return DatabaseManager::database(SQLDbType::Noggit);
+      return SqlDatabaseManager::databaseConnection(SQLDbType::Noggit);
     }
   
     QSqlDatabase worldDatabase() const
     {
-      return DatabaseManager::database(SQLDbType::World);
+      return SqlDatabaseManager::databaseConnection(SQLDbType::World);
     }
   
   private:
-    DatabaseManager() = default;
-    ~DatabaseManager() = default;
-    DatabaseManager(const DatabaseManager&) = delete;
-    DatabaseManager& operator=(const DatabaseManager&) = delete;
+    SqlDatabaseManager() = default;
+    ~SqlDatabaseManager() = default;
+    SqlDatabaseManager(const SqlDatabaseManager&) = delete;
+    SqlDatabaseManager& operator=(const SqlDatabaseManager&) = delete;
 
     SqlDriver _sql_driver = SqlDriver::MySQL;
 

@@ -3,7 +3,7 @@
 #include <noggit/Log.h>
 #include <noggit/ui/FramelessWindow.hpp>
 #include <noggit/ui/windows/settingsPanel/SettingsPanel.h>
-#include <noggit/sql/DatabaseManager.h>
+#include <noggit/database/SqlDatabaseManager.h>
 
 #include <QDir>
 #include <QtCore/QSettings>
@@ -170,7 +170,7 @@ namespace Noggit
 
               // save_changes(); // old method saved and only used qsetting
 
-              auto& db_manager = Sql::DatabaseManager::instance();
+              auto& db_manager = Sql::SqlDatabaseManager::instance();
 
               if (!db_manager.isDriverAvailable())
               {
@@ -201,7 +201,7 @@ namespace Noggit
               int port = ui->_mysql_port_field->value();
 
               // test temporary connection from text fields
-              bool test1 = db_manager.initializeDb(Sql::SQLDbType::Noggit, host, port, db_name, user, pass);
+              bool test1 = db_manager.initializeDbConnection(Sql::SQLDbType::Noggit, host, port, db_name, user, pass);
               bool test2 = db_manager.testConnectionWithPopup(Sql::SQLDbType::Noggit, false);
 
               // reconnect to saved db from settings
@@ -212,7 +212,7 @@ namespace Noggit
               user = settings.value("project/mysql/user").toString();
               pass = settings.value("project/mysql/pwd").toString();
 
-              bool test3 = db_manager.initializeDb(Sql::SQLDbType::Noggit, host, port, db_name, user, pass);
+              bool test3 = db_manager.initializeDbConnection(Sql::SQLDbType::Noggit, host, port, db_name, user, pass);
               assert(db_manager.testConnection(Sql::SQLDbType::Noggit));
 
           }
@@ -375,14 +375,14 @@ namespace Noggit
       _settings->sync();
 
       // reinitialize db on save
-      auto& db_manager = Sql::DatabaseManager::instance();
+      auto& db_manager = Sql::SqlDatabaseManager::instance();
       QString host = _settings->value("project/mysql/server").toString();
       int port = _settings->value("project/mysql/port", "3306").toInt();
       QString db_name = _settings->value("project/mysql/db").toString();
       QString user = _settings->value("project/mysql/user").toString();
       QString pass = _settings->value("project/mysql/pwd").toString();
 
-      bool test1 = db_manager.initializeDb(Sql::SQLDbType::Noggit, host, port, db_name, user, pass);
+      bool test1 = db_manager.initializeDbConnection(Sql::SQLDbType::Noggit, host, port, db_name, user, pass);
       bool test2 = db_manager.testConnectionWithPopup(Sql::SQLDbType::Noggit, true);
 
 

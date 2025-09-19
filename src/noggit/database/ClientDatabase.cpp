@@ -37,8 +37,7 @@ namespace Noggit
 
 	bool ClientDatabase::testUploadDBCtoDB(const BlizzardDatabaseLib::BlizzardDatabaseTable& table)
 	{
-
-		auto& db_mgr = Noggit::Sql::DatabaseManager::instance();
+		auto& db_mgr = Noggit::Sql::SqlDatabaseManager::instance();
 		bool valid_conn = db_mgr.testConnection(Noggit::Sql::SQLDbType::Noggit);
 		if (!valid_conn)
 			return false;
@@ -96,6 +95,7 @@ namespace Noggit
 
 		if (!table_is_valid)
 		{
+			Log << "Table " << sql_table_name.toStdString() << "does not exist or has wrong structure.";
 			qDebug() << "Table " << sql_table_name << "does not exist or has wrong structure.";
 			return false;
 		}
@@ -130,11 +130,7 @@ namespace Noggit
 
 		noggit_db.transaction();
 
-		// Disable constraints & indexes for faster bulk load
-		// query.exec("SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0");
-		// query.exec("SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0");
-		// query.exec("LOCK TABLES `" + sql_table_name + "` WRITE");
-		// query.exec("ALTER TABLE `" + sql_table_name + "` DISABLE KEYS");
+		// query.exec("SET UNIQUE_CHECKS=0;");
 
 		QStringList rowBuffer; // holds each row as a string
 		rowBuffer.reserve(batchSize);
@@ -143,7 +139,7 @@ namespace Noggit
 		{
 			auto& record = client_table_iterator.Next();
 			QStringList colValues;
-			colValues.reserve(column_names.size()); // reserve columns per row
+			colValues.reserve(column_names.size());
 
 			for (auto& column_def : row_definition.ColumnDefinitions)
 			{
@@ -195,7 +191,7 @@ namespace Noggit
 				if (!query.exec(sql))
 				{
 					qWarning() << "Batch insert failed:" << query.lastError().text();
-					// query.exec("UNLOCK TABLES");
+					// query.exec("SET UNIQUE_CHECKS=1;");
 					noggit_db.rollback();
 					return false;
 				}
@@ -218,16 +214,12 @@ namespace Noggit
 			if (!query.exec(sql))
 			{
 				qWarning() << "Final batch insert failed:" << query.lastError().text();
-				// query.exec("UNLOCK TABLES");
+				// query.exec("SET UNIQUE_CHECKS=1;");
 				noggit_db.rollback();
 				return false;
 			}
 		}
-
-		// query.exec("ALTER TABLE `" + sql_table_name + "` ENABLE KEYS");
-		// query.exec("UNLOCK TABLES");
-		// query.exec("SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS");
-		// query.exec("SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS");
+		// query.exec("SET UNIQUE_CHECKS=1;");
 
 		noggit_db.commit();
 
@@ -236,6 +228,10 @@ namespace Noggit
 		qDebug() << "Inserted" << table.RecordCount() << "rows in"
 			<< elapsedMs << "ms ("
 			<< (table.RecordCount() * 1000.0 / elapsedMs) << " rows/sec)";
+
+		Log << "Inserted " << table.RecordCount() << " rows in "
+			<< elapsedMs << "ms ("
+			<< (table.RecordCount() * 1000.0 / elapsedMs) << " rows/sec)" << std::endl;
 
 		return true;
 	}
@@ -253,7 +249,7 @@ namespace Noggit
 	// never use this function for more than 1 rows, implement a new bulk function
 	Structures::BlizzardDatabaseRow ClientDatabase::sqlRowById(const std::string& tableName, unsigned int id)
 	{
-		auto& db_mgr = Noggit::Sql::DatabaseManager::instance();
+		auto& db_mgr = Noggit::Sql::SqlDatabaseManager::instance();
 		// Test connection ?
 
 		auto noggit_db = db_mgr.noggitDatabase();
@@ -411,7 +407,7 @@ namespace Noggit
 		// statement += ")\n ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 DEFAULT COLLATE='utf8mb4_general_ci';";
 		statement += ")\n ENGINE = InnoDB;";
 
-		auto& db_mgr = Noggit::Sql::DatabaseManager::instance();
+		auto& db_mgr = Noggit::Sql::SqlDatabaseManager::instance();
 		bool valid_conn = db_mgr.testConnection(Noggit::Sql::SQLDbType::Noggit);
 		if (!valid_conn)
 			return false;
@@ -426,7 +422,7 @@ namespace Noggit
 		}
 		else
 		{
-			qDebug() << "Table " << table_name.c_str() << " created or already exists.";
+			qDebug() << "Table " << table_name.c_str() << " created.";
 		}
 
 		return success;

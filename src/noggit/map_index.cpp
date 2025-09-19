@@ -13,7 +13,7 @@
 #include <noggit/uid_storage.hpp>
 #include <noggit/application/NoggitApplication.hpp>
 #include <ClientFile.hpp>
-#include <noggit/sql/SqlUIDStorage.h>
+#include <noggit/database/SqlUIDStorage.h>
 
 #include <QtCore/QSettings>
 #include <QByteArray>
