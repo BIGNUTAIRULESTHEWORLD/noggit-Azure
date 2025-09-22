@@ -7,6 +7,7 @@
 #include <noggit/ui/windows/noggitWindow/NoggitWindow.hpp>
 #include <noggit/ui/windows/noggitWindow/widgets/MapListItem.hpp>
 #include <noggit/World.h>
+#include <noggit/database/ClientDatabase.h>
 
 #include <blizzard-database-library/include/BlizzardDatabase.h>
 
@@ -25,7 +26,7 @@ void BuildMapListComponent::buildMapList(Noggit::Ui::Windows::NoggitWindow* pare
   }
 
   const auto& table = std::string("Map");
-  auto& map_table = parent->_project->ClientDatabase->LoadTable(table, readFileAsIMemStream);
+  auto map_table = ClientDatabase::getTable(table);
 
   auto iterator = map_table.Records();
   auto pinned_maps = std::vector<Widget::MapListData>();
@@ -126,6 +127,4 @@ void BuildMapListComponent::buildMapList(Noggit::Ui::Windows::NoggitWindow* pare
     item->setData(Qt::UserRole, QVariant(map.map_id));
     parent->_continents_table->setItemWidget(item, map_list_item);
   }
-
-  parent->_project->ClientDatabase->UnloadTable(table);
 }

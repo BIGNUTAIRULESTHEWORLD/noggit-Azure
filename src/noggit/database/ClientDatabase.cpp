@@ -7,6 +7,7 @@
 #include <QSqlRecord>
 #include <QSqlField>
 #include <QElapsedTimer>
+#include <QSettings>
 
 namespace Noggit
 {
@@ -18,94 +19,40 @@ namespace Noggit
 			};
 
 
-	std::optional<Structures::BlizzardDatabaseRow> ClientDatabase::getRowById(const std::string& tableName, unsigned int id)
+		DatabaseMode ClientDatabase::databaseMode()
+		{
+			bool setting_use_sql_db = true; // todo QSETTING
+			QSettings settings;
+			setting_use_sql_db = settings.value("project/mysql/enabled", false).toBool();
+
+			return setting_use_sql_db ? DatabaseMode::Sql : DatabaseMode::ClientStorage;
+		}
+
+		ClientDatabaseTable ClientDatabase::getTable(const std::string& tableName)
+		{
+			return ClientDatabaseTable(tableName);
+		}
+
+	bool ClientDatabaseTable::UploadDBCtoDB()
 	{
-		bool setting_use_sql_db = false; // todo QSETTING
 
-		auto row = Structures::BlizzardDatabaseRow(-1);
+		auto sql_table_name = getSqlTableName();
 
-		if (setting_use_sql_db)
-			row = sqlRowById(tableName, id);
-		else
-			row = clientRowById(tableName, id);
-
-		if (row.RecordId == -1)
-			return std::nullopt;
-		else
-			return row;
-	}
-
-	bool ClientDatabase::testUploadDBCtoDB(const BlizzardDatabaseLib::BlizzardDatabaseTable& table)
-	{
-		auto& db_mgr = Noggit::Sql::SqlDatabaseManager::instance();
-		bool valid_conn = db_mgr.testConnection(Noggit::Sql::SQLDbType::Noggit);
-		if (!valid_conn)
+		/*
+		if (!verifySqlTableIntegrity())
+		{
+			Log << "Table " << sql_table_name << "does not exist or has wrong structure.";
+			qDebug() << "Table " << sql_table_name.c_str() << "does not exist or has wrong structure.";
 			return false;
-
-		auto table_name = table.Name();
-		// Noggit::Project::CurrentProject::get()->projectVersion; // expension, not exact build id
-		unsigned int build_id = Noggit::Project::CurrentProject::get()->buildId();
-
-		// check if table exists
-		QString sql_table_name = getSqlTableName(table_name, build_id).c_str();
-
-		auto noggit_db = db_mgr.noggitDatabase();
-
-		// table integrity check
-		bool table_is_valid = true;
-		bool fresh_table = false;
-		QSqlRecord sql_rec = noggit_db.record(sql_table_name);
-
-		// noggit_db.tables().contains(sql_table_name) is bugged with current qt version and mysql 8
-		QSqlQuery query_show(noggit_db);
-		if (!query_show.exec("SHOW TABLES"))
-		{
-			qWarning() << "Failed to list tables:" << query_show.lastError().text();
-			return false;
-		}
-		QStringList tables;
-		while (query_show.next())
-		{
-			tables << query_show.value(0).toString();
-		}
-
-		if (tables.contains(sql_table_name))
-		{
-			// this is also bugged...
-			// if (sql_rec.isEmpty())
-			// {
-			// 	table_is_valid = false;
-			// }
-			// else
-			// {
-			// 	// TODO verify db structure, just column count for now
-			// 	if (table.ColumnCount() != sql_rec.count())
-			// 	{
-			// 		assert(false);
-			// 		table_is_valid = false;
-			// 	}
-			// }
-		}
-		else // table doesn't exist
-		{
-			// create table
-			table_is_valid = createSQLTableIfNotExist(table);
-			fresh_table = true;
-		}
-
-		if (!table_is_valid)
-		{
-			Log << "Table " << sql_table_name.toStdString() << "does not exist or has wrong structure.";
-			qDebug() << "Table " << sql_table_name << "does not exist or has wrong structure.";
-			return false;
-		}
+		}*/
+		qDebug() << "Populating empty Table " << sql_table_name.c_str();
 
 		// insert if fresh_table, otherwise replace?
 
-		auto row_definition = table.GetRecordDefinition();
-		auto sql_record_format = recordFormat(table_name);
+		auto row_definition = GetRecordDefinition();
+		auto sql_record_format = recordFormat();
 
-		auto client_table_iterator = table.Records();
+		auto client_table_iterator = getClientTable().Records();
 
 		// empty table, nothing to insert
 		if (!client_table_iterator.HasRecords())
@@ -118,6 +65,9 @@ namespace Noggit
 		}
 		int colCount = column_names.size();
 
+		auto& db_mgr = Noggit::Sql::SqlDatabaseManager::instance();
+		auto noggit_db = db_mgr.noggitDatabase();
+		QSqlQuery query(noggit_db);
 
 		// Start bulk insert ///////////////////////////////
 		QElapsedTimer timer;
@@ -125,8 +75,6 @@ namespace Noggit
 
 		const int batchSize = 2000;
 		int rowCount = 0;
-
-		QSqlQuery query(noggit_db);
 
 		noggit_db.transaction();
 
@@ -184,7 +132,7 @@ namespace Noggit
 				QString sql;
 				sql.reserve(min_size);
 				sql = QString("INSERT INTO `%1` (%2) VALUES ")
-					.arg(sql_table_name)
+					.arg(sql_table_name.c_str())
 					.arg(column_names.join(", "));
 				sql += rowBuffer.join(",");
 
@@ -207,7 +155,7 @@ namespace Noggit
 			QString sql;
 			sql.reserve(min_size);
 			sql = QString("INSERT INTO `%1` (%2) VALUES ")
-				.arg(sql_table_name)
+				.arg(sql_table_name.c_str())
 				.arg(column_names.join(", "));
 			sql += rowBuffer.join(",");
 
@@ -225,146 +173,52 @@ namespace Noggit
 
 		// benchmark
 		qint64 elapsedMs = timer.elapsed();
-		qDebug() << "Inserted" << table.RecordCount() << "rows in"
-			<< elapsedMs << "ms ("
-			<< (table.RecordCount() * 1000.0 / elapsedMs) << " rows/sec)";
+		qDebug() << "Inserted" << getClientTable().RecordCount() << "rows in" << elapsedMs << "ms ("
+			<< (getClientTable().RecordCount() * 1000.0 / elapsedMs) << " rows/sec)";
 
-		Log << "Inserted " << table.RecordCount() << " rows in "
-			<< elapsedMs << "ms ("
-			<< (table.RecordCount() * 1000.0 / elapsedMs) << " rows/sec)" << std::endl;
+		Log << "Inserted " << getClientTable().RecordCount() << " rows in " << elapsedMs << "ms ("
+			<< (getClientTable().RecordCount() * 1000.0 / elapsedMs) << " rows/sec)" << std::endl;
 
 		return true;
 	}
 
-	// get from local dbc data memory stream in BlizzardDatabaseLib::BlizzardDatabase
-	Structures::BlizzardDatabaseRow ClientDatabase::clientRowById(const std::string& tableName, unsigned int id)
+	// executes query in client db and checks errors
+	// use isActive to check if it properly ran, not isValid.
+	QSqlQuery ClientDatabase::executeQuery(const QString& sql)
 	{
-		auto& table = Noggit::Project::CurrentProject::get()->ClientDatabase->LoadTable(tableName, readFileAsIMemStream);
-		auto record = table.RecordById(id);
+		auto db_mgr = Noggit::Sql::SqlDatabaseManager::instance().noggitDatabase();
+		QSqlQuery query(Noggit::Sql::SqlDatabaseManager::instance().noggitDatabase());
 
-		return record;
+		qDebug() << "Executing query : " << sql;
+		QElapsedTimer timer;
+		timer.start();
+		if (!query.exec(sql))
+		{
+			LogError << "SQL query failed:" << query.lastError().text().toStdString();
+			LogError << "Query:" << sql.toStdString();
+			// throw SqlException("Query failed: " + query.lastError().text() + "\nQuery: " + sql);
+			assert(false);
+			return QSqlQuery(); // invalid query
+		}
+
+		qint64 elapsedMs = timer.elapsed();
+		qDebug() << "Executed query in " << elapsedMs << "ms";
+
+		return query;
 	}
 
-	// get from SQL request to noggit db
-	// never use this function for more than 1 rows, implement a new bulk function
-	Structures::BlizzardDatabaseRow ClientDatabase::sqlRowById(const std::string& tableName, unsigned int id)
+	bool ClientDatabaseTable::createSQLTableIfNotExist()
 	{
-		auto& db_mgr = Noggit::Sql::SqlDatabaseManager::instance();
-		// Test connection ?
+		auto row_definition = GetRecordDefinition();
 
-		auto noggit_db = db_mgr.noggitDatabase();
+		const std::string sql_table_name = getSqlTableName();
 
-		 auto row_definition = Noggit::Project::CurrentProject::get()->ClientDatabase->TableRecordDefinition(tableName);
+		auto db_record_format = recordFormat();
+		assert(db_record_format.size() == getClientTable().ColumnCount());
 
-		QString sql_table_name = getSqlTableName(tableName).c_str();
-		QSqlQuery query(noggit_db);
-		QString sql = QString("SELECT * FROM %1 WHERE ID = :id").arg(sql_table_name);
-
-		query.prepare(sql);
-		query.bindValue(":id", id);
-
-		if (!query.exec())
-		{
-			qWarning() << "Query exec failed:" << query.lastError().text();
-			return BlizzardDatabaseLib::Structures::BlizzardDatabaseRow();
-		}
-		
-		if (query.next())
-			{					
-				QSqlRecord record = query.record();
-
-				auto database_row = Structures::BlizzardDatabaseRow(id);
-
-				// test db def/////////////////////////
-				{
-						auto record_db_def = recordFormat(tableName);
-						if (record.count() != record_db_def.size())
-						{
-							// error : definition deosn't match db structure
-							assert(false);
-							return Structures::BlizzardDatabaseRow(-1);
-						}
-
-						// Tests construct row from query 
-						// TODOOOOOOOOOOOOOOO
-
-						for (int i = 0; i < record_db_def.size(); ++i)
-						{
-							auto& column_db_def = record_db_def[i];
-							QSqlField db_field = record.field(i);
-
-							assert(column_db_def.Name == record.fieldName(i).toStdString());
-							// assert(column_db_def.Type == db_field.type());
-						}
-				}/////////////////////////////////////////
-
-				int field_idx = 0;
-				for (int column_def_idx = 0; column_def_idx < row_definition.ColumnDefinitions.size(); ++column_def_idx)
-				{
-					auto& column_def = row_definition.ColumnDefinitions[column_def_idx];
-					auto database_column = Structures::BlizzardDatabaseColumn();
-
-					auto value = std::string();
-					if (column_def.Type == "locstring")
-					{
-						std::vector<std::string> localizedValues = std::vector<std::string>();
-						for (int loc_idx = 0; loc_idx < 16; loc_idx++)
-						{
-							localizedValues.push_back(query.value(field_idx++).toString().toStdString());
-						}
-
-						database_column.Values = localizedValues;
-						database_row.Columns[column_def.Name] = database_column;
-
-						// currently loc mask is set to a separate column because wdbc reader does it.
-						auto loc_mask_column = Structures::BlizzardDatabaseColumn();
-						loc_mask_column.Value = query.value(field_idx++).toString().toStdString();
-						database_row.Columns[column_def.Name + "_flags"] = loc_mask_column;
-					}
-					else // every other type than locstring
-					{
-						if (column_def.arrLength > 1) // array
-						{
-							for (int i = 0; i < column_def.arrLength; i++)
-							{
-								auto Value = query.value(field_idx++);
-								database_column.Values.push_back(Value.toString().toStdString());
-							}
-						}
-						else // single value
-						{
-							auto Value = query.value(field_idx++);
-							value = Value.toString().toStdString();
-						}
-					}
-					database_column.Value = value;
-					database_row.Columns[column_def.Name] = database_column;
-				}
-
-				return database_row;
-			}
-		else
-		{
-			qWarning() << "No row found in" << tableName.c_str() << "for ID =" << id;
-			return BlizzardDatabaseLib::Structures::BlizzardDatabaseRow();
-		}
-		
-	}
-
-	bool ClientDatabase::createSQLTableIfNotExist(const BlizzardDatabaseLib::BlizzardDatabaseTable& table)
-	{
-		const std::string table_name = table.Name();
-		auto row_definition = table.GetRecordDefinition();
-
-		const std::string sql_table_name = getSqlTableName(table_name);
 		std::string statement = std::format("CREATE TABLE IF NOT EXISTS `{}` (", sql_table_name);
 
 		std::string primary_key_name;
-
-		auto db_record_format = recordFormat(table_name);
-
-		assert(db_record_format.size() == table.ColumnCount());
-
 		for (auto& db_column_format : db_record_format)
 		{
 			statement += std::format("`{}` {}", db_column_format.Name, db_column_format.Type);
@@ -422,32 +276,19 @@ namespace Noggit
 		}
 		else
 		{
-			qDebug() << "Table " << table_name.c_str() << " created.";
+			qDebug() << "Table " << sql_table_name.c_str() << " created.";
+
+			UploadDBCtoDB();
 		}
 
 		return success;
 	}
 
-	std::string ClientDatabase::getSqlTableName(const std::string& db_name, unsigned int build_id)
-	{
-		if (build_id == 0)
-			build_id = Noggit::Project::CurrentProject::get()->buildId();
-
-		std::string table = std::format("db_{}_{}", db_name, build_id);
-
-		// convert to lowercase for compatibility with SQL
-		std::transform(table.begin(), table.end(), table.begin(),
-			[](unsigned char c) { return std::tolower(c); });
-
-		return table;
-	}
-
-	std::vector<DbColumnFormat> ClientDatabase::recordFormat(const std::string& table_name)
+	std::vector<DbColumnFormat> ClientDatabaseTable::recordFormat() const
 	{
 		auto record_format = std::vector<DbColumnFormat>();
 
-		auto row_definition = Noggit::Project::CurrentProject::get()->ClientDatabase->TableRecordDefinition(table_name);
-
+		auto row_definition = GetRecordDefinition();
 		for (int col_idx = 0; col_idx < row_definition.ColumnDefinitions.size(); col_idx++)
 		{
 			auto& column_def = row_definition.ColumnDefinitions[col_idx];
@@ -526,5 +367,322 @@ namespace Noggit
 
 		return record_format;
 	}
+
+	bool ClientDatabaseTable::verifySqlTableIntegrity()
+	{
+		auto& db_mgr = Noggit::Sql::SqlDatabaseManager::instance();
+		bool valid_conn = db_mgr.testConnection(Noggit::Sql::SQLDbType::Noggit);
+		if (!valid_conn)
+			return false;
+
+		// check if table exists
+		QString sql_table_name = getSqlTableName().c_str();
+
+		auto noggit_db = db_mgr.noggitDatabase();
+
+		// table integrity check
+		bool table_is_valid = true;
+		bool fresh_table = false;
+
+		// noggit_db.tables().contains(sql_table_name) is bugged with current qt version and mysql 8
+		QSqlQuery query_show(noggit_db);
+		if (!query_show.exec("SHOW TABLES"))
+		{
+			qWarning() << "Failed to list tables:" << query_show.lastError().text();
+			return false;
+		}
+		QStringList tables;
+		while (query_show.next())
+		{
+			tables << query_show.value(0).toString();
+		}
+
+		if (tables.contains(sql_table_name))
+		{
+			// this is also bugged...
+			// QSqlRecord sql_rec = noggit_db.record(sql_table_name);
+			// if (sql_rec.isEmpty())
+			// {
+			// 	table_is_valid = false;
+			// }
+			// else
+			// {
+			// 	// TODO verify db structure, just column count for now
+			// 	if (table.ColumnCount() != sql_rec.count())
+			// 	{
+			// 		assert(false);
+			// 		table_is_valid = false;
+			// 	}
+			// }
+		}
+		else // table doesn't exist
+		{
+			// create table
+			table_is_valid = createSQLTableIfNotExist();
+			fresh_table = true;
+		}
+
+
+		return table_is_valid;
+	}
+
+	Structures::BlizzardDatabaseRow ClientDatabaseTable::sqlRecordToDatabaseRow(const QSqlRecord& record) const
+	{
+		auto row_definition = GetRecordDefinition();
+
+		auto database_row = Structures::BlizzardDatabaseRow(-1);
+
+		int Id = -1;
+		int field_idx = 0;
+		for (int column_def_idx = 0; column_def_idx < row_definition.ColumnDefinitions.size(); ++column_def_idx)
+		{
+			auto& column_def = row_definition.ColumnDefinitions[column_def_idx];
+			auto database_column = Structures::BlizzardDatabaseColumn();
+
+			auto value = std::string();
+			if (column_def.Type == "locstring")
+			{
+				std::vector<std::string> localizedValues = std::vector<std::string>();
+				for (int loc_idx = 0; loc_idx < 16; loc_idx++)
+				{
+					localizedValues.push_back(record.value(field_idx++).toString().toStdString());
+				}
+
+				database_column.Values = localizedValues;
+				database_row.Columns[column_def.Name] = database_column;
+
+				// currently loc mask is set to a separate column because wdbc reader does it.
+				auto loc_mask_column = Structures::BlizzardDatabaseColumn();
+				loc_mask_column.Value = record.value(field_idx++).toString().toStdString();
+				database_row.Columns[column_def.Name + "_flags"] = loc_mask_column;
+			}
+			else // every other type than locstring
+			{
+				if (column_def.arrLength > 1) // array
+				{
+					for (int i = 0; i < column_def.arrLength; i++)
+					{
+						database_column.Values.push_back(record.value(field_idx++).toString().toStdString());
+					}
+				}
+				else // single value
+				{
+					value = record.value(field_idx++).toString().toStdString();
+
+					if (column_def.isID)
+						Id = std::stoi(value);
+				}
+			}
+			database_column.Value = value;
+			database_row.Columns[column_def.Name] = database_column;
+		}
+		assert(Id != -1); // no id found
+		database_row.RecordId = Id;
+
+		return database_row;
+	}
+
+	ClientDatabaseTable::ClientDatabaseTable(std::string tableName)
+		: _tableName(tableName), _qtTableName(tableName.c_str())
+	{
+		if (ClientDatabase::databaseMode() == DatabaseMode::Sql)
+			verifySqlTableIntegrity(); // verifySqlTableIntegrity()->createtableifnotexists()->UploadDBCtoDB()
+	};
+
+	unsigned int ClientDatabaseTable::RecordCount() const
+	{
+		unsigned int client_count = getClientTable().RecordCount();
+
+		if (ClientDatabase::databaseMode() == DatabaseMode::Sql)
+		{
+			QString sql = QString("SELECT COUNT(*) FROM `%1`").arg(getSqlTableName().c_str());
+			QSqlQuery query = ClientDatabase::executeQuery(sql);
+
+			if (query.isActive())
+			{
+				if (query.next())
+					assert(query.value(0).toUInt() == client_count);
+			}
+		}
+		return client_count;
+	}
+
+	int ClientDatabaseTable::ColumnCount() const
+	{
+		// get from parsed definition
+		int def_column_count = recordFormat().size();
+
+		int client_count = getClientTable().ColumnCount();
+		assert(def_column_count == client_count);
+
+		if (ClientDatabase::databaseMode() == DatabaseMode::Sql)
+		{
+			auto db = Noggit::Sql::SqlDatabaseManager::instance().noggitDatabase();
+			QSqlRecord rec = db.record(QString::fromStdString(getSqlTableName()));
+			int db_count = rec.count();
+			assert(db_count == def_column_count);
+		}
+
+		return def_column_count;
+	}
+
+	std::optional<Structures::BlizzardDatabaseRow> ClientDatabaseTable::RecordById(unsigned int id) const
+	{
+		auto row = Structures::BlizzardDatabaseRow(-1);
+
+		if (ClientDatabase::databaseMode() == DatabaseMode::Sql)
+			row = sqlRowById(id);
+		else
+			row = clientRowById(id);
+
+		if (row.RecordId == -1)
+			return std::nullopt;
+		else
+			return row;
+	}
+
+	Noggit::DatabaseRecordCollection ClientDatabaseTable::Records() const
+	{
+		return Noggit::DatabaseRecordCollection(*this);
+	};
+
+	/*
+	std::optional<Structures::BlizzardDatabaseRow> ClientDatabaseTable::RecordByPosition(unsigned int positionId) const
+	{
+		// TODO
+		auto row = Structures::BlizzardDatabaseRow(-1);
+		if (ClientDatabase::databaseMode() == DatabaseMode::Sql)
+		{
+			// We shouldn't do this with SQL table
+		}
+		else
+			row = getClientTable().RecordByPosition(positionId);
+
+		return std::optional<Structures::BlizzardDatabaseRow>();
+	}*/
+
+	Structures::BlizzardDatabaseRowDefinition ClientDatabaseTable::GetRecordDefinition() const
+	{
+		return Noggit::Project::CurrentProject::get()->ClientDatabase->TableRecordDefinition(_tableName);
+	}
+
+	BlizzardDatabaseLib::BlizzardDatabaseTable& ClientDatabaseTable::getClientTable() const
+	{
+		return Noggit::Project::CurrentProject::get()->ClientDatabase->LoadTable(_tableName, readFileAsIMemStream);
+	}
+
+	// get from local dbc data memory stream in BlizzardDatabaseLib::BlizzardDatabase
+	Structures::BlizzardDatabaseRow ClientDatabaseTable::clientRowById(unsigned int id) const
+	{
+		auto record = getClientTable().RecordById(id);
+		return record;
+	}
+
+	// get from SQL request to noggit db
+	// never use this function for more than 1 rows, implement a new bulk function
+	Structures::BlizzardDatabaseRow ClientDatabaseTable::sqlRowById(unsigned int id) const
+	{
+		QString sql_table_name = getSqlTableName().c_str();
+		QString sql = QString("SELECT * FROM `%1` WHERE ID = %2").arg(sql_table_name).arg(id);
+
+		auto query = ClientDatabase::executeQuery(sql);
+
+		if (!query.isActive())
+			return BlizzardDatabaseLib::Structures::BlizzardDatabaseRow(-1);
+
+		// auto row_definition = GetRecordDefinition();
+
+		if (query.next())
+		{
+			QSqlRecord record = query.record();
+
+			auto database_row = sqlRecordToDatabaseRow(record);
+
+			return database_row;
+		}
+		else
+		{
+			LogError << "SQL : No row found in" << sql_table_name.toStdString() << "for ID =" << id;
+			qWarning() << "SQL : No row found in" << sql_table_name << "for ID =" << id;
+			return BlizzardDatabaseLib::Structures::BlizzardDatabaseRow();
+		}
+
+	}
+	
+	const std::string ClientDatabaseTable::getSqlTableName(unsigned int build_id) const
+	{
+		if (build_id == 0)
+			build_id = Noggit::Project::CurrentProject::get()->buildId();
+
+		std::string table = std::format("db_{}_{}", _tableName, build_id);
+
+		// convert to lowercase for compatibility with SQL
+		std::transform(table.begin(), table.end(), table.begin(),
+			[](unsigned char c) { return std::tolower(c); });
+
+		return table;
+	}
+
+	DatabaseRecordCollection::DatabaseRecordCollection(const ClientDatabaseTable& table)
+		:_table(table), /*_mode(mode),*/ _client_iterator(_table.getClientTable().Records())
+	{
+		if (ClientDatabase::databaseMode() == DatabaseMode::Sql)
+		{
+			QString sql = QString("SELECT * FROM `%1`").arg(_table.getSqlTableName().c_str()); //  ORDER BY ID ?
+
+			_query = ClientDatabase::executeQuery(sql);
+			_querry_valid = _query.isActive(); // if query.exec ran properly
+
+			querryAdvance();
+		}
+	}
+
+	bool DatabaseRecordCollection::HasRecords()
+	{
+		if (ClientDatabase::databaseMode() == DatabaseMode::ClientStorage)
+			return _client_iterator.HasRecords();
+		else
+		{
+			return _querry_valid && _hasNext;
+		}
+	}
+
+	Structures::BlizzardDatabaseRow DatabaseRecordCollection::Next()
+	{
+		if (ClientDatabase::databaseMode() == DatabaseMode::ClientStorage)
+			return _client_iterator.Next();
+		else
+		{
+			// if (_query.next())
+			if (!_querry_valid || !_hasNext)
+			{
+				assert(false);
+				return Structures::BlizzardDatabaseRow(); // empty
+			}
+
+			// always store one row in advance to know if it's the last one
+			auto row = _table.sqlRecordToDatabaseRow(_nextRecord);
+			assert(row.RecordId != -1);
+
+			querryAdvance();
+
+			return row;
+		}
+
+	}
+
+	void DatabaseRecordCollection::querryAdvance()
+	{
+		if (_query.next())
+		{
+			_nextRecord = _query.record();
+			_hasNext = true;
+		}
+		else
+		{
+			_hasNext = false;
+		}
+	}
+
 
 }

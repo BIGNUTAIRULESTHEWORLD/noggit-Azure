@@ -6,15 +6,15 @@
 
 #include <optional>
 
+#include <QString>
+#include <QSqlRecord>
+
 
 constexpr const char* dbc_string_loc_names[16] = { "enUS", "koKR", "frFR", "deDE", "zhCN",
                               "zhTW", "esES", "esMX", "ruRU", "jaJP", "ptPT", "itIT",
                               "unk_12", "unk_13", "unk_14", "unk_15" };
 
 using namespace BlizzardDatabaseLib;
-
-
-
 namespace Noggit
 {
   struct DbColumnFormat
@@ -27,64 +27,41 @@ namespace Noggit
     bool isSigned = true;
   };
 
-  // interface table that gets data either from sql or raw dbc
-  class ClientDatabaseTable
+  enum class DatabaseMode
   {
-  private:
-    const std::string _tableName;
-
-  public:
-    unsigned int RecordCount() const;
-
-    // column count from file header, not definition file
-    int ColumnCount() const
-    {
-      return static_cast<int>(_tableReader->FieldCount());
-    }
-
-    std::string Name() const
-    {
-      return _tableName;
-    }
-
-    Structures::BlizzardDatabaseRow RecordById(unsigned int id) const
-    {
-      return _tableReader->RecordById(id);
-    }
-
-    Structures::BlizzardDatabaseRow RecordByPosition(unsigned int positionId) const
-    {
-      return _tableReader->Record(positionId);
-    }
-
-    BlizzardDatabaseRecordCollection Records() const
-    {
-      return BlizzardDatabaseRecordCollection(_tableReader);
-    }
-
-    Structures::BlizzardDatabaseRowDefinition GetRecordDefinition() const
-    {
-      return _tableReader->RecordDefinition();
-    }
-
-
+    Sql,
+    ClientStorage
   };
 
+  struct SqlException : public std::runtime_error
+  {
+    SqlException(const QString& msg)
+      : std::runtime_error(msg.toStdString()) {}
+  };
+
+  class Noggit::ClientDatabaseTable;
   // calls client or server db adaptively. so /sql/ is not really a good location
   class ClientDatabase
   {
+    friend class ClientDatabaseTable;
   public:
     // static ClientDatabase& instance()
     // {
     //   static ClientDatabase _instance;
     //   return _instance;
     // }
+
+    static DatabaseMode databaseMode(); // sql or client storage
+
+    static ClientDatabaseTable getTable(const std::string& tableName);
+
+    static void saveTable(const std::string& tableName);
   
-    static std::optional<Structures::BlizzardDatabaseRow> getRowById(const std::string& tableName, unsigned int id); // constructs a row either from db or client
-  
-    static bool testUploadDBCtoDB(const BlizzardDatabaseLib::BlizzardDatabaseTable& table);
+    // static std::optional<Structures::BlizzardDatabaseRow> getRowById(const std::string& tableName, unsigned int id); // constructs a row either from db or client
   
     static void TODODeploySqlToClient();
+
+    static QSqlQuery executeQuery(const QString& sql);
   
   private:
     // ClientDatabase() = default;
@@ -96,13 +73,82 @@ namespace Noggit
     static Structures::BlizzardDatabaseRow clientRowById(const std::string& tableName, unsigned int id);
     static Structures::BlizzardDatabaseRow sqlRowById(const std::string& tableName, unsigned int id);
   
-    static bool createSQLTableIfNotExist(const BlizzardDatabaseLib::BlizzardDatabaseTable& table);
-  
-    static std::string getSqlTableName(const std::string& db_name, unsigned int build_id = 0); // get automatically from project if default(0)
-  
-    static std::vector<DbColumnFormat> recordFormat(const std::string& table_name); // true record format for all columns, not array size/loc etc. eg returns all 17 columns for loc.
-  
+
   };
 
+  // TODO can subclass BlizzardDatabaseRecordCollection instead
+  class DatabaseRecordCollection
+  {
+  public:
+    DatabaseRecordCollection(const ClientDatabaseTable& table);
+    bool HasRecords();
+    Structures::BlizzardDatabaseRow Next();
+    // Structures::BlizzardDatabaseRow First();
+    // Structures::BlizzardDatabaseRow Last();
+
+  private:
+    const ClientDatabaseTable& _table;
+    // DatabaseMode _mode;
+
+    // client
+    BlizzardDatabaseRecordCollection _client_iterator;
+
+    // sql stuff
+    QSqlQuery _query;
+    bool _querryHasStarted = false;
+    bool _querry_valid = false;
+    bool _hasNext = false;
+    QSqlRecord _nextRecord;
+    void querryAdvance();
+  };
+
+  // interface table that gets data either from sql or raw dbc
+  // TODO : can just make BlizzardDatabaseTable subclass this.
+  class ClientDatabaseTable
+  {
+    friend class DatabaseRecordCollection;
+
+  private:
+    const std::string _tableName;
+    const QString _qtTableName;
+
+  public:
+    ClientDatabaseTable(std::string tableName);
+
+    // table info
+    const std::string Name() const { return _tableName; };
+    unsigned int RecordCount() const;
+    int ColumnCount() const;
+    int getRecordSize() const;
+    Structures::BlizzardDatabaseRowDefinition GetRecordDefinition() const;
+
+    // get rows data
+    std::optional<Structures::BlizzardDatabaseRow> RecordById(unsigned int id) const;
+    // std::optional<Structures::BlizzardDatabaseRow> RecordByPosition(unsigned int positionId) const;
+    // CheckIfIdExists
+    Noggit::DatabaseRecordCollection Records() const;// { return Noggit::DatabaseRecordCollection(*this); };
+
+    // modify data
+    // Record addRecord(size_t id, size_t id_field = 0);
+    // Record addRecordCopy(size_t id, size_t id_from, size_t id_field = 0);
+    // void removeRecord(size_t id, size_t id_field = 0);
+    // int getEmptyRecordID(size_t id_field = 0);
+
+
+  private:
+    // for internal use only, get the client storage
+    BlizzardDatabaseLib::BlizzardDatabaseTable&  getClientTable() const;
+
+    Structures::BlizzardDatabaseRow clientRowById(unsigned int id) const;
+    Structures::BlizzardDatabaseRow sqlRowById(unsigned int id) const;
+
+    // sql helpers
+    bool UploadDBCtoDB();
+    const std::string getSqlTableName(unsigned int build_id = 0) const; // get automatically from project if default(0)
+    std::vector<DbColumnFormat> recordFormat() const; // true record format for all columns, not array size/loc etc. eg returns all 17 columns for loc.
+    bool createSQLTableIfNotExist();
+    bool verifySqlTableIntegrity();
+    Structures::BlizzardDatabaseRow sqlRecordToDatabaseRow(const QSqlRecord& record) const;
+  };
 }
 

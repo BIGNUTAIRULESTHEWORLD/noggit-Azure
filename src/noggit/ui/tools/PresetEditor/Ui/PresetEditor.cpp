@@ -8,6 +8,7 @@
 #include <noggit/ui/FontNoggit.hpp>
 #include <noggit/ui/tools/PreviewRenderer/PreviewRenderer.hpp>
 #include <noggit/World.h>
+#include <noggit/database/ClientDatabase.h>
 
 #include <blizzard-database-library/include/BlizzardDatabase.h>
 
@@ -85,7 +86,8 @@ PresetEditorWidget::PresetEditorWidget(std::shared_ptr<Project::NoggitProject> p
   ui->worldSelector->setItemData(0, QVariant(-1));
 
   const auto& table = std::string("Map");
-  auto& mapTable = _project->ClientDatabase->LoadTable(table, readFileAsIMemStream);
+
+  auto mapTable = ClientDatabase::getTable(table);
 
   int count = 1;
   auto iterator = mapTable.Records();
@@ -108,7 +110,6 @@ PresetEditorWidget::PresetEditorWidget(std::shared_ptr<Project::NoggitProject> p
 
       count++;
   }
-  _project->ClientDatabase->UnloadTable("Map");
 
 
   // Handle minimap widget

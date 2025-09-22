@@ -35,6 +35,7 @@
 #include <QStackedWidget>
 #include <QWheelEvent>
 #include <QtCore/QSettings>
+#include <QElapsedTimer>
 
 #include <filesystem>
 
@@ -82,10 +83,37 @@ MapCreationWizard::MapCreationWizard(std::shared_ptr<Project::NoggitProject> pro
   _corpse_map_id->addItem("None");
   _corpse_map_id->setItemData(0, QVariant (-1));
 
-  // Fill selector combo
 
+  // TEST BENCHMARK SQL STUFF/////////////////////////
+  /*
+  {
+    Log << "Iterating table : " << "WMOAreaTable" << std::endl;
+    QElapsedTimer timer;
+    timer.start();
+
+    auto testtable = ClientDatabase::getTable("WMOAreaTable");
+    // auto& testtable = Noggit::Project::CurrentProject::get()->ClientDatabase->LoadTable("WMOAreaTable", readFileAsIMemStream);
+
+    qint64 elapsedMs = timer.elapsed();
+    Log << "gettable() in : " << elapsedMs << "ms" << std::endl;
+
+    auto iterator = testtable.Records();
+    while (iterator.HasRecords())
+    {
+      auto record = iterator.Next();
+    }
+    elapsedMs = timer.elapsed();
+    Log << "fully iterated table in  : " << elapsedMs << "ms" << std::endl;
+
+  }*/
+  /////////////////////////////////////////////////////
+
+
+  // Fill selector combo
   const auto& table = std::string("Map");
-  auto& mapTable = _project->ClientDatabase->LoadTable(table, readFileAsIMemStream);
+
+  auto mapTable = ClientDatabase::getTable(table);
+  // auto& mapTable = Noggit::Project::CurrentProject::get()->ClientDatabase->LoadTable(table, readFileAsIMemStream);
 
   int count = 0;
   auto iterator = mapTable.Records();
@@ -105,8 +133,6 @@ MapCreationWizard::MapCreationWizard(std::shared_ptr<Project::NoggitProject> pro
 
       count++;
   }
-
-  _project->ClientDatabase->UnloadTable("Map");
 
   auto add_btn = new QPushButton("New",this);
   add_btn->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::plus));
@@ -630,24 +656,11 @@ void MapCreationWizard::selectMap(int map_id)
 
   // int map_id = world->getMapID();
 
-  auto& table = _project->ClientDatabase->LoadTable("Map", readFileAsIMemStream);
-  auto record = table.RecordById(map_id);
-
-
-  /// test area, delete later /////////////
-  QSettings settings;
-  bool use_mysql = settings.value("project/mysql/enabled", false).toBool();
-  if (use_mysql)
-  {
-    // bool valid_conn = mysql::testConnection(true);
-    auto& test_table = _project->ClientDatabase->LoadTable("ItemDisplayInfo", readFileAsIMemStream);
-    Noggit::ClientDatabase::testUploadDBCtoDB(test_table);
-
-    // TODO : crashes if not unloading
-    //_project->ClientDatabase->UnloadTable("AreaTable");
-
-  }
-  ///////////////////////////////
+  auto table = ClientDatabase::getTable("Map");
+  auto rec_opt = table.RecordById(map_id);
+  if (!rec_opt)
+    return;
+  auto& record = *rec_opt;
 
   _cur_map_id = map_id;
 
@@ -740,9 +753,7 @@ void MapCreationWizard::selectMap(int map_id)
 
   _max_players->setValue(std::atoi(maxPlayers.c_str()));
 
-  _project->ClientDatabase->UnloadTable("Map");
-
-  auto& difficulty_table = _project->ClientDatabase->LoadTable("MapDifficulty", readFileAsIMemStream);
+  auto difficulty_table = ClientDatabase::getTable("MapDifficulty");
 
   auto iterator = difficulty_table.Records();
 
@@ -763,7 +774,6 @@ void MapCreationWizard::selectMap(int map_id)
           _difficulty_type->insertItem(difficulty_type, diff_text.c_str(), QVariant(record_id));
       }
   }
-  _project->ClientDatabase->UnloadTable("MapDifficulty");
   _difficulty_type->setCurrentIndex(0);
   selectMapDifficulty();
 
@@ -779,8 +789,11 @@ void MapCreationWizard::selectMapDifficulty()
     if (!selected_difficulty_id)
         return;
 
-    auto& difficulty_table = _project->ClientDatabase->LoadTable("MapDifficulty", readFileAsIMemStream);
-    auto record = difficulty_table.RecordById(selected_difficulty_id);
+    auto difficulty_table = ClientDatabase::getTable("MapDifficulty");
+    auto rec_opt = difficulty_table.RecordById(selected_difficulty_id);
+    if (!rec_opt)
+      return;
+    auto& record = *rec_opt;
 
     //_difficulty_type;
     _difficulty_req_message->fill(record, "Message_lang");
@@ -790,8 +803,6 @@ void MapCreationWizard::selectMapDifficulty()
 
     _difficulty_max_players->setValue(std::atoi(record.Columns["MaxPlayers"].Value.c_str()));
     _difficulty_string->setText(record.Columns["Difficultystring"].Value.c_str());
-
-    _project->ClientDatabase->UnloadTable("MapDifficulty");
 }
 
 void MapCreationWizard::wheelEvent(QWheelEvent* event)
