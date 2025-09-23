@@ -78,7 +78,8 @@ namespace Noggit::Ui::Windows
     }
     else
     {
-        LogError << "NoggitWindow() : Unsupported project version, skipping loading DBCs." << std::endl;
+      assert(false); // TODO
+      LogError << "NoggitWindow() : Unsupported project version, skipping loading DBCs." << std::endl;
     }
 
     _settings = new settings(this);
@@ -86,6 +87,9 @@ namespace Noggit::Ui::Windows
     QSettings settings;
     // connect to databases
     bool use_mysql = settings.value("project/mysql/enabled", false).toBool();
+
+    ClientDatabase::setDatabaseMode(use_mysql ? DatabaseMode::Sql : DatabaseMode::ClientStorage);
+
     if (use_mysql)
     {
       auto host = settings.value("project/mysql/server").toString();

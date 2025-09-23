@@ -19,13 +19,15 @@ namespace Noggit
 			};
 
 
+		void ClientDatabase::setDatabaseMode(DatabaseMode mode)
+		{
+			_database_mode = mode;
+		}
+
+		DatabaseMode ClientDatabase::_database_mode = DatabaseMode::ClientStorage;
 		DatabaseMode ClientDatabase::databaseMode()
 		{
-			bool setting_use_sql_db = true; // todo QSETTING
-			QSettings settings;
-			setting_use_sql_db = settings.value("project/mysql/enabled", false).toBool();
-
-			return setting_use_sql_db ? DatabaseMode::Sql : DatabaseMode::ClientStorage;
+			return _database_mode;
 		}
 
 		ClientDatabaseTable ClientDatabase::getTable(const std::string& tableName)
@@ -49,7 +51,7 @@ namespace Noggit
 
 		// insert if fresh_table, otherwise replace?
 
-		auto row_definition = GetRecordDefinition();
+		auto& row_definition = GetRecordDefinition();
 		auto sql_record_format = recordFormat();
 
 		auto client_table_iterator = getClientTable().Records();
@@ -184,7 +186,7 @@ namespace Noggit
 
 	// executes query in client db and checks errors
 	// use isActive to check if it properly ran, not isValid.
-	QSqlQuery ClientDatabase::executeQuery(const QString& sql)
+	QSqlQuery ClientDatabase::executeQuery(const QString& sql, bool forward_only)
 	{
 		auto db_mgr = Noggit::Sql::SqlDatabaseManager::instance().noggitDatabase();
 		QSqlQuery query(Noggit::Sql::SqlDatabaseManager::instance().noggitDatabase());
@@ -192,6 +194,8 @@ namespace Noggit
 		qDebug() << "Executing query : " << sql;
 		QElapsedTimer timer;
 		timer.start();
+		if (forward_only) // call this for browsing large data sets
+			query.setForwardOnly(true);
 		if (!query.exec(sql))
 		{
 			LogError << "SQL query failed:" << query.lastError().text().toStdString();
@@ -288,7 +292,7 @@ namespace Noggit
 	{
 		auto record_format = std::vector<DbColumnFormat>();
 
-		auto row_definition = GetRecordDefinition();
+		auto& row_definition = GetRecordDefinition();
 		for (int col_idx = 0; col_idx < row_definition.ColumnDefinitions.size(); col_idx++)
 		{
 			auto& column_def = row_definition.ColumnDefinitions[col_idx];
@@ -426,9 +430,11 @@ namespace Noggit
 		return table_is_valid;
 	}
 
-	Structures::BlizzardDatabaseRow ClientDatabaseTable::sqlRecordToDatabaseRow(const QSqlRecord& record) const
+	// Structures::BlizzardDatabaseRow ClientDatabaseTable::sqlRecordToDatabaseRow(const QSqlRecord& record) const
+	Structures::BlizzardDatabaseRow ClientDatabaseTable::sqlRecordToDatabaseRow(QSqlQuery& record) const
+
 	{
-		auto row_definition = GetRecordDefinition();
+		auto& row_definition = GetRecordDefinition();
 
 		auto database_row = Structures::BlizzardDatabaseRow(-1);
 
@@ -439,18 +445,13 @@ namespace Noggit
 			auto& column_def = row_definition.ColumnDefinitions[column_def_idx];
 			auto database_column = Structures::BlizzardDatabaseColumn();
 
-			auto value = std::string();
 			if (column_def.Type == "locstring")
 			{
-				std::vector<std::string> localizedValues = std::vector<std::string>();
+				database_column.Values.resize(16);
 				for (int loc_idx = 0; loc_idx < 16; loc_idx++)
 				{
-					localizedValues.push_back(record.value(field_idx++).toString().toStdString());
+					database_column.Values[loc_idx] = (record.value(field_idx++).toString().toStdString());
 				}
-
-				database_column.Values = localizedValues;
-				database_row.Columns[column_def.Name] = database_column;
-
 				// currently loc mask is set to a separate column because wdbc reader does it.
 				auto loc_mask_column = Structures::BlizzardDatabaseColumn();
 				loc_mask_column.Value = record.value(field_idx++).toString().toStdString();
@@ -460,21 +461,21 @@ namespace Noggit
 			{
 				if (column_def.arrLength > 1) // array
 				{
+					database_column.Values.resize(column_def.arrLength);
 					for (int i = 0; i < column_def.arrLength; i++)
 					{
-						database_column.Values.push_back(record.value(field_idx++).toString().toStdString());
+						database_column.Values[i] = (record.value(field_idx++).toString().toStdString());
 					}
 				}
 				else // single value
 				{
-					value = record.value(field_idx++).toString().toStdString();
+					database_column.Value = record.value(field_idx++).toString().toStdString();
 
 					if (column_def.isID)
-						Id = std::stoi(value);
+						Id = std::stoi(database_column.Value);
 				}
 			}
-			database_column.Value = value;
-			database_row.Columns[column_def.Name] = database_column;
+			database_row.Columns[column_def.Name] = std::move(database_column);
 		}
 		assert(Id != -1); // no id found
 		database_row.RecordId = Id;
@@ -561,7 +562,7 @@ namespace Noggit
 		return std::optional<Structures::BlizzardDatabaseRow>();
 	}*/
 
-	Structures::BlizzardDatabaseRowDefinition ClientDatabaseTable::GetRecordDefinition() const
+	Structures::BlizzardDatabaseRowDefinition& ClientDatabaseTable::GetRecordDefinition() const
 	{
 		return Noggit::Project::CurrentProject::get()->ClientDatabase->TableRecordDefinition(_tableName);
 	}
@@ -594,9 +595,8 @@ namespace Noggit
 
 		if (query.next())
 		{
-			QSqlRecord record = query.record();
-
-			auto database_row = sqlRecordToDatabaseRow(record);
+			// QSqlRecord record = query.record(); // slow af
+			auto database_row = sqlRecordToDatabaseRow(query);
 
 			return database_row;
 		}
@@ -630,7 +630,7 @@ namespace Noggit
 		{
 			QString sql = QString("SELECT * FROM `%1`").arg(_table.getSqlTableName().c_str()); //  ORDER BY ID ?
 
-			_query = ClientDatabase::executeQuery(sql);
+			_query = ClientDatabase::executeQuery(sql, true);
 			_querry_valid = _query.isActive(); // if query.exec ran properly
 
 			querryAdvance();
@@ -653,7 +653,6 @@ namespace Noggit
 			return _client_iterator.Next();
 		else
 		{
-			// if (_query.next())
 			if (!_querry_valid || !_hasNext)
 			{
 				assert(false);
@@ -661,12 +660,12 @@ namespace Noggit
 			}
 
 			// always store one row in advance to know if it's the last one
-			auto row = _table.sqlRecordToDatabaseRow(_nextRecord);
-			assert(row.RecordId != -1);
+			// auto row = _table.sqlRecordToDatabaseRow(_nextRecord);
+			assert(_nextRecord.RecordId != -1);
 
 			querryAdvance();
 
-			return row;
+			return _nextRecord;
 		}
 
 	}
@@ -675,7 +674,8 @@ namespace Noggit
 	{
 		if (_query.next())
 		{
-			_nextRecord = _query.record();
+			// _nextRecord = _query.record();
+			_nextRecord = _table.sqlRecordToDatabaseRow(_query);
 			_hasNext = true;
 		}
 		else
@@ -683,6 +683,5 @@ namespace Noggit
 			_hasNext = false;
 		}
 	}
-
 
 }

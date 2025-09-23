@@ -45,12 +45,8 @@ namespace Noggit
   {
     friend class ClientDatabaseTable;
   public:
-    // static ClientDatabase& instance()
-    // {
-    //   static ClientDatabase _instance;
-    //   return _instance;
-    // }
 
+    static void setDatabaseMode(DatabaseMode mode);
     static DatabaseMode databaseMode(); // sql or client storage
 
     static ClientDatabaseTable getTable(const std::string& tableName);
@@ -61,14 +57,10 @@ namespace Noggit
   
     static void TODODeploySqlToClient();
 
-    static QSqlQuery executeQuery(const QString& sql);
+    static QSqlQuery executeQuery(const QString& sql, bool forward_only = true); // forward onl means can't browse query backward, but massively speeds up forward iteration
   
   private:
-    // ClientDatabase() = default;
-    // ~ClientDatabase() = default;
-    // ClientDatabase(const ClientDatabase&) = delete;
-    // ClientDatabase& operator=(const ClientDatabase&) = delete;
-  
+    static DatabaseMode _database_mode;
   
     static Structures::BlizzardDatabaseRow clientRowById(const std::string& tableName, unsigned int id);
     static Structures::BlizzardDatabaseRow sqlRowById(const std::string& tableName, unsigned int id);
@@ -88,7 +80,6 @@ namespace Noggit
 
   private:
     const ClientDatabaseTable& _table;
-    // DatabaseMode _mode;
 
     // client
     BlizzardDatabaseRecordCollection _client_iterator;
@@ -98,7 +89,8 @@ namespace Noggit
     bool _querryHasStarted = false;
     bool _querry_valid = false;
     bool _hasNext = false;
-    QSqlRecord _nextRecord;
+    // QSqlRecord _nextRecord;
+    Structures::BlizzardDatabaseRow _nextRecord;
     void querryAdvance();
   };
 
@@ -111,6 +103,7 @@ namespace Noggit
   private:
     const std::string _tableName;
     const QString _qtTableName;
+    const Structures::BlizzardDatabaseRowDefinition _row_definition;
 
   public:
     ClientDatabaseTable(std::string tableName);
@@ -120,7 +113,7 @@ namespace Noggit
     unsigned int RecordCount() const;
     int ColumnCount() const;
     int getRecordSize() const;
-    Structures::BlizzardDatabaseRowDefinition GetRecordDefinition() const;
+    Structures::BlizzardDatabaseRowDefinition& GetRecordDefinition() const;
 
     // get rows data
     std::optional<Structures::BlizzardDatabaseRow> RecordById(unsigned int id) const;
@@ -148,7 +141,8 @@ namespace Noggit
     std::vector<DbColumnFormat> recordFormat() const; // true record format for all columns, not array size/loc etc. eg returns all 17 columns for loc.
     bool createSQLTableIfNotExist();
     bool verifySqlTableIntegrity();
-    Structures::BlizzardDatabaseRow sqlRecordToDatabaseRow(const QSqlRecord& record) const;
+    // Structures::BlizzardDatabaseRow sqlRecordToDatabaseRow(const QSqlRecord& record) const;
+    Structures::BlizzardDatabaseRow sqlRecordToDatabaseRow(QSqlQuery& query) const;
   };
 }
 

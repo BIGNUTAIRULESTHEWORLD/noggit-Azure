@@ -93,6 +93,16 @@ MapCreationWizard::MapCreationWizard(std::shared_ptr<Project::NoggitProject> pro
 
     auto testtable = ClientDatabase::getTable("WMOAreaTable");
     // auto& testtable = Noggit::Project::CurrentProject::get()->ClientDatabase->LoadTable("WMOAreaTable", readFileAsIMemStream);
+    // 
+    // for (DBCFile::Iterator i = gWMOAreaTableDB.begin(); i != gWMOAreaTableDB.end(); ++i)
+    // {
+    //   unsigned int lol = i->getUInt(WMOAreaTableDB::ID);
+    //   for (int ii = 0; ii < WMOAreaTableDB::Name; ii++)
+    //   {
+    //     unsigned int lol = i->getUInt(ii);
+    //   }
+    //   i->getLocalizedString(WMOAreaTableDB::Name);
+    // }
 
     qint64 elapsedMs = timer.elapsed();
     Log << "gettable() in : " << elapsedMs << "ms" << std::endl;
