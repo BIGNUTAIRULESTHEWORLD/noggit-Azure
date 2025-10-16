@@ -1506,11 +1506,21 @@ void MapTile::setAlphaImage(QImage const& baseimage, unsigned layer, bool cleanu
       chunk->texture_set->create_temporary_alphamaps_if_needed();
       auto& temp_alphamaps = *chunk->texture_set->getTempAlphamaps();
 
-      for (int i = 0; i < 64; ++i)
+      float* dst = temp_alphamaps[layer].data();
+      const int base_x = k * 64;
+      const int base_y = l * 64;
+
+      for (int j = 0; j < 64; ++j)
       {
-        for (int j = 0; j < 64; ++j)
+        const int row_offset = j * 64;
+        const int img_y = base_y + j;
+
+        for (int i = 0; i < 64; ++i)
         {
-          temp_alphamaps[layer][64 * j + i] = static_cast<float>(qGray(image.pixel((k * 64) + i, (l * 64) + j)));
+          const int img_x = base_x + i;
+          QRgb px = image.pixel(img_x, img_y);
+
+          dst[row_offset + i] = static_cast<float>(qGray(px));
         }
       }
 

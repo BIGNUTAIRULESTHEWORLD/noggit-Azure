@@ -1528,23 +1528,34 @@ void TextureSet::updateDoodadMapping()
     if (debug_test)
         blizzard_mapping_readable = getDoodadMappingReadable();
 
-    // 8x8 bits per unit
-    for (int unit_x = 0; unit_x < 8; unit_x++)
+    constexpr int TILE_SIZE = 64;
+    constexpr int UNIT_SIZE = 8;
+    constexpr int NUM_UNITS = TILE_SIZE / UNIT_SIZE; // 8
+
+    for (int unit_x = 0; unit_x < NUM_UNITS; unit_x++)
     {
-        for (int unit_y = 0; unit_y < 8; unit_y++)
+        for (int unit_y = 0; unit_y < NUM_UNITS; unit_y++)
         {
             int layer_totals[4]{ 0,0,0,0 };
 
+            const int unit_base_y = unit_y * UNIT_SIZE;
+            const int unit_base_x = unit_x * UNIT_SIZE;
+
             // 8x8 bits per unit
-            for (int x = 0; x < 8; x++)
+            for (int y = 0; y < UNIT_SIZE; y++)
             {
-                for (int y = 0; y < 8; y++)
+                const int row_base = (unit_base_y + y) * TILE_SIZE + unit_base_x;
+
+                for (int x = 0; x < UNIT_SIZE; x++)
                 {
                     int base_alpha = 255;
 
+                    const int alpha_pos = row_base + x;
+                    // const int alpha_pos = (unit_y * 8 + y) * 64 + (unit_x * 8 + x);
+
                     for (int alpha_layer = 0; alpha_layer < (nTextures - 1); ++alpha_layer)
                     {
-                        int alpha = static_cast<int>(alphamaps[alpha_layer]->getAlpha((unit_y * 8 + y) * 64 + (unit_x * 8 + x)));
+                        const int alpha = static_cast<int>(alphamaps[alpha_layer]->getAlpha(alpha_pos));
 
                         layer_totals[alpha_layer+1] += alpha;
 
@@ -1637,7 +1648,12 @@ namespace
 {
    std::uint8_t float_alpha_to_uint8(float a)
   {
-    return static_cast<std::uint8_t>(std::max(0.f, std::min(255.f, std::round(a))));
+    // return static_cast<std::uint8_t>(std::max(0.f, std::min(255.f, std::round(a))));
+
+     int v = static_cast<int>(a + 0.5f);
+     if (static_cast<unsigned>(v) > 255u)
+       v = v < 0 ? 0 : 255;
+     return static_cast<std::uint8_t>(v);
   }
 }
 
@@ -1648,25 +1664,29 @@ bool TextureSet::apply_alpha_changes()
     tmp_edit_values.reset();
     return false;
   }
+  constexpr int ALPHA_SIZE = 64 * 64;
 
   auto& new_amaps = *tmp_edit_values;
-  std::array<std::uint16_t, 64 * 64> totals;
+  std::array<std::uint16_t, ALPHA_SIZE> totals;
   totals.fill(0);
 
   for (int alpha_layer = 0; alpha_layer < nTextures - 1; ++alpha_layer)
   {
-    std::array<std::uint8_t, 64 * 64> values;
+    std::array<std::uint8_t, ALPHA_SIZE> values;
 
-    for (int i = 0; i < 64 * 64; ++i)
+    auto& tmp_layer = new_amaps[alpha_layer + 1];
+
+    for (int i = 0; i < ALPHA_SIZE; ++i)
     {
-      values[i] = float_alpha_to_uint8(new_amaps[alpha_layer + 1][i]);
-      totals[i] += values[i];
+      uint8_t new_value = float_alpha_to_uint8(tmp_layer[i]);
+      values[i] = new_value;
+      uint16_t total = totals[i] += new_value;
 
       // remove the possible overflow with rounding
       // max 2 if all 4 values round up so it won't change the layer's alpha much
-      if (totals[i] > 255)
+      if (total > 255)
       {
-        values[i] -= static_cast<std::uint8_t>(totals[i] - 255);
+        new_value -= static_cast<std::uint8_t>(total - 255);
       }
     }
 
