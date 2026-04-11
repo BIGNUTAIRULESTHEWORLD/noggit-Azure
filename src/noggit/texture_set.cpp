@@ -1101,10 +1101,18 @@ void TextureSet::change_texture_flag(scoped_blp_texture_reference const& tex, st
       auto flag_view = reinterpret_cast<MCLYFlags*>(&_layers_info[i].flags);
       auto flag_view_new = reinterpret_cast<MCLYFlags*>(&flag);
 
-      flag_view->animation_speed = flag_view_new->animation_speed;
-      flag_view->animation_rotation = flag_view_new->animation_rotation;
-      flag_view->animation_enabled = flag_view_new->animation_enabled;
-
+      if (add)
+      {
+          flag_view->animation_speed = flag_view_new->animation_speed;
+          flag_view->animation_rotation = flag_view_new->animation_rotation;
+          flag_view->animation_enabled = flag_view_new->animation_enabled;
+      }
+      else
+      {
+          flag_view->animation_speed = 0;
+          flag_view->animation_rotation = 0;
+          flag_view->animation_enabled = 0;
+      }
 
       if (flag & FLAG_GLOW)
       {
