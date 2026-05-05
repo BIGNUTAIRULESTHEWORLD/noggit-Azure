@@ -1092,29 +1092,20 @@ bool TextureSet::is_animated(std::size_t id) const
   return (id < nTextures ? (_layers_info[id].flags & FLAG_ANIMATE) : false);
 }
 
-void TextureSet::change_texture_flag(scoped_blp_texture_reference const& tex, std::size_t flag, bool add)
+void TextureSet::change_texture_flags(scoped_blp_texture_reference const& tex, std::size_t flags)
 {
   for (size_t i = 0; i < nTextures; ++i)
   {
     if (textures[i] == tex)
     {
       auto flag_view = reinterpret_cast<MCLYFlags*>(&_layers_info[i].flags);
-      auto flag_view_new = reinterpret_cast<MCLYFlags*>(&flag);
+      auto flag_view_new = reinterpret_cast<MCLYFlags*>(&flags);
 
-      if (add)
-      {
-          flag_view->animation_speed = flag_view_new->animation_speed;
-          flag_view->animation_rotation = flag_view_new->animation_rotation;
-          flag_view->animation_enabled = flag_view_new->animation_enabled;
-      }
-      else
-      {
-          flag_view->animation_speed = 0;
-          flag_view->animation_rotation = 0;
-          flag_view->animation_enabled = 0;
-      }
+      flag_view->animation_speed = flag_view_new->animation_speed;
+      flag_view->animation_rotation = flag_view_new->animation_rotation;
+      flag_view->animation_enabled = flag_view_new->animation_enabled;
 
-      if (flag & FLAG_GLOW)
+      if (flags & FLAG_GLOW)
       {
         _layers_info[i].flags |= FLAG_GLOW;
       }

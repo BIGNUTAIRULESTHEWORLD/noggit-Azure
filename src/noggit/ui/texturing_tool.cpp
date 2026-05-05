@@ -783,7 +783,7 @@ namespace Noggit
           }
         case (texturing_mode::anim):
           {
-              change_tex_flag(world, pos, _anim_prop.get(), texture);
+              change_tex_flags(world, pos, _anim_prop.get(), texture);
               break;
           }
         case (texturing_mode::ground_effect):
@@ -816,17 +816,16 @@ namespace Noggit
       return static_cast<float>(_brush_level);
     }
 
-    void texturing_tool::change_tex_flag(World* world, glm::vec3 const& pos, bool add, scoped_blp_texture_reference texture)
+    void texturing_tool::change_tex_flags(World* world, glm::vec3 const& pos, bool add, scoped_blp_texture_reference texture)
     {
-      std::uint32_t flag = 0;
+      std::uint32_t flags = 0;
 
-      auto flag_view = reinterpret_cast<MCLYFlags*>(&flag);
-
-      flag |= FLAG_ANIMATE;
+      auto flag_view = reinterpret_cast<MCLYFlags*>(&flags);
 
       // if add == true => flag to add, else it's the flags to remove
       if (add)
       {
+        flags |= FLAG_ANIMATE;
         // the qdial in inverted compared to the anim rotation
         flag_view->animation_rotation = (_anim_rotation_prop.get() + 4) % 8;
         flag_view->animation_speed = _anim_speed_prop.get();
@@ -835,10 +834,10 @@ namespace Noggit
       // the texture's flag glow is set if the property is true, removed otherwise
       if (_overbright_prop.get())
       {
-        flag |= FLAG_GLOW;
+        flags |= FLAG_GLOW;
       }
 
-      world->change_texture_flag(pos, texture, flag, add);
+      world->change_texture_flags(pos, texture, flags);
     }
 
     texture_swapper* const texturing_tool::texture_swap_tool()

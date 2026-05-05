@@ -1340,9 +1340,9 @@ void MapChunk::eraseTexture(scoped_blp_texture_reference const& tex)
     }
 }
 
-void MapChunk::change_texture_flag(scoped_blp_texture_reference const& tex, std::size_t flag, bool add)
+void MapChunk::change_texture_flags(scoped_blp_texture_reference const& tex, std::size_t flags)
 {
-  texture_set->change_texture_flag(tex, flag, add);
+  texture_set->change_texture_flags(tex, flags);
 }
 
 int MapChunk::addTexture(scoped_blp_texture_reference texture)

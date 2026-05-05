@@ -131,7 +131,7 @@ namespace Noggit
       void texturePaletteToggled();
 
     private:
-      void change_tex_flag(World* world, glm::vec3 const& pos, bool add, scoped_blp_texture_reference texture);
+      void change_tex_flags(World* world, glm::vec3 const& pos, bool add, scoped_blp_texture_reference texture);
 
       // slider functions
       void update_brush_hardness();

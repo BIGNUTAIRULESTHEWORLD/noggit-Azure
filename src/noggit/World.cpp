@@ -2934,13 +2934,13 @@ void World::removeTexDuplicateOnADT(glm::vec3 const& pos)
   } );
 }
 
-void World::change_texture_flag(glm::vec3 const& pos, scoped_blp_texture_reference const& tex, std::size_t flag, bool add)
+void World::change_texture_flags(glm::vec3 const& pos, scoped_blp_texture_reference const& tex, std::size_t flags)
 {
   ZoneScoped;
   for_chunk_at(pos, [&] (MapChunk* chunk)
   {
     NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
-    chunk->change_texture_flag(tex, flag, add);
+    chunk->change_texture_flags(tex, flags);
   });
 }
 
