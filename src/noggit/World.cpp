@@ -764,30 +764,26 @@ void World::delete_selected_models()
 
 glm::vec3 World::get_ground_height(glm::vec3 pos)
 {
-    selection_result hits;
+  selection_result hits;
     
-    for_chunk_at(pos, [&](MapChunk* chunk)
-    {
-        {
-            math::ray intersect_ray(pos, glm::vec3(0.f, -1.f, 0.f));
-            chunk->intersect(intersect_ray, &hits, true);
-        }
-        // object is below ground
-        if (hits.empty())
-        {
-            math::ray intersect_ray(pos, glm::vec3(0.f, 1.f, 0.f));
-            chunk->intersect(intersect_ray, &hits, true);
-        }
-    });
+  for_chunk_at(pos, [&](MapChunk* chunk)
+  {
+      {
+        // ray origin should be independent of the object's current y 
+        glm::vec3 ray_pos(pos.x, chunk->getMaxHeight() + 1.0f, pos.z);
+        math::ray intersect_ray(ray_pos, glm::vec3(0.f, -1.f, 0.f));
+        chunk->intersect(intersect_ray, &hits, true);
+      }
+  });
 
-    // this should never happen
-    if (hits.empty())
-    {
-        LogError << "Snap to ground ray intersection failed" << std::endl;
-        return glm::vec3(0);
-    }
+  if (hits.empty())
+  {
+      LogError << "Snap to ground ray intersection failed" << std::endl;
+      // return objects position instead of world space y = 0
+      return pos;
+  }
 
-    return std::get<selected_chunk_type>(hits[0].second).position;
+  return std::get<selected_chunk_type>(hits[0].second).position;
 }
 
 void World::snap_selected_models_to_the_ground()
