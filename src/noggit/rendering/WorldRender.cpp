@@ -34,6 +34,40 @@
 
 using namespace Noggit::Rendering;
 
+namespace
+{
+  // WMO F_SIDN emissive pulse from 3.3.5 client DayNight::SetColors (0x007F3230) 
+  // interpolates the SIDN emissive scalar from the fixed 4-key table at
+  // 0x00AF4C80: 06:00=1, 07:00=0, 20:30=0, 21:30=1.
+  float compute_wmo_sidn_pulse(float world_time)
+  {
+    float k_minutes_per_noggit_time_unit = 0.5f;
+    float k_minutes_per_hour = 60.0f;
+    float k_noggit_time_units_per_hour = k_minutes_per_hour / k_minutes_per_noggit_time_unit;
+    float k_dawn_full_hour = 6.0f;
+    float k_dawn_off_hour = 7.0f;
+    float k_dusk_off_hour = 20.5f;
+    float k_dusk_full_hour = 21.5f;
+
+    float time = std::fmod(world_time, static_cast<float>(DAY_DURATION));
+    if (time < 0.0f)
+      time += static_cast<float>(DAY_DURATION);
+
+    float hours = time / k_noggit_time_units_per_hour;
+
+    if (hours < k_dawn_full_hour)
+      return 1.0f;
+    if (hours < k_dawn_off_hour)
+      return (k_dawn_off_hour - hours) / (k_dawn_off_hour - k_dawn_full_hour);
+    if (hours < k_dusk_off_hour)
+      return 0.0f;
+    if (hours < k_dusk_full_hour)
+      return (hours - k_dusk_off_hour) / (k_dusk_full_hour - k_dusk_off_hour);
+
+    return 1.0f;
+  }
+}
+
 WorldRender::WorldRender(World* world)
 : BaseRender()
 , _world(world)
@@ -633,6 +667,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       OpenGL::Scoped::use_program wmo_program{*_wmo_program.get()};
 
       wmo_program.uniform("camera", glm::vec3(camera_pos.x, camera_pos.y, camera_pos.z));
+      wmo_program.uniform("sidn_intensity", compute_wmo_sidn_pulse(_world->time));
 
       // make this check per WMO or global WMO with tiles may not work
       bool disable_cull = false;
