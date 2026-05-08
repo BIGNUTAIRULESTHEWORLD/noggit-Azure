@@ -77,6 +77,7 @@ namespace Noggit
                      );
 
       ~texturing_tool(); // { _ground_effect_tool->deleteLater(); }; // { delete _ground_effect_tool; };
+      void unload();
 
       float brush_radius() const;
       float hardness() const;

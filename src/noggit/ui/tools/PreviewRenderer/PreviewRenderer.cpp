@@ -12,13 +12,16 @@
 #include <math/frustum.hpp>
 
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <stdexcept>
 #include <vector>
 
 #include <QColor>
 #include <QMatrix4x4>
+#include <noggit/Log.h>
 #include <QSettings>
+#include <QSurfaceFormat>
 #include <QVector3D>
 
 
@@ -35,6 +38,14 @@ PreviewRenderer::PreviewRenderer(int width, int height, Noggit::NoggitRenderCont
 {
   _context = context;
   _cache = {};
+
+  _offscreen_context.setFormat(QSurfaceFormat::defaultFormat());
+  _offscreen_surface.setFormat(QSurfaceFormat::defaultFormat());
+
+  if (auto* share_context = QOpenGLContext::globalShareContext())
+  {
+    _offscreen_context.setShareContext(share_context);
+  }
 
   OpenGL::context::save_current_context const context_save (::gl);
   _offscreen_context.create();
@@ -53,6 +64,21 @@ PreviewRenderer::PreviewRenderer(int width, int height, Noggit::NoggitRenderCont
 
 Noggit::Ui::Tools::PreviewRenderer::~PreviewRenderer()
 {
+  try
+  {
+    if (_uploaded)
+    {
+      unloadOpenglData();
+    }
+  }
+  catch (std::exception const& e)
+  {
+    LogError << "PreviewRenderer::~PreviewRenderer failed during GL unload: " << e.what() << std::endl;
+  }
+  catch (...)
+  {
+    LogError << "PreviewRenderer::~PreviewRenderer failed during GL unload with unknown exception" << std::endl;
+  }
 }
 
 void PreviewRenderer::setModel(std::string const &filename)
@@ -671,6 +697,7 @@ void PreviewRenderer::upload()
 
 void PreviewRenderer::unload()
 {
+  _grid.unload();
   _buffers.unload();
 
   _m2_program.reset();
@@ -691,18 +718,51 @@ void PreviewRenderer::unload()
 
 void PreviewRenderer::unloadOpenglData()
 {
+  if (!_uploaded)
+  {
+    return;
+  }
+
   if (_offscreen_mode)
   {
     OpenGL::context::save_current_context const context_save (::gl);
-    _offscreen_context.makeCurrent(&_offscreen_surface);
+
+    if (!_offscreen_context.makeCurrent(&_offscreen_surface))
+    {
+      LogError << "Preview renderer cleanup was skipped because its offscreen context could not be made current." << std::endl;
+      return;
+    }
+
     OpenGL::context::scoped_setter const context_set (::gl, &_offscreen_context);
+
+    ModelManager::unload_all(_context);
+    WMOManager::unload_all(_context);
+    TextureManager::unload_all(_context);
 
     unload();
     return;
   }
 
-  assert(context() != nullptr);
+  if (!context())
+  {
+    LogError << "Preview renderer cleanup was skipped because its widget no longer has an OpenGL context." << std::endl;
+    return;
+  }
+
+  if (!context()->isValid())
+  {
+    LogError << "Preview renderer cleanup was skipped because its OpenGL context is no longer valid." << std::endl;
+    return;
+  }
+
   makeCurrent();
+
+  if (QOpenGLContext::currentContext() != context())
+  {
+    LogError << "Preview renderer cleanup was skipped because its OpenGL context could not be made current." << std::endl;
+    return;
+  }
+
   OpenGL::context::scoped_setter const _ (::gl, context());
 
   ModelManager::unload_all(_context);

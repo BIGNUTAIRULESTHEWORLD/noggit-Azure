@@ -6,7 +6,9 @@
 #include <ClientFile.hpp>
 
 #include <QtGui/QOffscreenSurface>
+#include <QtGui/QOpenGLContext>
 #include <QtGui/QOpenGLFramebufferObjectFormat>
+#include <QtGui/QSurfaceFormat>
 
 #include <algorithm>
 #include <glm/vec2.hpp>
@@ -658,6 +660,14 @@ namespace Noggit
     _fmt = std::make_unique<QOpenGLFramebufferObjectFormat>();
     _surface = std::make_unique<QOffscreenSurface>();
 
+    _context->setFormat(QSurfaceFormat::defaultFormat());
+    _surface->setFormat(QSurfaceFormat::defaultFormat());
+
+    if (auto* share_context = QOpenGLContext::globalShareContext())
+    {
+      _context->setShareContext(share_context);
+    }
+
     _context->create();
 
     _fmt->setSamples(1);
@@ -758,8 +768,24 @@ namespace Noggit
 
   void BLPRenderer::unload()
   {
+    if (!_uploaded)
+    {
+      return;
+    }
+
+    if (!_context || !_surface)
+    {
+      return;
+    }
+
     OpenGL::context::save_current_context const context_save (::gl);
-    _context->makeCurrent(_surface.get());
+
+    if (!_context->makeCurrent(_surface.get()))
+    {
+      LogError << "BLP preview cleanup was skipped because the offscreen OpenGL context could not be made current." << std::endl;
+      return;
+    }
+
     OpenGL::context::scoped_setter const context_set (::gl, _context.get());
 
     _cache.clear();

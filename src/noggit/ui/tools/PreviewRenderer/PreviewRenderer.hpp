@@ -29,7 +29,7 @@ class PreviewRenderer : public Noggit::Ui::Tools::ViewportManager::Viewport
 
   public:
     explicit PreviewRenderer(int width, int height, Noggit::NoggitRenderContext context, QWidget* parent = nullptr);
-    ~PreviewRenderer();
+    ~PreviewRenderer() override;
 
     void resetCamera(float x = 0.f, float y = 0.f, float z = 0.f, float roll = 0.f, float yaw = 120.f, float pitch = 20.f);
     QPixmap* renderToPixmap();

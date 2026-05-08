@@ -1,4 +1,5 @@
 #include "ViewportManager.hpp"
+#include <noggit/Log.h>
 #include <noggit/TextureManager.h>
 
 using namespace Noggit::Ui::Tools::ViewportManager;
@@ -58,7 +59,24 @@ void ViewportManager::unloadAll()
 {
   for (auto viewport : ViewportManager::_viewports)
   {
-    viewport->unloadOpenglData();
+    try
+    {
+      viewport->unloadOpenglData();
+    }
+    catch (std::exception const& e)
+    {
+      LogError << "A viewport could not release its OpenGL resources during cleanup. Widget type: "
+        << viewport->metaObject()->className()
+        << ". Error: " << e.what()
+        << std::endl;
+    }
+    catch (...)
+    {
+      LogError << "A viewport could not release its OpenGL resources during cleanup. Widget type: "
+        << viewport->metaObject()->className()
+        << "."
+        << std::endl;
+    }
   }
 
   BLPRenderer::getInstance().unload();

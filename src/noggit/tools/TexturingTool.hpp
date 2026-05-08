@@ -22,6 +22,7 @@ namespace Noggit
     public:
         TexturingTool(MapView* mapView);
         ~TexturingTool();
+        void unload() override;
 
         [[nodiscard]]
         char const* name() const override;

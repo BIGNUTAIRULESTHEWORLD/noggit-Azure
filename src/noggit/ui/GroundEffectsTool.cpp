@@ -11,7 +11,10 @@
 #include <noggit/ui/tools/PreviewRenderer/PreviewRenderer.hpp>
 #include <noggit/ui/tools/UiCommon/ExtendedSlider.hpp>
 #include <noggit/World.h>
+#include <noggit/Log.h>
 
+#include <exception>
+#include <string>
 
 #include <QDockWidget>
 #include <QFileInfo>
@@ -164,8 +167,23 @@ namespace Noggit
                     Noggit::NoggitRenderContext::GROUND_EFFECT_PREVIEW, this);
                 _preview_renderer->setVisible(false);
                 // Initialize renderer.
-                _preview_renderer->setModelOffscreen("world/wmo/azeroth/buildings/human_farm/farm.wmo");
-                _preview_renderer->renderToPixmap();
+                auto const preview_model = std::string("world/wmo/azeroth/buildings/human_farm/farm.wmo");
+
+                try
+                {
+                  _preview_renderer->setModelOffscreen(preview_model);
+                  _preview_renderer->renderToPixmap();
+                }
+                catch (std::exception const& e)
+                {
+                  LogError << "GroundEffectsTool preview render failed for " << preview_model
+                    << ": " << e.what() << std::endl;
+                }
+                catch (...)
+                {
+                  LogError << "GroundEffectsTool preview render failed for " << preview_model
+                    << " with unknown exception" << std::endl;
+                }
 
                 // Disable this if no active doodad. 
                 // Density: 0 → 8. > 24 → 24. This value is for the amount of doodads and on higher values for coverage.
@@ -709,7 +727,19 @@ namespace Noggit
 
         GroundEffectsTool::~GroundEffectsTool()
         {
-            delete _preview_renderer;
+            unload();
+        }
+
+        void GroundEffectsTool::unload()
+        {
+          if (!_preview_renderer)
+          {
+            return;
+          }
+
+          _preview_renderer->unloadOpenglData();
+          delete _preview_renderer;
+          _preview_renderer = nullptr;
         }
 
         float GroundEffectsTool::radius() const
