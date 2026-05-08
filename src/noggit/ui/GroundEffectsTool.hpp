@@ -106,6 +106,8 @@ namespace Noggit
 
       void change_radius(float change);;
 
+      void unload();
+
     private:
       std::optional<ground_effect_set> getSelectedGroundEffect();
       std::optional<glm::vec3> getSelectedEffectColor();

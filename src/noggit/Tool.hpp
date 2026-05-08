@@ -198,6 +198,9 @@ namespace Noggit
         // Save tool-specific settings to disk
         virtual void saveSettings();
 
+        // Release resources that need an active owner context before widget teardown.
+        virtual void unload();
+
     protected:
         void addHotkey(StringHash name, Hotkey hotkey);
 

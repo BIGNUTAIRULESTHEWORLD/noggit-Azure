@@ -249,4 +249,8 @@ namespace Noggit
     {
         menu->addSeparator();
     }
+
+    void Tool::unload()
+    {
+    }
 }

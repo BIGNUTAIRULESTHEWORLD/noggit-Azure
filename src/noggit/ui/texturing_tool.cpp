@@ -531,6 +531,15 @@ namespace Noggit
     {
         // _ground_effect_tool->delete_renderer();
         // delete _ground_effect_tool;
+      unload();
+    }
+
+    void texturing_tool::unload()
+    {
+      if (_ground_effect_tool)
+      {
+        _ground_effect_tool->unload();
+      }
     }
 
     void texturing_tool::updateMaskImage()

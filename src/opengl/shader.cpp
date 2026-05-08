@@ -9,6 +9,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <QFile>
+#include <QOpenGLContext>
 #include <QTextStream>
 
 #include <stdexcept>
@@ -121,7 +122,15 @@ namespace OpenGL
   {
     if (_handle)
     {
-      gl.deleteProgram (*_handle);
+      auto* current_context = gl.getCurrentContext();
+      if (current_context && current_context->isValid() && QOpenGLContext::currentContext() == current_context)
+      {
+        gl.deleteProgram (*_handle);
+      }
+      else
+      {
+        LogError << "A shader program could not be released because no valid OpenGL context is current." << std::endl;
+      }
     }
   }
 

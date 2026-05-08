@@ -21,6 +21,7 @@ flat out uint tex_array1;
 flat out uint tex0;
 flat out uint tex1;
 flat out uint alpha_test_mode;
+flat out uint sidn_color;
 
 layout (std140) uniform matrices
 {
@@ -57,6 +58,7 @@ void main()
     tex0 = 0;
     tex1 = 0;
     alpha_test_mode = 0;
+    sidn_color = 0;
   }
   else
   {
@@ -77,6 +79,7 @@ void main()
     tex0 = batch_second_half.r;
     tex1 = batch_second_half.g;
     alpha_test_mode = batch_second_half.b;
+    sidn_color = batch_second_half.a;
 
     // Env and EnvMetal
     if(shader == 3 || shader == 5)
