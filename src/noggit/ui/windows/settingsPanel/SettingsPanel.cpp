@@ -32,6 +32,9 @@ namespace Noggit
       // dev QOL, selecting another tab when editing the UI file makes it the default
       ui->tabWidget->setCurrentIndex(0);
 
+      ui->mysql_client_db_checkbox->hide();// Currently unfinished feature, need all DBCs to use the new database library
+      ui->mysql_client_db_checkbox->setChecked(false);
+
       auto titlebar = new QWidget(this);
       setupFramelessWindow(titlebar, this, minimumSize(), maximumSize(), false);
       setMenuWidget(titlebar);
