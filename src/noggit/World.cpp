@@ -122,6 +122,7 @@ World::World(const std::string& name, int map_id, Noggit::NoggitRenderContext co
     , _current_selection()
     , _settings(new QSettings())
     , _context(context)
+    , occluders()
 {
   LogDebug << "Loading world \"" << name << "\"." << std::endl;
   _loaded_tiles_buffer[0] = std::make_pair<std::pair<int, int>, MapTile*>(std::make_pair(0, 0), nullptr);
@@ -136,6 +137,8 @@ World::World(const std::string& name, int map_id, Noggit::NoggitRenderContext co
       horizon.wmos.push_back(scoped_wmo_reference(filepath, _context));
     }
   }
+
+  occluders.loadFromCSV(map_id);
 }
 
 void World::LoadSavedSelectionGroups()
@@ -3640,62 +3643,166 @@ void World::importAllADTsAlphamaps(QProgressDialog* progress_dialog)
   {
     path += "/";
   }
+
+  // use batch to not load the entire map at once, takes 50+gb for 64x64
+  // memory cost is about 5.5mb per tile
+  constexpr int MAX_IN_FLIGHT = 256; // 128 costs 700mb
+
   int count = 0;
-  for (size_t z = 0; z < 64; z++)
+
+  std::unordered_map< unsigned int, bool> unloads;
+
+  std::vector<TileIndex> allTiles;
+  allTiles.reserve(progress_dialog->maximum());
+
+  // collect all tiles
+  for (int z = 0; z < 64; ++z)
   {
-    for (size_t x = 0; x < 64; x++)
+    for (int x = 0; x < 64; ++x)
     {
-      if (progress_dialog->wasCanceled())
-        return;
-
       TileIndex tile(x, z);
+      if (!mapIndex.hasTile(tile))
+        continue;
 
-      bool unload = !mapIndex.tileLoaded(tile) && !mapIndex.tileAwaitingLoading(tile);
-      MapTile* mTile = mapIndex.loadTile(tile);
-      
-      if (mTile)
-      {
-        mTile->wait_until_loaded();
-      
-        for (int i = 1; i < 4; ++i)
-        {
-          QString filename = path + "/world/maps/" + basename.c_str() + "/" + basename.c_str()
-                  + "_" + std::to_string(mTile->index.x).c_str() + "_" + std::to_string(mTile->index.z).c_str()
-                  + "_layer" + std::to_string(i).c_str() + ".png";
-      
-          if(!QFileInfo::exists(filename))
-            continue;
-      
-          QImage img;
-          img.load(filename, "PNG");
-      
-          if (img.width() != 1024 || img.height() != 1024)
-          {
-            QImage scaled = img.scaled(1024, 1024, Qt::IgnoreAspectRatio);
-            mTile->setAlphaImage(scaled, i, clean_up);
-          }
-          else
-          {
-            mTile->setAlphaImage(img, i, clean_up);
-          }
-      
-        }
-      
-        mTile->saveTile(this);
-        mapIndex.markOnDisc (tile, true);
-        mapIndex.unsetChanged(tile);
-      
-        if (unload)
-        {
-          mapIndex.unloadTile(tile);
-        }
+      bool shouldUnload = !mapIndex.tileLoaded(tile) && !mapIndex.tileAwaitingLoading(tile);
+      unloads[tile.index()] = shouldUnload;
 
-        count++;
-        progress_dialog->setValue(count);
-      }
-
+      allTiles.push_back(tile);
     }
   }
+
+  assert(progress_dialog->maximum() == allTiles.size());
+  const int total = allTiles.size();
+
+  std::deque<MapTile*> inFlight;
+  size_t nextTileIdx = 0;
+  size_t processed = 0;
+
+  auto processTile = [&](MapTile* mTile)
+    {
+    if (!mTile)
+      return;
+
+    // ensure loaded
+    mTile->wait_until_loaded();
+
+    for (int layer = 1; layer < 4; ++layer)
+    {
+      QString filename = QString("%1/world/maps/%2/%2_%3_%4_layer%5.png")
+        .arg(path)
+        .arg(basename.c_str())
+        .arg(mTile->index.x)
+        .arg(mTile->index.z)
+        .arg(layer);
+
+      if (!QFileInfo::exists(filename))
+        continue;
+
+      QImage img;
+      img.load(filename, "PNG");
+      if (img.width() != 1024 || img.height() != 1024)
+        img = img.scaled(1024, 1024, Qt::IgnoreAspectRatio);
+
+      mTile->setAlphaImage(img, layer, clean_up);
+    }
+
+    mTile->saveTile(this);
+    auto idx = mTile->index;
+    mapIndex.markOnDisc(idx, true);
+    mapIndex.unsetChanged(idx);
+
+    auto it = unloads.find(idx.index());
+    if (it != unloads.end() && it->second)
+      mapIndex.unloadTile(idx);
+
+    ++processed;
+    if ((processed % 5) == 0 || processed == total)
+      progress_dialog->setValue(static_cast<int>(processed));
+    };
+
+  auto tryProcessFinished = [&]() {
+    for (auto it = inFlight.begin(); it != inFlight.end(); )
+    {
+      MapTile* mt = *it;
+      if (mt->finishedLoading())
+      {
+        processTile(mt);
+        it = inFlight.erase(it);
+      }
+      else
+      {
+        ++it;
+      }
+    }
+    };
+
+  while (processed < total)
+  {
+    if (progress_dialog->wasCanceled())
+      break;
+
+    tryProcessFinished();
+
+    // queue new tiles while we have capacity
+    while (nextTileIdx < total && inFlight.size() < MAX_IN_FLIGHT)
+    {
+      const TileIndex& t = allTiles[nextTileIdx++];
+
+      MapTile* mTile = mapIndex.loadTile(t);
+      if (!mTile)
+        continue;
+
+      // if it is already finished loading, process immediately
+      if (mTile->finishedLoading())
+      {
+        processTile(mTile);
+      }
+      else
+      {
+        inFlight.push_back(mTile);
+      }
+    }
+
+    // if queue is full and nothing finished, block minimally on the oldest
+    if (!inFlight.empty() && inFlight.size() >= MAX_IN_FLIGHT)
+    {
+      MapTile* oldest = inFlight.front();
+      if (!oldest->finishedLoading())
+      {
+        // minimal blocking only because we are at capacity
+        oldest->wait_until_loaded();
+      }
+      // process oldest
+      processTile(oldest);
+      inFlight.pop_front();
+    }
+
+    // if there's spare capacity but no new tiles to queue, try processing again
+    if (nextTileIdx >= total && !inFlight.empty())
+    {
+      tryProcessFinished();
+      // If still not finished, block on front
+      if (!inFlight.empty() && !inFlight.front()->finishedLoading())
+      {
+        inFlight.front()->wait_until_loaded();
+        processTile(inFlight.front());
+        inFlight.pop_front();
+      }
+    }
+  }
+
+  // flush any remaining in-flight tiles
+  while (!inFlight.empty())
+  {
+    MapTile* mt = inFlight.front();
+    inFlight.pop_front();
+    if (!mt->finishedLoading())
+      mt->wait_until_loaded();
+    processTile(mt);
+  }
+
+  progress_dialog->setValue(static_cast<int>(processed));
+
 }
 
 void World::importAllADTsHeightmaps(QProgressDialog* progress_dialog, float min_height, float max_height, unsigned mode, bool tiledEdges)

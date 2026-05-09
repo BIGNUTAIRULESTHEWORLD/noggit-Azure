@@ -1532,16 +1532,49 @@ void TextureSet::updateDoodadMapping()
     constexpr int UNIT_SIZE = 8;
     constexpr int NUM_UNITS = TILE_SIZE / UNIT_SIZE; // 8
 
-    for (int unit_x = 0; unit_x < NUM_UNITS; unit_x++)
+    // pre load alphamaps data to avoid functions overhead
+    std::array< const unsigned char*, 3> alphamaps_datas;
+    for (int alpha_layer = 0; alpha_layer < nTextures - 1; ++alpha_layer)
     {
-        for (int unit_y = 0; unit_y < NUM_UNITS; unit_y++)
+      alphamaps_datas[alpha_layer] = alphamaps[alpha_layer]->getAlpha();
+    }
+
+    for (int unit_y = 0; unit_y < NUM_UNITS; unit_y++)
+    {
+        for (int unit_x = 0; unit_x < NUM_UNITS; unit_x++)
         {
-            int layer_totals[4]{ 0,0,0,0 };
+            unsigned int layer_totals[4]{ 0,0,0,0 };
 
             const int unit_base_y = unit_y * UNIT_SIZE;
             const int unit_base_x = unit_x * UNIT_SIZE;
 
+            for (int y = 0; y < UNIT_SIZE; ++y)
+            {
+              const int row_base = (unit_base_y + y) * TILE_SIZE + unit_base_x;
+
+              // row pointers per layer
+              const unsigned char* row_ptrs[3] = { nullptr, nullptr, nullptr };
+              for (int layer = 0; layer < nTextures - 1; ++layer)
+                row_ptrs[layer] = alphamaps_datas[layer] + row_base;
+
+
+              for (int x = 0; x < UNIT_SIZE; ++x)
+              {
+                int base_alpha = 255;
+
+                if (nTextures > 1)
+                  { uint8_t v = *row_ptrs[0]++; layer_totals[1] += v; base_alpha -= v; }
+                if (nTextures > 2)
+                  { uint8_t v = *row_ptrs[1]++; layer_totals[2] += v; base_alpha -= v; }
+                if (nTextures > 3)
+                  { uint8_t v = *row_ptrs[2]++; layer_totals[3] += v; base_alpha -= v; }
+
+                layer_totals[0] += base_alpha;
+              }
+            }
+
             // 8x8 bits per unit
+            /*
             for (int y = 0; y < UNIT_SIZE; y++)
             {
                 const int row_base = (unit_base_y + y) * TILE_SIZE + unit_base_x;
@@ -1555,7 +1588,8 @@ void TextureSet::updateDoodadMapping()
 
                     for (int alpha_layer = 0; alpha_layer < (nTextures - 1); ++alpha_layer)
                     {
-                        const int alpha = static_cast<int>(alphamaps[alpha_layer]->getAlpha(alpha_pos));
+                        auto alphamap = alphamaps[alpha_layer]->getAlpha();
+                        int alpha = static_cast<int>(alphamap[alpha_pos]);
 
                         layer_totals[alpha_layer+1] += alpha;
 
@@ -1563,7 +1597,7 @@ void TextureSet::updateDoodadMapping()
                     }
                     layer_totals[0] += base_alpha;
                 }
-            }
+            }*/
 
             // int sum = layer_totals[0] + layer_totals[1] + layer_totals[2] + layer_totals[3];
             // std::array<float, 4> percent_weights = { total_layer_0 / sum * 100.f,

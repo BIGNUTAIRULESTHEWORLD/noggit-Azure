@@ -43,6 +43,7 @@ MapTile::MapTile( int pX
                 , Noggit::NoggitRenderContext context
                 , tile_mode mode
                 , bool pLoadTextures
+                , bool initRender
                 )
   : AsyncObject(pFilename)
   , _renderer(this)
@@ -377,6 +378,8 @@ void MapTile::finishLoading()
     mChunks[x][z] = std::make_unique<MapChunk> (this, &theFile, mBigAlpha, _mode, _context, false, 0, _load_textures);
 
     auto& chunk = mChunks[x][z];
+
+    // if (_init_render)
     _renderer.initChunkData(chunk.get());
   }
   // can be cleared after texture sets are loaded in chunks.
@@ -1490,7 +1493,16 @@ void MapTile::setHeightmapImage(QImage const& baseimage, float min_height, float
 
 void MapTile::setAlphaImage(QImage const& baseimage, unsigned layer, bool cleanup)
 {
-  auto image = baseimage.convertToFormat(QImage::Format_RGBA8888);
+  QImage image;
+  auto format = baseimage.format();
+  if (baseimage.format() == QImage::Format_Grayscale8)
+  {
+    image = baseimage;
+  }
+  else
+  {
+    image = baseimage.convertToFormat(QImage::Format_Grayscale8);
+  }
 
   for (int k = 0; k < 16; ++k)
   {
@@ -1503,32 +1515,54 @@ void MapTile::setAlphaImage(QImage const& baseimage, unsigned layer, bool cleanu
 
       chunk->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
 
-      chunk->texture_set->create_temporary_alphamaps_if_needed();
-      auto& temp_alphamaps = *chunk->texture_set->getTempAlphamaps();
+      // chunk->texture_set->create_temporary_alphamaps_if_needed();
+      // auto& temp_alphamaps = *chunk->texture_set->getTempAlphamaps();
+      // float* dst = temp_alphamaps[layer].data();
 
-      float* dst = temp_alphamaps[layer].data();
+      unsigned char pAmap[64 * 64]; // use direct alphamap instead 
+
       const int base_x = k * 64;
       const int base_y = l * 64;
 
       for (int j = 0; j < 64; ++j)
       {
         const int row_offset = j * 64;
-        const int img_y = base_y + j;
+        // const int img_y = base_y + j;
 
-        for (int i = 0; i < 64; ++i)
+        constexpr bool gray_convert = false;
+
+        if (!gray_convert)
         {
-          const int img_x = base_x + i;
-          QRgb px = image.pixel(img_x, img_y);
-
-          dst[row_offset + i] = static_cast<float>(qGray(px));
+          const uchar* scanLine = image.scanLine(base_y + j) + base_x;
+          memcpy(pAmap + row_offset, scanLine, 64);
+        }
+        else
+        {
+          const uchar* scanLine = image.scanLine(base_y + j);
+          for (int i = 0; i < 64; ++i)
+          {
+            // const int img_x = base_x + i;
+            // QRgb px = image.pixel(img_x, img_y);
+            // 
+            // // dst[row_offset + i] = static_cast<float>(qGray(px));
+            // // alphamap->setAlpha()
+            // unsigned char value = static_cast<unsigned char>(qGray(px));
+            // pAmap[row_offset + i] = value;
+          
+            const QRgb* px = reinterpret_cast<const QRgb*>(scanLine + (base_x + i) * 4);
+            pAmap[row_offset + i] = static_cast<unsigned char>(qGray(*px));
+          }
         }
       }
+      auto alphamap = chunk->texture_set->getAlphamaps()->at(layer - 1).get();
+      alphamap->setAlpha(pAmap);
+      chunk->texture_set->getTempAlphamaps().reset();
 
       if (cleanup)
           chunk->texture_set->eraseUnusedTextures();
 
       chunk->texture_set->markDirty();
-      chunk->texture_set->apply_alpha_changes();
+      // chunk->texture_set->apply_alpha_changes();
 
 
     }

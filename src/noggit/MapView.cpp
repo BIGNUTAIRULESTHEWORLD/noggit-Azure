@@ -1765,11 +1765,28 @@ void MapView::setupAssistMenu()
     (
         makeCurrent();
         OpenGL::context::scoped_setter const _(::gl, context());
-        QProgressDialog progress_dialog("Importing Alphamaps...", "Cancel", 0, _world->mapIndex.getNumExistingTiles(), this);
+        unsigned int num_tiles = _world->mapIndex.getNumExistingTiles();
+        QProgressDialog progress_dialog("Importing Alphamaps...", "Cancel", 0, num_tiles, this);
         progress_dialog.setWindowModality(Qt::WindowModal);
-        NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eCHUNKS_TEXTURE);
-        _world->importAllADTsAlphamaps(&progress_dialog);
-        NOGGIT_ACTION_MGR->endAction();
+        // if (num_tiles > 30)
+          NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eCHUNKS_TEXTURE);
+
+        setUpdatesEnabled(false);
+        QSignalBlocker blocker(this);
+        {
+          Log << "Benchmark : Importing alphamaps for " << num_tiles << " tiles." << std::endl;
+          QElapsedTimer timer;
+          timer.start();
+          _world->importAllADTsAlphamaps(&progress_dialog);
+
+          qint64 elapsedMs = timer.elapsed();
+          Log << "Alphamaps import finished in " << (elapsedMs * 1000) << "seconds." << std::endl;
+        }
+
+        setUpdatesEnabled(true);
+
+        // if (num_tiles > 30)
+          NOGGIT_ACTION_MGR->endAction();
     )
   }
   );
@@ -1783,14 +1800,23 @@ void MapView::setupAssistMenu()
         (
             makeCurrent();
             OpenGL::context::scoped_setter const _(::gl, context());
-            QProgressDialog progress_dialog("Importing Heightmaps...", "Cancel", 0, _world->mapIndex.getNumExistingTiles(), this);
+            unsigned int num_tiles = _world->mapIndex.getNumExistingTiles();
+            QProgressDialog progress_dialog("Importing Heightmaps...", "Cancel", 0, num_tiles, this);
             progress_dialog.setWindowModality(Qt::WindowModal);
-            NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eCHUNKS_TERRAIN);
+
+            if (num_tiles > 30)
+              NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eCHUNKS_TERRAIN);
+
+            // block paint event triggered by progress bar
+            setUpdatesEnabled(false);
+            QSignalBlocker blocker(this);
             _world->importAllADTsHeightmaps(&progress_dialog, heightmap_import_min->value(), heightmap_import_max->value(), 
                 adt_import_height_params_mode->currentIndex(), adt_import_height_tiled_edges->isChecked());
-            NOGGIT_ACTION_MGR->endAction();
-        )
+            setUpdatesEnabled(true);
 
+            if (num_tiles > 30)
+              NOGGIT_ACTION_MGR->endAction();
+        )
       }
     }
   );
@@ -1806,6 +1832,7 @@ void MapView::setupAssistMenu()
           makeCurrent();
           OpenGL::context::scoped_setter const _(::gl, context());
           NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eCHUNKS_VERTEX_COLOR);
+          QSignalBlocker blocker(this);
           _world->importAllADTVertexColorMaps(adt_import_vcol_params_mode->currentIndex(), adt_import_vcol_params_mode_tiled_edges->isChecked());
           NOGGIT_ACTION_MGR->endAction();
       )

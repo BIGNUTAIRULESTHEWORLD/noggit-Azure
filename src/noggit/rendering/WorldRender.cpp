@@ -1273,6 +1273,33 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }
   }
 
+  // test map occluders
+  bool render_occluders = true;
+  if (render_occluders)
+  {
+    // for (auto entry : occluderLocs)
+    for (auto const& occluder : _world->occluders.occludersWotlk)
+    {
+      std::vector<glm::vec3> occluderLocsClient;
+      for (int point_id = 0; point_id < occluder.nodes.size(); point_id++)
+      {    // convert server to client coords
+        glm::vec3 const curr_point = occluder.nodes[point_id].location.position;
+        // glm::vec3 const client_loc = glm::vec3((ZEROPOINT - curr_point.y), curr_point.z, (ZEROPOINT - curr_point.x)); // need to swap Z and Y for rendering
+        occluderLocsClient.emplace_back(glm::vec3((ZEROPOINT - curr_point.y), curr_point.z, (ZEROPOINT - curr_point.x)));
+
+        // Connect last point to the first
+        if (point_id == (occluder.nodes.size() - 1))
+        {
+          occluderLocsClient.push_back(occluderLocsClient[0]);
+        }
+
+        // test render a sphere at each point
+        // _sphere_render.draw(mvp, client_loc, glm::vec4(1.f, 0.f, 0.f, 1.f), 1.f, 32, 18, 0.9f, false, false);
+      }
+      _line_render.draw(mvp, occluderLocsClient, glm::vec4(1.f, 0.f, 0.f, 1.f), false); // red
+      }
+  }
+
   if (render_settings.editing_mode == editing_mode::light && render_settings.alpha_light_sphere > 0.0f)
   {
     // Sky* CurrentSky = skies()->findClosestSkyByDistance(camera_pos);
@@ -1334,6 +1361,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
       // TODO render a vertical rectangle between each points to draw the polygon in 3D
     }
+
 
     // Draw Sky/Light spheres
     glCullFace(GL_FRONT);

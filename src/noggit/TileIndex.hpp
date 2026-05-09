@@ -19,4 +19,9 @@ struct TileIndex
 
   std::size_t x;
   std::size_t z;
+
+  inline unsigned int index() const noexcept
+  {
+    return z * 64 + x;
+  }
 };

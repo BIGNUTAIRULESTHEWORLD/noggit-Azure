@@ -15,6 +15,7 @@
 #include <vector>
 #include <array>
 #include <noggit/rendering/WorldRender.hpp>
+#include <noggit/Occluders.h>
 
 namespace Noggit
 {
@@ -51,6 +52,7 @@ protected:
   // std::unordered_map<std::string, std::vector<ModelInstance*>> _models_by_filename;
   Noggit::world_model_instances_storage _model_instance_storage;
   Noggit::world_tile_update_queue _tile_update_queue;
+  Noggit::OccluderStorage occluders;
 public:
   std::vector<selection_group> _selection_groups;
 

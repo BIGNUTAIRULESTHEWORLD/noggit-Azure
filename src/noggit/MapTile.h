@@ -50,6 +50,7 @@ public:
          , Noggit::NoggitRenderContext context
          , tile_mode mode = tile_mode::edit
          , bool pLoadTextures = true
+         , bool initRender = true
          );
   ~MapTile();
 
@@ -216,6 +217,8 @@ private:
 
   bool _load_models;
   bool _load_textures;
+  bool _init_render;
+
   World* _world;
 
   Noggit::Rendering::TileRender _renderer;
