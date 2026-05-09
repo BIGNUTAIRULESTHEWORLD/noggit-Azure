@@ -30,7 +30,7 @@ namespace Noggit
       setWindowTitle("Settings");
 
       // dev QOL, selecting another tab when editing the UI file makes it the default
-      ui->tabWidget->setCurrentWidget(ui->tab_appearance);
+      ui->tabWidget->setCurrentIndex(0);
 
       auto titlebar = new QWidget(this);
       setupFramelessWindow(titlebar, this, minimumSize(), maximumSize(), false);
