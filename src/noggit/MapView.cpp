@@ -2973,33 +2973,57 @@ MapView::~MapView()
 {
   makeCurrent();
 
+  bool const has_current_context = context()
+    && context()->isValid()
+    && QOpenGLContext::currentContext() == context();
+
   _destroying = true;
 
   _main_window->removeToolBar(_main_window->_app_toolbar);
 
-  OpenGL::context::scoped_setter const _ (::gl, context());
-  delete _texBrush;
-  delete _viewport_overlay_ui;
-
-  // when the uid fix fail the UI isn't created
-  if (!_uid_fix_failed)
-  {
-    // delete TexturePicker; // explicitly delete this here to avoid opengl context related crash
-    // delete objectEditor;
-    // since the ground effect tool preview renderer got added, this causes crashing on exit to menu. 
-    // Now it crashes in application exit.
-    // delete texturingTool;
-
-    _tools[static_cast<int>(editing_mode::paint)].reset();
-    _tools[static_cast<int>(editing_mode::object)].reset();
-  }
-  
-  if (_force_uid_check)
+  if (_force_uid_check && _world)
   {
     uid_storage::remove_uid_for_map(_world->getMapID());
   }
 
-  _world.reset();
+  if (has_current_context)
+  {
+    OpenGL::context::scoped_setter const _ (::gl, context());
+    delete _texBrush;
+    delete _viewport_overlay_ui;
+
+    // when the uid fix fail the UI isn't created
+    if (!_uid_fix_failed)
+    {
+      // delete TexturePicker; // explicitly delete this here to avoid opengl context related crash
+      // delete objectEditor;
+      // since the ground effect tool preview renderer got added, this causes crashing on exit to menu.
+      // Now it crashes in application exit.
+      // delete texturingTool;
+
+      if (_tools[static_cast<int>(editing_mode::paint)])
+      {
+        _tools[static_cast<int>(editing_mode::paint)]->unload();
+      }
+    }
+
+    _world.reset();
+
+    _buffers.unload();
+  }
+  else
+  {
+    LogError << "Map view cleanup could not release OpenGL resources because its context is no longer current." << std::endl;
+
+    delete _texBrush;
+    delete _viewport_overlay_ui;
+  }
+
+  if (!_uid_fix_failed)
+  {
+    _tools[static_cast<int>(editing_mode::paint)].reset();
+    _tools[static_cast<int>(editing_mode::object)].reset();
+  }
 
   AsyncLoader::instance->reset_object_fail();
 
@@ -3010,8 +3034,6 @@ MapView::~MapView()
   WMOManager::report();
 
   NOGGIT_ACTION_MGR->disconnect();
-
-  _buffers.unload();
 
 }
 
@@ -4285,6 +4307,14 @@ void MapView::addHotkey(Qt::Key key, size_t modifiers, StringHash hotkeyName)
 void MapView::unloadOpenglData()
 {
   makeCurrent();
+
+  if (!context() || !context()->isValid() || QOpenGLContext::currentContext() != context())
+  {
+    LogError << "Map view cleanup was skipped because its OpenGL context could not be made current." << std::endl;
+    _gl_initialized = false;
+    return;
+  }
+
   OpenGL::context::scoped_setter const _ (::gl, context());
 
   ModelManager::unload_all(_context);

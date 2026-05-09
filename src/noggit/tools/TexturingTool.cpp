@@ -101,10 +101,21 @@ namespace Noggit
 
     TexturingTool::~TexturingTool()
     {
+        unload();
         delete _texturePickerDock;
         delete _texturePaletteDock;
         delete _textureBrowserDock;
         delete _texturingTool;
+    }
+
+    void TexturingTool::unload()
+    {
+        if (_texturingTool)
+        {
+            _texturingTool->unload();
+        }
+
+        Tool::unload();
     }
 
     char const* TexturingTool::name() const

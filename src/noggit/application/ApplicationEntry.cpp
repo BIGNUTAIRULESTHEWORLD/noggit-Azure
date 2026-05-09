@@ -32,6 +32,7 @@ int main(int argc, char *argv[])
   QApplication::setStyle(QStyleFactory::create("Fusion"));
   QCoreApplication::setAttribute(Qt::AA_UseDesktopOpenGL);
   QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+  QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
   QApplication q_application (argc, argv);
   q_application.setApplicationName ("Noggit");
   q_application.setOrganizationName ("Noggit");

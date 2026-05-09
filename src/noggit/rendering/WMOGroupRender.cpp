@@ -401,6 +401,11 @@ void WMOGroupRender::initRenderBatches()
       flags |= WMORenderBatchFlags::eWMOBatch_Unfogged;
     }
 
+    if (mat.flags.sidn)
+    {
+      flags |= WMORenderBatchFlags::eWMOBatch_SIDN;
+    }
+
     std::uint32_t alpha_test;
 
     switch (mat.blend_mode)
@@ -421,7 +426,13 @@ void WMOGroupRender::initRenderBatches()
         break;
     }
 
-    _render_batches[batch_counter] = WMORenderBatch{flags, mat.shader, 0, 0, 0, 0, alpha_test, 0};
+    auto sidn_color =
+      (std::uint32_t(mat.sidn_color.a) << 24) |
+      (std::uint32_t(mat.sidn_color.r) << 16) |
+      (std::uint32_t(mat.sidn_color.g) << 8) |
+      std::uint32_t(mat.sidn_color.b);
+
+    _render_batches[batch_counter] = WMORenderBatch{flags, mat.shader, 0, 0, 0, 0, alpha_test, sidn_color};
 
     batch_counter++;
   }

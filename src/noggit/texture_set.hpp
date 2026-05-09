@@ -73,7 +73,7 @@ public:
   unsigned int flag(size_t id);
   unsigned int effect(size_t id);
   bool is_animated(std::size_t id) const;
-  void change_texture_flag(scoped_blp_texture_reference const& tex, std::size_t flag, bool add);
+  void change_texture_flags(scoped_blp_texture_reference const& tex, std::size_t flags);
 
   std::vector<std::vector<uint8_t>> save_alpha(bool big_alphamap);
 

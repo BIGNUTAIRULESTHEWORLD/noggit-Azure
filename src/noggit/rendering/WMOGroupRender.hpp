@@ -29,7 +29,7 @@ namespace Noggit::Rendering
     std::uint32_t tex0;
     std::uint32_t tex1;
     std::uint32_t alpha_test_mode;
-    std::uint32_t _pad1;
+    std::uint32_t sidn_color;
   };
 
   enum WMORenderBatchFlags
@@ -38,7 +38,8 @@ namespace Noggit::Rendering
     eWMOBatch_HasMOCV = 0x2,
     eWMOBatch_Unlit = 0x4,
     eWMOBatch_Unfogged = 0x8,
-    eWMOBatch_Collision = 0x10
+    eWMOBatch_Collision = 0x10,
+    eWMOBatch_SIDN = 0x20
   };
 
   struct WMOCombinedDrawCall

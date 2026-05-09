@@ -26,6 +26,9 @@
 #include <QSlider>
 #include <QStandardItemModel>
 
+#include <exception>
+#include <string>
+
 using namespace Noggit::Ui::Tools::AssetBrowser::Ui;
 using namespace Noggit::Ui;
 
@@ -125,8 +128,23 @@ AssetBrowserWidget::AssetBrowserWidget(MapView* map_view, QWidget *parent)
   _preview_renderer->setVisible(false);
 
   // just to initialize context, ugly-ish
-  _preview_renderer->setModelOffscreen("world/wmo/azeroth/buildings/human_farm/farm.wmo");
-  _preview_renderer->renderToPixmap();
+  auto const preview_model = std::string("world/wmo/azeroth/buildings/human_farm/farm.wmo");
+
+  try
+  {
+    _preview_renderer->setModelOffscreen(preview_model);
+    _preview_renderer->renderToPixmap();
+  }
+  catch (std::exception const& e)
+  {
+    LogError << "The asset browser could not render its startup preview for "
+      << preview_model << ": " << e.what() << std::endl;
+  }
+  catch (...)
+  {
+    LogError << "The asset browser could not render its startup preview for "
+      << preview_model << " because of an unknown error." << std::endl;
+  }
 
   connect(ui->listfileTree->selectionModel(), &QItemSelectionModel::selectionChanged
       ,[=] (const QItemSelection& selected, const QItemSelection& deselected)
@@ -180,13 +198,26 @@ AssetBrowserWidget::AssetBrowserWidget(MapView* map_view, QWidget *parent)
           auto path = child.data(Qt::UserRole).toString();
           if (path.endsWith(".wmo") || path.endsWith(".m2"))
           {
-            _preview_renderer->setModelOffscreen(path.toStdString());
+            try
+            {
+              _preview_renderer->setModelOffscreen(path.toStdString());
 
-            auto preview_pixmap = _preview_renderer->renderToPixmap();
-            auto item = _model->itemFromIndex(_sort_model->mapToSource(child));
-            item->setIcon(QIcon(*preview_pixmap));
-            item->setDragEnabled(true);
-            item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+              auto preview_pixmap = _preview_renderer->renderToPixmap();
+              auto item = _model->itemFromIndex(_sort_model->mapToSource(child));
+              item->setIcon(QIcon(*preview_pixmap));
+              item->setDragEnabled(true);
+              item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+            }
+            catch (std::exception const& e)
+            {
+              LogError << "The asset browser could not render a preview for "
+                << path.toStdString() << ": " << e.what() << std::endl;
+            }
+            catch (...)
+            {
+              LogError << "The asset browser could not render a preview for "
+                << path.toStdString() << " because of an unknown error." << std::endl;
+            }
           }
         }
       }
@@ -468,8 +499,19 @@ void AssetBrowserWidget::updateModelData()
 
 AssetBrowserWidget::~AssetBrowserWidget()
 {
+  if (ui && ui->viewport)
+  {
+    ui->viewport->unloadOpenglData();
+  }
+
+  if (_preview_renderer)
+  {
+    _preview_renderer->unloadOpenglData();
+    delete _preview_renderer;
+    _preview_renderer = nullptr;
+  }
+
   delete ui;
-  delete _preview_renderer;
 }
 
 std::string const& Noggit::Ui::Tools::AssetBrowser::Ui::AssetBrowserWidget::getFilename() const

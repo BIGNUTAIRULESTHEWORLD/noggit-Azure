@@ -77,6 +77,7 @@ namespace Noggit
                      );
 
       ~texturing_tool(); // { _ground_effect_tool->deleteLater(); }; // { delete _ground_effect_tool; };
+      void unload();
 
       float brush_radius() const;
       float hardness() const;
@@ -131,7 +132,7 @@ namespace Noggit
       void texturePaletteToggled();
 
     private:
-      void change_tex_flag(World* world, glm::vec3 const& pos, bool add, scoped_blp_texture_reference texture);
+      void change_tex_flags(World* world, glm::vec3 const& pos, bool add, scoped_blp_texture_reference texture);
 
       // slider functions
       void update_brush_hardness();

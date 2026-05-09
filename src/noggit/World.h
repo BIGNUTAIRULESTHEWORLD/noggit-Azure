@@ -239,7 +239,7 @@ public:
   void swapTextureGlobal(scoped_blp_texture_reference tex);
   void removeTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex);
   void removeTexDuplicateOnADT(glm::vec3 const& pos);
-  void change_texture_flag(glm::vec3 const& pos, scoped_blp_texture_reference const& tex, std::size_t flag, bool add);
+  void change_texture_flags(glm::vec3 const& pos, scoped_blp_texture_reference const& tex, std::size_t flags);
 
   void setHole(glm::vec3 const& pos, float radius, bool big, bool hole);
   void setHoleADT(glm::vec3 const& pos, bool hole);
