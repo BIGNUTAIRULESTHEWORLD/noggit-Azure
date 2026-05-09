@@ -91,8 +91,8 @@ MapCreationWizard::MapCreationWizard(std::shared_ptr<Project::NoggitProject> pro
     QElapsedTimer timer;
     timer.start();
 
-    auto testtable = ClientDatabase::getTable("WMOAreaTable");
-    // auto& testtable = Noggit::Project::CurrentProject::get()->ClientDatabase->LoadTable("WMOAreaTable", readFileAsIMemStream);
+    // auto testtable = ClientDatabase::getTable("WMOAreaTable");
+    auto& testtable = Noggit::Project::CurrentProject::get()->ClientDatabase->LoadTable("WMOAreaTable", readFileAsIMemStream);
     // 
     // for (DBCFile::Iterator i = gWMOAreaTableDB.begin(); i != gWMOAreaTableDB.end(); ++i)
     // {
@@ -666,6 +666,7 @@ void MapCreationWizard::selectMap(int map_id)
 
   // int map_id = world->getMapID();
 
+  // Noggit::Project::CurrentProject::get()->ClientDatabase->LoadTable("Map", readFileAsIMemStream); // old, client library
   auto table = ClientDatabase::getTable("Map");
   auto rec_opt = table.RecordById(map_id);
   if (!rec_opt)

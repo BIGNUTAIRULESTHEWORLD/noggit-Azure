@@ -78,8 +78,7 @@ namespace Noggit
 
 
       ui->MySQL_box->setEnabled(true);
-      ui->MySQL_box->setCheckable(true);
-      ui->mysql_warning->setVisible(false);
+      // ui->MySQL_box->setCheckable(true);
 
       ui->_theme->addItem("System");
 
@@ -275,7 +274,9 @@ namespace Noggit
       ui->_wmo_aabb->setChecked(_settings->value("render/wmo_aabb", false).toBool());
       ui->_wmo_group_bounds->setChecked(_settings->value("render/wmo_groups_bounds", false).toBool());
 
-      ui->MySQL_box->setChecked (_settings->value ("project/mysql/enabled").toBool());
+      // ui->MySQL_box->setChecked (_settings->value ("project/mysql/enabled").toBool());
+      ui->mysql_uid_checkbox->setChecked(_settings->value("project/mysql/enabled").toBool());
+      ui->mysql_client_db_checkbox->setChecked(_settings->value("project/mysql/client_db_enabled").toBool());
 
       auto server_str = _settings->value("project/mysql/server", "127.0.0.1").toString();
       auto user_str = _settings->value("project/mysql/user", "root").toString();
@@ -346,7 +347,10 @@ namespace Noggit
       _settings->setValue("modern_features", ui->_modern_features->isChecked());
       _settings->setValue("use_mclq_liquids_export", ui->_use_mclq_liquids_export->isChecked());
 
-      _settings->setValue ("project/mysql/enabled", ui->MySQL_box->isChecked());
+      // _settings->setValue ("project/mysql/enabled", ui->MySQL_box->isChecked());
+      _settings->setValue("project/mysql/enabled", ui->mysql_uid_checkbox->isChecked());
+      _settings->setValue("project/mysql/client_db_enabled", ui->mysql_client_db_checkbox->isChecked());
+
       _settings->setValue ("project/mysql/server", ui->_mysql_server_field->text());
       _settings->setValue ("project/mysql/user", ui->_mysql_user_field->text());
       _settings->setValue ("project/mysql/pwd", ui->_mysql_pwd_field->text());

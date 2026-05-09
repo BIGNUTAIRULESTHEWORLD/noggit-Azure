@@ -86,11 +86,12 @@ namespace Noggit::Ui::Windows
 
     QSettings settings;
     // connect to databases
-    bool use_mysql = settings.value("project/mysql/enabled", false).toBool();
+    bool use_mysql_uid = settings.value("project/mysql/enabled", false).toBool();
+    bool use_sql_client_database = settings.value("project/mysql/client_db_enabled", false).toBool();
 
-    ClientDatabase::setDatabaseMode(use_mysql ? DatabaseMode::Sql : DatabaseMode::ClientStorage);
+    ClientDatabase::setDatabaseMode(use_sql_client_database ? DatabaseMode::Sql : DatabaseMode::ClientStorage);
 
-    if (use_mysql)
+    if (use_mysql_uid || use_sql_client_database)
     {
       auto host = settings.value("project/mysql/server").toString();
       auto port = settings.value("project/mysql/port", "3306").toInt();

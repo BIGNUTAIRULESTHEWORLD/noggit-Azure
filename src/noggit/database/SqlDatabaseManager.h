@@ -168,7 +168,7 @@ namespace Noggit::Sql
         prompt.setText("Failed to load MySQL database, check your settings. \nIf you did not intend to use this feature, disable it in Noggit->settings->MySQL");
         prompt.setWindowTitle("Noggit Database Error");
         // disable if connection is not valid
-        // settings.value("project/mysql/enabled") = false;
+        // settings.value("project/mysql/client_db_enabled") = false;
 
         promptText << databaseConnection(type).lastError().text().toStdString() << std::endl;
         promptText << databaseConnection(type).lastError().nativeErrorCode().toStdString() << std::endl;
