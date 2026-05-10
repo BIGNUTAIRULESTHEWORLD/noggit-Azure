@@ -124,7 +124,7 @@ namespace Noggit
     {
       auto const trigger_id = record.getUInt(AreaTriggerDB::Id);
       auto const trigger_map_id = record.getUInt(AreaTriggerDB::MapId);
-      if (trigger_id != id || trigger_map_id != map_id)
+      if (trigger_id != id /* || trigger_map_id != map_id*/)
       {
         continue;
       }
