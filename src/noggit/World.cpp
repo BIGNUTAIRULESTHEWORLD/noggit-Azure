@@ -3719,6 +3719,9 @@ void World::importAllADTsAlphamaps(QProgressDialog* progress_dialog)
   auto tryProcessFinished = [&]() {
     for (auto it = inFlight.begin(); it != inFlight.end(); )
     {
+      if (progress_dialog->wasCanceled())
+        return;
+
       MapTile* mt = *it;
       if (mt->finishedLoading())
       {
@@ -3735,7 +3738,7 @@ void World::importAllADTsAlphamaps(QProgressDialog* progress_dialog)
   while (processed < total)
   {
     if (progress_dialog->wasCanceled())
-      break;
+      return;
 
     tryProcessFinished();
 
