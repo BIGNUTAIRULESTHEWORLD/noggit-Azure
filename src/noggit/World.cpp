@@ -1,42 +1,51 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
-#include <noggit/World.h>
-#include <noggit/World.inl>
-
-#include <math/frustum.hpp>
+#include <math/trig.hpp>
+#include <noggit/ActionManager.hpp>
+#include <noggit/application/NoggitApplication.hpp>
 #include <noggit/Brush.h> // brush
-#include <noggit/DBC.h>
+#include <noggit/ChunkWater.hpp>
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/Misc.h>
+#include <noggit/Model.h>
+#include <noggit/ModelInstance.h>
 #include <noggit/ModelManager.h> // ModelManager
-#include <noggit/TextureManager.h>
-#include <noggit/WMOInstance.h> // WMOInstance
-#include <noggit/texture_set.hpp>
-#include <noggit/tool_enums.hpp>
-#include <noggit/ui/ObjectEditor.h>
-#include <noggit/ui/TexturingGUI.h>
-#include <noggit/application/NoggitApplication.hpp>
+#include <noggit/object_paste_params.hpp>
 #include <noggit/project/CurrentProject.hpp>
-#include <noggit/ActionManager.hpp>
+#include <noggit/texture_set.hpp>
+#include <noggit/TextureManager.h>
+#include <noggit/TileIndex.hpp>
+#include <noggit/tool_enums.hpp>
+#include <noggit/ui/TexturingGUI.h>
+#include <noggit/WMOInstance.h> // WMOInstance
+#include <noggit/World.h>
+#include <noggit/World.inl>
+
+#include <math/bounding_box.hpp>
+
+#include <blizzard-database-library/include/structures/FileStructures.h>
+
 #include <external/tracy/Tracy.hpp>
-#include <QByteArray>
+
+#include <QDir>
+#include <QFileInfo>
 #include <QImage>
+#include <QMessageBox>
+#include <QProgressDialog>
+#include <QSettings>
+
+#include <glm/gtx/quaternion.hpp>
+
 #include <algorithm>
+#include <array>
 #include <cassert>
-#include <ctime>
-#include <iostream>
+#include <limits>
 #include <map>
 #include <string>
 #include <unordered_set>
 #include <utility>
-#include <limits>
-#include <array>
-#include <cstdint>
-
-#include <glm/gtc/quaternion.hpp>
-#include <glm/gtx/quaternion.hpp>
 
 
 bool World::IsEditableWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow& record)
@@ -49,7 +58,7 @@ bool World::IsEditableWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow
 
   if (!Noggit::Application::NoggitApplication::instance()->clientData()->exists(ssfilename.str()))
   {
-    Log << "World " << record.RecordId << ": " << lMapName << " has no WDT file!" << std::endl;
+    LogDebug << "World " << record.RecordId << ": " << lMapName << " has no WDT file!" << std::endl;
     return false;
   }
 
@@ -63,9 +72,12 @@ bool World::IsEditableWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow
 
   // Not using the libWDT here doubles performance. You might want to look at your lib again and improve it.
   const int lFlags = *(reinterpret_cast<const int*>(lPointer + 8 + 4 + 8));
-  if (lFlags & 1)
+
+  // check for global wmo flag
+  if (lFlags & FLAG_GLOBAL_OBJECT)
     return true; // filter them later
 
+  // check if map has tiles
   const int * lData = reinterpret_cast<const int*>(lPointer + 8 + 4 + 8 + 0x20 + 8);
   for (int i = 0; i < 8192; i += 2)
   {
@@ -73,7 +85,8 @@ bool World::IsEditableWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow
       return true;
   }
 
-  return false;
+  // change : still load world even if it has no tile to allow user to edit it
+  return true;
 }
 
 bool World::IsWMOWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow& record)
@@ -100,7 +113,7 @@ World::World(const std::string& name, int map_id, Noggit::NoggitRenderContext co
     , _model_instance_storage(this)
     , _tile_update_queue(this)
     , mapIndex(name, map_id, this, context, create_empty)
-    , horizon(name, &mapIndex)
+    , horizon(name, this)
     , mWmoFilename(mapIndex.globalWMOName)
     , mWmoEntry(mapIndex.wmoEntry)
     , animtime(0)
@@ -109,9 +122,23 @@ World::World(const std::string& name, int map_id, Noggit::NoggitRenderContext co
     , _current_selection()
     , _settings(new QSettings())
     , _context(context)
+    , occluders()
 {
   LogDebug << "Loading world \"" << name << "\"." << std::endl;
   _loaded_tiles_buffer[0] = std::make_pair<std::pair<int, int>, MapTile*>(std::make_pair(0, 0), nullptr);
+
+  // initialize wdl models here
+  if (horizon.wmos.size() < horizon.lWMOInstances.size())
+  {
+    for (int i = 0; i < horizon.mWMOFilenames.size(); ++i)
+    {
+      // auto instance = horizon.lWMOInstances[i];
+      auto& filepath = horizon.mWMOFilenames[i];
+      horizon.wmos.push_back(scoped_wmo_reference(filepath, _context));
+    }
+  }
+
+  occluders.loadFromCSV(map_id);
 }
 
 void World::LoadSavedSelectionGroups()
@@ -145,6 +172,11 @@ void World::saveSelectionGroups()
     Noggit::Project::CurrentProject::get()->saveObjectSelectionGroups(proj_selection_map_group);
 }
 
+Noggit::Rendering::WorldRender* World::renderer()
+{
+  return &_renderer;
+}
+
 void World::update_selection_pivot()
 {
   ZoneScoped;
@@ -170,12 +202,18 @@ void World::update_selection_pivot()
   }
 }
 
-bool World::is_selected(selection_type selection) const
+std::optional<glm::vec3> const& World::multi_select_pivot() const
+{
+  return _multi_select_pivot;
+}
+
+bool World::is_selected(selection_type selection)
 {
   ZoneScoped;
   if (selection.index() != eEntry_Object)
     return false;
 
+  /*
   auto which = std::get<selected_object_type>(selection)->which();
 
   if (which == eMODEL)
@@ -214,41 +252,48 @@ bool World::is_selected(selection_type selection) const
     }
   }
 
+
   return false;
+*/
+
+  auto selected_object = std::get<selected_object_type>(selection);
+  unsigned int uid = selected_object->uid;
+
+  bool found = selected_uids.contains(uid);
+  if (!found)
+    return false;
+
+  // verify object type
+  // probably should only be done when adding or removing objects.
+  /*
+  auto instance = getObjectInstance(uid);
+  if (instance == nullptr || var_type(instance) != typeid(selected_object_type))
+    return false;
+
+  if (selected_object->which() != instance->which())
+  {
+    return false;
+  }
+  */
+  return true;
 }
 
 bool World::is_selected(std::uint32_t uid) const
 {
-  ZoneScoped;
-  for (selection_type const& entry : _current_selection)
-  {
-    if (entry.index() != eEntry_Object)
-      continue;
+  return selected_uids.contains(uid);
+}
 
-    auto obj = std::get<selected_object_type>(entry);
-
-    if (obj->which() == eWMO)
-    {
-      if (static_cast<WMOInstance*>(obj)->uid == uid)
-      {
-        return true;
-      }
-    }
-    else if (obj->which() == eMODEL)
-    {
-      if (static_cast<ModelInstance*>(obj)->uid == uid)
-      {
-        return true;
-      }
-    }
-  }
-
-  return false;
+std::vector<selection_type> const& World::current_selection() const
+{
+  return _current_selection;
 }
 
 std::optional<selection_type> World::get_last_selected_model() const
 {
   ZoneScoped;
+  if (_current_selection.empty())
+      return std::nullopt;
+
   auto const it
     ( std::find_if ( _current_selection.rbegin()
                    , _current_selection.rend()
@@ -261,6 +306,21 @@ std::optional<selection_type> World::get_last_selected_model() const
 
   return it == _current_selection.rend()
     ? std::optional<selection_type>() : std::optional<selection_type> (*it);
+}
+
+bool World::has_selection() const
+{
+  return !_current_selection.empty();
+}
+
+bool World::has_multiple_model_selected() const
+{
+  return _selected_model_count > 1;
+}
+
+int World::get_selected_model_count() const
+{
+  return _selected_model_count;
 }
 
 std::vector<selected_object_type> const World::get_selected_objects() const
@@ -390,24 +450,11 @@ void World::rotate_selected_models_randomly(float minX, float maxX, float minY, 
   }
 }
 
-
-void World::rotate_selected_models_to_ground_normal(bool smoothNormals)
+void World::rotate_model_to_ground_normal(SceneObject* obj, bool smoothNormals)
 {
-  ZoneScoped;
-  if (!_selected_model_count)
-      return;
-  for (auto& entry : _current_selection)
-  {
-    auto type = entry.index();
-    if (type == eEntry_MapChunk)
-    {
-      continue;
-    }
-
-    auto& obj = std::get<selected_object_type>(entry);
     NOGGIT_CUR_ACTION->registerObjectTransformed(obj);
 
-    updateTilesEntry(entry, model_update::remove);
+    updateTilesEntry(obj, model_update::remove);
 
     glm::vec3 rayPos = obj->pos;
     math::degrees::vec3& dir = obj->dir;
@@ -415,43 +462,43 @@ void World::rotate_selected_models_to_ground_normal(bool smoothNormals)
 
     selection_result results;
     for_chunk_at(rayPos, [&](MapChunk* chunk)
-    {
         {
-          math::ray intersect_ray(rayPos, glm::vec3(0.f, -1.f, 0.f));
-          chunk->intersect(intersect_ray, &results);
-        }
-        // object is below ground
-        if (results.empty())
-        {
-          math::ray intersect_ray(rayPos, glm::vec3(0.f, 1.f, 0.f));
-          chunk->intersect(intersect_ray, &results);
-        }
-    });
+            {
+                math::ray intersect_ray(rayPos, glm::vec3(0.f, -1.f, 0.f));
+                chunk->intersect(intersect_ray, &results, true);
+            }
+            // object is below ground
+            if (results.empty())
+            {
+                math::ray intersect_ray(rayPos, glm::vec3(0.f, 1.f, 0.f));
+                chunk->intersect(intersect_ray, &results, true);
+            }
+        });
 
     // !\ todo We shouldn't end up with empty ever (but we do, on completely flat ground)
     if (results.empty())
     {
-      // just to avoid models disappearing when this happens
-      updateTilesEntry(entry, model_update::add);
-      continue;
+        // just to avoid models disappearing when this happens
+        updateTilesEntry(obj, model_update::add);
+        return;
     }
 
 
-// We hit the terrain, now we take the normal of this position and use it to get the rotation we want.
+    // We hit the terrain, now we take the normal of this position and use it to get the rotation we want.
     auto const& hitChunkInfo = std::get<selected_chunk_type>(results.front().second);
 
     glm::quat q;
     glm::vec3 varnormal;
 
     // Surface Normal
-    auto &p0 = hitChunkInfo.chunk->mVertices[std::get<0>(hitChunkInfo.triangle)];
-    auto &p1 = hitChunkInfo.chunk->mVertices[std::get<1>(hitChunkInfo.triangle)];
-    auto &p2 = hitChunkInfo.chunk->mVertices[std::get<2>(hitChunkInfo.triangle)];
+    auto& p0 = hitChunkInfo.chunk->mVertices[std::get<0>(hitChunkInfo.triangle)];
+    auto& p1 = hitChunkInfo.chunk->mVertices[std::get<1>(hitChunkInfo.triangle)];
+    auto& p2 = hitChunkInfo.chunk->mVertices[std::get<2>(hitChunkInfo.triangle)];
 
     glm::vec3 v1 = p1 - p0;
     glm::vec3 v2 = p2 - p0;
 
-    auto tmpVec = glm::cross(v2 ,v1);
+    auto tmpVec = glm::cross(v2, v1);
     varnormal.x = tmpVec.z;
     varnormal.y = tmpVec.y;
     varnormal.z = tmpVec.x;
@@ -459,34 +506,34 @@ void World::rotate_selected_models_to_ground_normal(bool smoothNormals)
     // Smooth option, gradient the normal towards closest vertex
     if (smoothNormals) // Vertex Normal
     {
-      auto normalWeights = getBarycentricCoordinatesAt(p0, p1, p2, hitChunkInfo.position, varnormal);
+        auto normalWeights = getBarycentricCoordinatesAt(p0, p1, p2, hitChunkInfo.position, varnormal);
 
-      auto& tile_buffer = hitChunkInfo.chunk->mt->getChunkHeightmapBuffer();
-      int chunk_start = (hitChunkInfo.chunk->px * 16 + hitChunkInfo.chunk->py) * mapbufsize * 4;
+        auto& tile_buffer = hitChunkInfo.chunk->mt->getChunkHeightmapBuffer();
+        int chunk_start = (hitChunkInfo.chunk->px * 16 + hitChunkInfo.chunk->py) * mapbufsize * 4;
 
-      const auto& vNormal0 = *reinterpret_cast<glm::vec3*>(&tile_buffer[chunk_start + std::get<0>(hitChunkInfo.triangle) * 4]);
-      const auto& vNormal1 = *reinterpret_cast<glm::vec3*>(&tile_buffer[chunk_start + std::get<1>(hitChunkInfo.triangle) * 4]);
-      const auto& vNormal2 = *reinterpret_cast<glm::vec3*>(&tile_buffer[chunk_start + std::get<2>(hitChunkInfo.triangle) * 4]);
+        const auto& vNormal0 = *reinterpret_cast<glm::vec3*>(&tile_buffer[chunk_start + std::get<0>(hitChunkInfo.triangle) * 4]);
+        const auto& vNormal1 = *reinterpret_cast<glm::vec3*>(&tile_buffer[chunk_start + std::get<1>(hitChunkInfo.triangle) * 4]);
+        const auto& vNormal2 = *reinterpret_cast<glm::vec3*>(&tile_buffer[chunk_start + std::get<2>(hitChunkInfo.triangle) * 4]);
 
-      varnormal.x =
-          vNormal0.x * normalWeights.x +
-          vNormal1.x * normalWeights.y +
-          vNormal2.x * normalWeights.z;
+        varnormal.x =
+            vNormal0.x * normalWeights.x +
+            vNormal1.x * normalWeights.y +
+            vNormal2.x * normalWeights.z;
 
-      varnormal.y =
-          vNormal0.y * normalWeights.x +
-          vNormal1.y * normalWeights.y +
-          vNormal2.y * normalWeights.z;
+        varnormal.y =
+            vNormal0.y * normalWeights.x +
+            vNormal1.y * normalWeights.y +
+            vNormal2.y * normalWeights.z;
 
-      varnormal.z =
-          vNormal0.z * normalWeights.x +
-          vNormal1.z * normalWeights.y +
-          vNormal2.z * normalWeights.z;
+        varnormal.z =
+            vNormal0.z * normalWeights.x +
+            vNormal1.z * normalWeights.y +
+            vNormal2.z * normalWeights.z;
     }
 
 
     glm::vec3 worldUp = glm::vec3(0, 1, 0);
-    glm::vec3 a =glm::cross(worldUp ,varnormal);
+    glm::vec3 a = glm::cross(worldUp, varnormal);
 
     q.x = a.x;
     q.y = a.y;
@@ -526,12 +573,31 @@ void World::rotate_selected_models_to_ground_normal(bool smoothNormals)
     dir.y = math::degrees(math::radians(eulerAngles.x))._; //Pitch
     dir.z = math::degrees(math::radians(eulerAngles.y))._; //Yaw
 
-    std::get<selected_object_type>(entry)->recalcExtents();
+    obj->recalcExtents();
 
     // yaw (z-axis rotation)
     double siny_cosp = 2 * (q.w * q.z + q.x * q.y);
     double cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z);
-    updateTilesEntry(entry, model_update::add);
+    updateTilesEntry(obj, model_update::add);
+}
+
+void World::rotate_selected_models_to_ground_normal(bool smoothNormals)
+{
+  ZoneScoped;
+  if (!_selected_model_count)
+      return;
+
+  for (auto& entry : _current_selection)
+  {
+    auto type = entry.index();
+    if (type == eEntry_MapChunk)
+    {
+      continue;
+    }
+
+    auto& obj = std::get<selected_object_type>(entry);
+
+    rotate_model_to_ground_normal(obj, smoothNormals);
   }
   update_selected_model_groups();
 }
@@ -543,48 +609,72 @@ void World::set_current_selection(selection_type entry)
   add_to_selection(entry);
 }
 
-void World::add_to_selection(selection_type entry, bool skip_group)
+// updating pivot is expensive, in mass selection situation, it should only be updated once after operation is done
+// now checks if model is already selected, don't need to call is_selected anymore !
+bool World::add_to_selection(selection_type entry, bool skip_group, bool update_pivot)
 {
   ZoneScoped;
   if (entry.index() == eEntry_Object)
   {
-    _selected_model_count++;
 
+    auto obj = std::get<selected_object_type>(entry);
+
+    auto result = selected_uids.insert(obj->uid);
+
+    if (!result.second)
+    {
+      // Duplicate existed
+      return false;
+    }
+
+    _selected_model_count++;
     // check if it is in a group
     if (!skip_group)
     {
-        auto obj = std::get<selected_object_type>(entry);
         for (auto& group : _selection_groups)
         {
             if (group.contains_object(obj))
             {
+                // make sure to add it to selection before donig group selection so it doesn't get selected twice
+                _current_selection.push_back(entry);
                 // this then calls add_to_selection() with skip_group = true to avoid repetition
                 group.select_group();
-                break;
+                return true;
             }
         }
     }
   }
   _current_selection.push_back(entry);
-  update_selection_pivot();
+
+  if (update_pivot)
+    update_selection_pivot();
+
+  return true;
 }
 
-void World::remove_from_selection(selection_type entry, bool skip_group)
+void World::remove_from_selection(selection_type entry, bool skip_group, bool update_pivot)
 {
   ZoneScoped;
+  if (entry.index() == eEntry_Object)
+  {
+    auto obj = std::get<selected_object_type>(entry);
+    size_t erased_count = selected_uids.erase(obj->uid);
+    if (erased_count == 0)
+      return;
+  }
+
   std::vector<selection_type>::iterator position = std::find(_current_selection.begin(), _current_selection.end(), entry);
   if (position != _current_selection.end())
   {
     if (entry.index() == eEntry_Object)
     {
       _selected_model_count--;
-
       // check if it is in a group
       if (!skip_group)
       {
-        auto obj = std::get<selected_object_type>(entry);
         for (auto& group : _selection_groups)
         {
+          auto obj = std::get<selected_object_type>(entry);
           if (group.contains_object(obj))
           {
               // this then calls remove_from_selection() with skip_group = true to avoid repetition
@@ -596,13 +686,18 @@ void World::remove_from_selection(selection_type entry, bool skip_group)
     }
 
     _current_selection.erase(position);
-    update_selection_pivot();
+    if (update_pivot)
+      update_selection_pivot();
   }
 }
 
-void World::remove_from_selection(std::uint32_t uid, bool skip_group)
+void World::remove_from_selection(std::uint32_t uid, bool skip_group, bool update_pivot)
 {
   ZoneScoped;
+  size_t erased_count = selected_uids.erase(uid);
+  if (erased_count == 0)
+    return;
+
   for (auto it = _current_selection.begin(); it != _current_selection.end(); ++it)
   {
     if (it->index() != eEntry_Object)
@@ -612,27 +707,26 @@ void World::remove_from_selection(std::uint32_t uid, bool skip_group)
 
     if (obj->uid == uid)
     {
-        _selected_model_count--;
-        _current_selection.erase(it);
+      _selected_model_count--;
+      _current_selection.erase(it);
 
-        // check if it is in a group
-        if (!skip_group)
+      // check if it is in a group
+      if (!skip_group)
+      {
+        for (auto& group : _selection_groups)
         {
-            for (auto& group : _selection_groups)
-            {
-                if (group.contains_object(obj))
-                {
-                    // this then calls remove_from_selection() with skip_group = true to avoid repetition
-                    group.unselect_group();
-                    break;
-                }
-            }
+          if (group.contains_object(obj))
+          {
+            // this then calls remove_from_selection() with skip_group = true to avoid repetition
+            group.unselect_group();
+            break;
+          }
         }
-
+      }
+      if (update_pivot)
         update_selection_pivot();
-        return;
+      return;
     }
-
 
   }
 }
@@ -640,6 +734,7 @@ void World::remove_from_selection(std::uint32_t uid, bool skip_group)
 void World::reset_selection()
 {
   ZoneScoped;
+  selected_uids.clear();
   _current_selection.clear();
   _multi_select_pivot = std::nullopt;
   _selected_model_count = 0;
@@ -665,37 +760,33 @@ void World::delete_selected_models()
       }
   }
 
-  _model_instance_storage.delete_instances(_current_selection);
+  _model_instance_storage.delete_instances(get_selected_objects(), true);
   need_model_updates = true;
   reset_selection();
 }
 
 glm::vec3 World::get_ground_height(glm::vec3 pos)
 {
-    selection_result hits;
+  selection_result hits;
     
-    for_chunk_at(pos, [&](MapChunk* chunk)
-    {
-        {
-            math::ray intersect_ray(pos, glm::vec3(0.f, -1.f, 0.f));
-            chunk->intersect(intersect_ray, &hits);
-        }
-        // object is below ground
-        if (hits.empty())
-        {
-            math::ray intersect_ray(pos, glm::vec3(0.f, 1.f, 0.f));
-            chunk->intersect(intersect_ray, &hits);
-        }
-    });
+  for_chunk_at(pos, [&](MapChunk* chunk)
+  {
+      {
+        // ray origin should be independent of the object's current y 
+        glm::vec3 ray_pos(pos.x, chunk->getMaxHeight() + 1.0f, pos.z);
+        math::ray intersect_ray(ray_pos, glm::vec3(0.f, -1.f, 0.f));
+        chunk->intersect(intersect_ray, &hits, true);
+      }
+  });
 
-    // this should never happen
-    if (hits.empty())
-    {
-        LogError << "Snap to ground ray intersection failed" << std::endl;
-        return glm::vec3(0);
-    }
+  if (hits.empty())
+  {
+      LogError << "Snap to ground ray intersection failed" << std::endl;
+      // return objects position instead of world space y = 0
+      return pos;
+  }
 
-    return std::get<selected_chunk_type>(hits[0].second).position;
+  return std::get<selected_chunk_type>(hits[0].second).position;
 }
 
 void World::snap_selected_models_to_the_ground()
@@ -722,16 +813,20 @@ void World::snap_selected_models_to_the_ground()
 
     updateTilesEntry(entry, model_update::add);
   }
-
   update_selection_pivot();
   update_selected_model_groups();
 }
 
-void World::scale_selected_models(float v, m2_scaling_type type)
+void World::scale_selected_models(float v, object_scaling_type type)
 {
   ZoneScoped;
   if (!_selected_model_count)
       return;
+
+  v = std::clamp(v, SceneObject::min_scale(), SceneObject::max_scale());
+
+  bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
+
   for (auto& entry : _current_selection)
   {
     if (entry.index() == eEntry_Object)
@@ -739,37 +834,73 @@ void World::scale_selected_models(float v, m2_scaling_type type)
       auto obj = std::get<selected_object_type>(entry);
 
       if (obj->which() != eMODEL)
-        continue;
-
-      ModelInstance* mi = static_cast<ModelInstance*>(obj);
-
-      NOGGIT_CUR_ACTION->registerObjectTransformed(mi);
-
-      float scale = mi->scale;
-
-      switch (type)
       {
-        case World::m2_scaling_type::set:
-          scale = v;
-          break;
-        case World::m2_scaling_type::add:
-          scale += v;
-          break;
-        case World::m2_scaling_type::mult:
-          scale *= v;
-          break;
-      }
+          // If we are not using modern features, we don't want to scale WMOs
+        if(!modern_features)
+			    continue;
 
-      // if the change is too small, do nothing
-      if (std::abs(scale - mi->scale) < ModelInstance::min_scale())
+        WMOInstance* wi = static_cast<WMOInstance*>(obj);
+
+        NOGGIT_CUR_ACTION->registerObjectTransformed(wi);
+
+        float scale = wi->scale;
+
+        switch (type)
+        {
+        case World::object_scaling_type::set:
+            scale = v;
+            break;
+        case World::object_scaling_type::add:
+            scale += v;
+            break;
+        case World::object_scaling_type::mult:
+            scale *= v;
+            break;
+        }
+
+        // if the change is too small, do nothing
+        if (std::abs(scale - wi->scale) < ModelInstance::min_scale())
+        {
+            continue;
+        }
+
+        updateTilesWMO(wi, model_update::remove);
+        wi->scale = std::min(ModelInstance::max_scale(), std::max(ModelInstance::min_scale(), scale));
+        wi->recalcExtents();
+        updateTilesWMO(wi, model_update::add);
+      }
+      else
       {
-        continue;
-      }
+        ModelInstance* mi = static_cast<ModelInstance*>(obj);
 
-      updateTilesModel(mi, model_update::remove);
-      mi->scale = std::min(ModelInstance::max_scale(), std::max(ModelInstance::min_scale(), scale));
-      mi->recalcExtents();
-      updateTilesModel(mi, model_update::add);
+        NOGGIT_CUR_ACTION->registerObjectTransformed(mi);
+
+        float scale = mi->scale;
+
+        switch (type)
+        {
+        case World::object_scaling_type::set:
+            scale = v;
+            break;
+        case World::object_scaling_type::add:
+            scale += v;
+            break;
+        case World::object_scaling_type::mult:
+            scale *= v;
+            break;
+        }
+
+        // if the change is too small, do nothing
+        if (std::abs(scale - mi->scale) < ModelInstance::min_scale())
+        {
+            continue;
+        }
+
+        updateTilesModel(mi, model_update::remove);
+        mi->scale = std::min(ModelInstance::max_scale(), std::max(ModelInstance::min_scale(), scale));
+        mi->recalcExtents();
+        updateTilesModel(mi, model_update::add);
+      }
     }
   }
   update_selected_model_groups();
@@ -802,7 +933,6 @@ void World::move_selected_models(float dx, float dy, float dz)
 
     updateTilesEntry(entry, model_update::add);
   }
-
   update_selection_pivot();
   update_selected_model_groups();
 }
@@ -830,6 +960,16 @@ void World::move_model(selection_type entry, float dx, float dy, float dz)
 
     updateTilesEntry(entry, model_update::add);
 
+}
+
+void World::move_selected_models(glm::vec3 const& delta)
+{
+  move_selected_models(delta.x, delta.y, delta.z);
+}
+
+void World::set_selected_models_pos(float x, float y, float z, bool change_height)
+{
+  return set_selected_models_pos({ x,y,z }, change_height);
 }
 
 void World::set_selected_models_pos(glm::vec3 const& pos, bool change_height)
@@ -871,7 +1011,6 @@ void World::set_selected_models_pos(glm::vec3 const& pos, bool change_height)
 
     updateTilesEntry(entry, model_update::add);
   }
-
   update_selection_pivot();
   update_selected_model_groups();
 }
@@ -930,9 +1069,11 @@ void World::rotate_selected_models(math::degrees rx, math::degrees ry, math::deg
     }
     else
     {
-      math::degrees::vec3& dir = obj->dir;
-      dir += dir_change;
+      // math::degrees::vec3& dir = obj->dir;
+      // dir += dir_change;
     }
+    math::degrees::vec3& dir = obj->dir;
+    dir += dir_change;
 
     obj->recalcExtents();
 
@@ -1015,10 +1156,10 @@ bool World::isInIndoorWmoGroup(std::array<glm::vec3, 2> obj_bounds, glm::mat4x4 
                     if (group.is_indoor())
                     {
                         // must call getGroupExtent() to initialize wmo_instance.group_extents
-                        // TODO : clear group extents to free memory ?
+                        // clear group extents to free memory ?
                         auto& group_extents = wmo_instance.getGroupExtents().at(i);
 
-                        // TODO : do a precise calculation instead of using axis aligned bounding boxes.
+
                         bool aabb_test = obj_bounds[1].x >= group_extents.first.x
                             && obj_bounds[1].y >= group_extents.first.y
                             && obj_bounds[1].z >= group_extents.first.z
@@ -1026,6 +1167,7 @@ bool World::isInIndoorWmoGroup(std::array<glm::vec3, 2> obj_bounds, glm::mat4x4 
                             && group_extents.second.y >= obj_bounds[0].y
                             && group_extents.second.z >= obj_bounds[0].z;
 
+                        // TODO : do a precise calculation instead of using axis aligned bounding boxes.
                         if (aabb_test) // oriented box check
                         {
                             /* TODO
@@ -1046,13 +1188,18 @@ bool World::isInIndoorWmoGroup(std::array<glm::vec3, 2> obj_bounds, glm::mat4x4 
 
 selection_result World::intersect (glm::mat4x4 const& model_view
                                   , math::ray const& ray
-                                  , bool pOnlyMap
-                                  , bool do_objects
-                                  , bool draw_terrain
-                                  , bool draw_wmo
-                                  , bool draw_models
-                                  , bool draw_hidden_models
-                                  , bool draw_wmo_exterior
+                                  , const bool pOnlyMap
+                                  , const bool do_objects
+                                  , const bool draw_terrain
+                                  , const bool draw_wmo
+                                  , const bool draw_models
+                                  , const bool draw_hidden_models
+                                  , const bool draw_wmo_exterior
+                                  , const bool animate
+                                  , const bool first_object_occurence
+                                  , const bool opaque_only_tris
+                                  , const float obj_distance_max
+                                  , const bool do_wmo_interiors
                                   )
 {
   ZoneScopedN("World::intersect()");
@@ -1086,28 +1233,82 @@ selection_result World::intersect (glm::mat4x4 const& model_view
 
   if (!pOnlyMap && do_objects)
   {
-    if (draw_models)
-    {
-      ZoneScopedN("World::intersect() : intersect M2s");
-      _model_instance_storage.for_each_m2_instance([&] (ModelInstance& model_instance)
-      {
-        if (draw_hidden_models || !model_instance.model->is_hidden())
-        {
-          model_instance.intersect(model_view, ray, &results, animtime);
-        }
-      });
-    }
+    if (!draw_models && !draw_wmo)
+      return std::move(results);
 
-    if (draw_wmo)
+    ////////////// Optimized version, can iterate the same objects multiple times if they are on borders though
+
+    // store in a set container to avoid duplicates, this is pretty slow, doing a few extra rays is much faster if duplicates aren't a problem
+    // std::unordered_set<ModelInstance*> modelInstances;
+    // std::unordered_set<WMOInstance*> wmoInstances;
+
+    for (auto& pair : _loaded_tiles_buffer)
     {
-      ZoneScopedN("World::intersect() : intersect WMOs");
-      _model_instance_storage.for_each_wmo_instance([&] (WMOInstance& wmo_instance)
+      MapTile* tile = pair.second;
+
+      if (!tile)
+        break;
+
+      TileIndex index{ static_cast<std::size_t>(pair.first.first)
+                , static_cast<std::size_t>(pair.first.second) };
+
+      // add some distance check ?
+      // if (tile-> > )
+      //   continue;
+
+      if (!mapIndex.tileLoaded(index) || mapIndex.tileAwaitingLoading(index))
+        continue;
+
+      if (!tile->finishedLoading())
+        continue;
+
+      tile->recalcCombinedExtents();
+
+      if (!ray.intersect_bounds(tile->getCombinedExtents()[0], tile->getCombinedExtents()[1]))
       {
-        if (draw_hidden_models || !wmo_instance.wmo->is_hidden())
+        continue;
+      }
+
+      for (auto& pair : tile->getObjectInstances())
+      {
+        if (pair.second[0]->which() == eMODEL && draw_models)
         {
-          wmo_instance.intersect(ray, &results, draw_wmo_exterior);
+          
+          for (auto& instance : pair.second)
+          {
+            auto model_instance = static_cast<ModelInstance*>(instance);
+
+            if (obj_distance_max != 0.0f)
+            {
+              const float distance = glm::distance(ray.origin(), instance->pos);
+              if ((distance - instance->getBoundingRadius()) > obj_distance_max)
+                continue;
+            }
+
+            if (draw_hidden_models || !model_instance->model->is_hidden())
+              // modelInstances.insert(model_instance);
+              model_instance->intersect(model_view, ray, &results, animtime, animate, first_object_occurence, opaque_only_tris);
+          }
         }
-      });
+        else if (pair.second[0]->which() == eWMO && draw_wmo)
+        {
+          for (auto& instance : pair.second)
+          {
+            auto wmo_instance = static_cast<WMOInstance*>(instance);
+
+            if (obj_distance_max != 0.0f)
+            {
+              const float distance = glm::distance(ray.origin(), instance->pos);
+              if ((distance - instance->getBoundingRadius()) > obj_distance_max)
+                continue;
+            }
+
+            if (draw_hidden_models || !wmo_instance->wmo->is_hidden())
+              // wmoInstances.insert(wmo_instance);
+              wmo_instance->intersect(ray, &results, draw_wmo_exterior, do_wmo_interiors, first_object_occurence);
+          }
+        }
+      }
     }
   }
 
@@ -1144,10 +1345,10 @@ void World::clearHeight(glm::vec3 const& pos)
   });
 }
 
-void World::clearAllModelsOnADT(TileIndex const& tile)
+void World::clearAllModelsOnADT(TileIndex const& tile, bool action)
 {
   ZoneScoped;
-  _model_instance_storage.delete_instances_from_tile(tile);
+  _model_instance_storage.delete_instances_from_tile(tile, action);
   // update_models_by_filename();
 }
 
@@ -1199,6 +1400,11 @@ void World::setAreaID(glm::vec3 const& pos, int id, bool adt, float radius)
       });
     }
   }
+}
+
+Noggit::NoggitRenderContext World::getRenderContext() const
+{
+  return _context;
 }
 
 bool World::GetVertex(float x, float z, glm::vec3 *V) const
@@ -1337,6 +1543,9 @@ void World::changeObjectsWithTerrain(glm::vec3 const& pos, float change, float r
 {
     // applies the terrain brush to the terrain objects hit
     ZoneScoped;
+
+    if (!iter_wmos_ && !iter_m2s)
+        return;
 
   // Identical code to chunk->changeTerrain()
   //    if (_snap_m2_objects_chkbox->isChecked() || _snap_wmo_objects_chkbox->isChecked()) {
@@ -1501,6 +1710,9 @@ std::vector<std::pair<SceneObject*, float>> World::getObjectsGroundDistance(glm:
 {
     std::vector<std::pair<SceneObject*, float>> objects_ground_distance;
 
+    if (!iter_wmos_ && !iter_m2s)
+        return objects_ground_distance;
+
     auto objects_hit = getObjectsInRange(pos, radius, true
         , iter_wmos_, iter_m2s);
 
@@ -1528,12 +1740,12 @@ void World::blurTerrain(glm::vec3 const& pos, float remain, float radius, int Br
                                   , radius
                                   , BrushType
                                   , mode
-                                  , [this] (float x, float z) -> std::optional<float>
+                                  /*, [this](float x, float z) -> std::optional<float>
                                     {
                                       glm::vec3 vec;
                                       auto res (GetVertex (x, z, &vec));
                                       return res ? std::optional<float>(vec.y) : std::nullopt;
-                                    }
+                                    }*/
                                   );
       }
     , [this] (MapChunk* chunk)
@@ -1595,17 +1807,48 @@ bool World::sprayTexture(glm::vec3 const& pos, Brush *brush, float strength, flo
   return succ;
 }
 
-bool World::replaceTexture(glm::vec3 const& pos, float radius, scoped_blp_texture_reference const& old_texture, scoped_blp_texture_reference new_texture, bool entire_chunk)
+bool World::replaceTexture(glm::vec3 const& pos, float radius, scoped_blp_texture_reference const& old_texture, scoped_blp_texture_reference new_texture, bool entire_chunk, bool entire_tile)
 {
   ZoneScoped;
-  return for_all_chunks_in_range
-    ( pos, radius
-      , [&](MapChunk* chunk)
+
+  if (entire_tile)
+  {
+      bool changed(false);
+
+      for (MapTile* tile : mapIndex.tiles_in_range(pos, radius))
       {
-        NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
-        return chunk->replaceTexture(pos, radius, old_texture, new_texture, entire_chunk);
+          if (!tile->finishedLoading())
+          {
+              continue;
+          }
+
+          for (int i = 0; i < 16; ++i)
+          {
+              for (int j = 0; j < 16; ++j)
+              {
+                  MapChunk* chunk = tile->getChunk(i, j);
+                  NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+                  if (chunk->replaceTexture(pos, radius, old_texture, new_texture, true))
+                  {
+                      changed = true;
+                      mapIndex.setChanged(tile);
+                  }
+              }
+          }
       }
-    );
+      return changed;
+  }
+  else
+  {
+    return for_all_chunks_in_range
+      ( pos, radius
+        , [&](MapChunk* chunk)
+        {
+          NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+          return chunk->replaceTexture(pos, radius, old_texture, new_texture, entire_chunk);
+        }
+      );
+  }
 }
 
 void World::eraseTextures(glm::vec3 const& pos)
@@ -1626,6 +1869,23 @@ void World::overwriteTextureAtCurrentChunk(glm::vec3 const& pos, scoped_blp_text
     NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
     chunk->switchTexture(oldTexture, std::move (newTexture));
   });
+}
+
+void World::paintGroundEffectExclusion(glm::vec3 const& pos, float radius, bool exclusion)
+{
+    ZoneScoped;
+    for_all_chunks_in_range
+    (pos, radius
+        , [&](MapChunk* chunk)
+        {
+            // TODO action
+            NOGGIT_CUR_ACTION->registerChunkDetailDoodadExclusionChange(chunk);
+
+            // chunk->setHole(pos, radius, exclusion);
+            chunk->paintDetailDoodadsExclusion(pos, radius, exclusion);
+            return true;
+        }
+    );
 }
 
 void World::setHole(glm::vec3 const& pos, float radius, bool big, bool hole)
@@ -1653,27 +1913,80 @@ void World::setHoleADT(glm::vec3 const& pos, bool hole)
   });
 }
 
-void World::loadAllTiles()
+void World::loadAllTiles(glm::vec3& camera_pos)
 {
   ZoneScoped;
 
+  // for (size_t z = 0; z < 64; z++)
+  // {
+  //   for (size_t x = 0; x < 64; x++)
+  //   {
+  //     TileIndex tile(x, z);
+  // 
+  //     MapTile* mTile = mapIndex.loadTile(tile);
+  // 
+  //     if (mTile)
+  //     {
+  //       // mTile->wait_until_loaded();
+  //     }
+  //   }
+  // }
+
+  // test loading tiles from player to outer
+  // Create a vector to hold distances and corresponding tiles
+  std::vector<std::pair<float, TileIndex>> distanceTilePairs;
+  // Fill the vector with Manhattan distances and tiles
   for (size_t z = 0; z < 64; z++)
   {
     for (size_t x = 0; x < 64; x++)
     {
       TileIndex tile(x, z);
 
-      MapTile* mTile = mapIndex.loadTile(tile);
+      if (!mapIndex.hasTile(tile))
+        continue;
 
-      if (mTile)
-      {
-        mTile->wait_until_loaded();
-      }
+      // int distance = calculateManhattanDistance(playerRow, playerCol, tile);
+      float playerRow = /*std::floor*/(camera_pos.x / TILESIZE);
+      float playerCol = /*std::floor*/(camera_pos.z / TILESIZE);
+      float distance = std::abs(playerRow - tile.x) + std::abs(playerCol - tile.z);
+      // tile.dist()
+      distanceTilePairs.emplace_back(distance, tile);
+
+    }
+  }
+  // Sort the vector based on distance
+  std::sort(distanceTilePairs.begin(), distanceTilePairs.end(),
+    [](const auto& a, const auto& b) {
+      return a.first < b.first; // Sort by distance
+    });
+
+  for (const auto& pair : distanceTilePairs)
+  {
+    MapTile* mTile = mapIndex.loadTile(pair.second);
+
+    if (mTile)
+    {
+      // mTile->wait_until_loaded();
     }
   }
 }
 
-void World::convert_alphamap(bool to_big_alpha)
+unsigned World::getNumLoadedTiles() const
+{
+  return _n_loaded_tiles;
+}
+
+unsigned World::getNumRenderedTiles() const
+{
+  return _n_rendered_tiles;
+}
+
+unsigned World::getNumRenderedObjects() const
+{
+  return _n_rendered_objects;
+}
+
+void World::convert_alphamap(QProgressDialog* progress_dialog, bool to_big_alpha)
 {
   ZoneScoped;
 
@@ -1682,10 +1995,13 @@ void World::convert_alphamap(bool to_big_alpha)
     return;
   }
 
+
+  int count = 0;
   for (size_t z = 0; z < 64; z++)
   {
     for (size_t x = 0; x < 64; x++)
     {
+      // not cancellable.
       TileIndex tile(x, z);
 
       bool unload = !mapIndex.tileLoaded(tile) && !mapIndex.tileAwaitingLoading(tile);
@@ -1704,49 +2020,50 @@ void World::convert_alphamap(bool to_big_alpha)
         {
           mapIndex.unloadTile(tile);
         }
+        count++;
+        progress_dialog->setValue(count);
       }
     }
   }
-
   mapIndex.convert_alphamap(to_big_alpha);
   mapIndex.save();
 }
 
 
-void World::deleteModelInstance(int uid)
+void World::deleteModelInstance(int uid, bool action)
 {
   ZoneScoped;
   auto instance = _model_instance_storage.get_model_instance(uid);
 
   if (instance)
   {
-    _model_instance_storage.delete_instance(uid);
+    _model_instance_storage.delete_instance(uid, action);
     need_model_updates = true;
     reset_selection();
   }
 }
 
-void World::deleteWMOInstance(int uid)
+void World::deleteWMOInstance(int uid, bool action)
 {
   ZoneScoped;
   auto instance = _model_instance_storage.get_wmo_instance(uid);
 
   if (instance)
   {
-    _model_instance_storage.delete_instance(uid);
+    _model_instance_storage.delete_instance(uid, action);
     need_model_updates = true;
     reset_selection();
   }
 }
 
-void World::deleteInstance(int uid)
+void World::deleteInstance(int uid, bool action)
 {
   ZoneScoped;
   auto instance = _model_instance_storage.get_instance(uid);
 
   if (instance)
   {
-    _model_instance_storage.delete_instance(uid);
+    _model_instance_storage.delete_instance(uid, action);
     need_model_updates = true;
     reset_selection();
   }
@@ -1763,7 +2080,7 @@ void World::delete_duplicate_model_and_wmo_instances()
   ZoneScoped;
   reset_selection();
 
-  _model_instance_storage.clear_duplicates();
+  _model_instance_storage.clear_duplicates(false);
   need_model_updates = true;
 }
 
@@ -1782,6 +2099,7 @@ void World::addM2 ( BlizzardArchive::Listfile::FileKey const& file_key
                   , float scale
                   , glm::vec3 rotation
                   , Noggit::object_paste_params* paste_params
+                  , bool action
                   )
 {
   ZoneScoped;
@@ -1821,7 +2139,7 @@ void World::addM2 ( BlizzardArchive::Listfile::FileKey const& file_key
   model_instance.model->wait_until_loaded();
   model_instance.recalcExtents();
 
-  std::uint32_t uid = _model_instance_storage.add_model_instance(std::move(model_instance), true);
+  std::uint32_t uid = _model_instance_storage.add_model_instance(std::move(model_instance), true, action);
 
   // _models_by_filename[file_key.filepath()].push_back(_model_instance_storage.get_model_instance(uid).value());
 }
@@ -1832,6 +2150,7 @@ ModelInstance* World::addM2AndGetInstance ( BlizzardArchive::Listfile::FileKey c
     , math::degrees::vec3 rotation
     , Noggit::object_paste_params* paste_params
     , bool ignore_params
+    , bool action
 )
 {
   ZoneScoped;
@@ -1871,17 +2190,20 @@ ModelInstance* World::addM2AndGetInstance ( BlizzardArchive::Listfile::FileKey c
   model_instance.model->wait_until_loaded();
   model_instance.recalcExtents();
 
-  std::uint32_t uid = _model_instance_storage.add_model_instance(std::move(model_instance), true);
+  std::uint32_t uid = _model_instance_storage.add_model_instance(std::move(model_instance), true, action);
 
-  auto instance = _model_instance_storage.get_model_instance(uid).value();
+  auto instance = _model_instance_storage.get_model_instance(uid); // .value();
   // _models_by_filename[file_key.filepath()].push_back(instance);
 
-  return instance;
+  return instance.value();
 }
 
 void World::addWMO ( BlizzardArchive::Listfile::FileKey const& file_key
                    , glm::vec3 newPos
+                   , float scale
                    , math::degrees::vec3 rotation
+                   , Noggit::object_paste_params* paste_params
+                   , bool action
                    )
 {
   ZoneScoped;
@@ -1891,16 +2213,44 @@ void World::addWMO ( BlizzardArchive::Listfile::FileKey const& file_key
   wmo_instance.pos = newPos;
   wmo_instance.dir = rotation;
 
+  if (paste_params)
+  {
+      if (_settings->value("model/random_rotation", false).toBool())
+      {
+          float min = paste_params->minRotation;
+          float max = paste_params->maxRotation;
+          wmo_instance.dir.y += math::degrees(misc::randfloat(min, max))._;
+      }
+
+      if (_settings->value("model/random_tilt", false).toBool())
+      {
+          float min = paste_params->minTilt;
+          float max = paste_params->maxTilt;
+          wmo_instance.dir.x += math::degrees(misc::randfloat(min, max))._;
+          wmo_instance.dir.z += math::degrees(misc::randfloat(min, max))._;
+      }
+
+      if (_settings->value("model/random_size", false).toBool())
+      {
+          float min = paste_params->minScale;
+          float max = paste_params->maxScale;
+          wmo_instance.scale = misc::randfloat(min, max);
+      }
+  }
+
+
   // to ensure the tiles are updated correctly
   wmo_instance.wmo->wait_until_loaded();
   wmo_instance.recalcExtents();
 
-  _model_instance_storage.add_wmo_instance(std::move(wmo_instance), true);
+  _model_instance_storage.add_wmo_instance(std::move(wmo_instance), true, action);
 }
 
 WMOInstance* World::addWMOAndGetInstance ( BlizzardArchive::Listfile::FileKey const& file_key
     , glm::vec3 newPos
     , math::degrees::vec3 rotation
+    , float scale
+    , bool action
 )
 {
   ZoneScoped;
@@ -1909,27 +2259,48 @@ WMOInstance* World::addWMOAndGetInstance ( BlizzardArchive::Listfile::FileKey co
   wmo_instance.uid = mapIndex.newGUID();
   wmo_instance.pos = newPos;
   wmo_instance.dir = rotation;
+  wmo_instance.scale = scale;
 
   // to ensure the tiles are updated correctly
   wmo_instance.wmo->wait_until_loaded();
   wmo_instance.recalcExtents();
 
-  std::uint32_t uid = _model_instance_storage.add_wmo_instance(std::move(wmo_instance), true);
+  std::uint32_t uid = _model_instance_storage.add_wmo_instance(std::move(wmo_instance), true, action);
 
-  return _model_instance_storage.get_wmo_instance(uid).value();
+  auto instance = _model_instance_storage.get_wmo_instance(uid);
+
+  return instance.value();
 }
 
 
-std::uint32_t World::add_model_instance(ModelInstance model_instance, bool from_reloading)
+std::uint32_t World::add_model_instance(ModelInstance model_instance, bool from_reloading, bool action)
 {
   ZoneScoped;
-  return _model_instance_storage.add_model_instance(std::move(model_instance), from_reloading);
+  return _model_instance_storage.add_model_instance(std::move(model_instance), from_reloading, action);
 }
 
-std::uint32_t World::add_wmo_instance(WMOInstance wmo_instance, bool from_reloading)
+std::uint32_t World::add_wmo_instance(WMOInstance wmo_instance, bool from_reloading, bool action)
 {
   ZoneScoped;
-  return _model_instance_storage.add_wmo_instance(std::move(wmo_instance), from_reloading);
+  // Check if WMO has a low resolution model
+  // also sets up all attributes currently
+  bool haslowres = horizon.wmoHasLowRes(&wmo_instance);
+
+  return _model_instance_storage.add_wmo_instance(std::move(wmo_instance), from_reloading, action);
+
+  // if (haslowres)
+  // {
+  //   const auto obj = get_model(uid_after);
+  //   assert(obj);
+  //   if (obj)
+  //   {
+  //     WMOInstance* instance = static_cast<WMOInstance*>(std::get<selected_object_type>(obj.value()));
+  // 
+  //     int breakpoint = 0;
+  //   }
+  // }
+  // 
+  // return uid_after;
 }
 
 std::optional<selection_type> World::get_model(std::uint32_t uid)
@@ -1960,10 +2331,14 @@ void World::remove_models_if_needed(std::vector<uint32_t> const& uids)
   {
     reset_selection();
   }
+  else
+  {
+    update_selection_pivot();
+  }
   /*
   if (uids.size())
   {
-    update_models_by_filename();
+    need_model_updates = true;
   }*/
 }
 
@@ -1974,10 +2349,10 @@ void World::reload_tile(TileIndex const& tile)
   mapIndex.reloadTile(tile);
 }
 
-void World::deleteObjects(std::vector<selection_type> const& types)
+void World::deleteObjects(std::vector<selected_object_type> const& types, bool action)
 {
   ZoneScoped;
-  _model_instance_storage.delete_instances(types);
+  _model_instance_storage.delete_instances(types, action);
   need_model_updates = true;
 }
 
@@ -2025,7 +2400,7 @@ void World::wait_for_all_tile_updates()
   _tile_update_queue.wait_for_all_update();
 }
 
-unsigned int World::getMapID()
+unsigned int World::getMapID() const
 {
   ZoneScoped;
   return mapIndex._map_id;
@@ -2172,7 +2547,7 @@ void World::exportADTVertexColorMap(glm::vec3 const& pos)
   );
 }
 
-void World::importADTAlphamap(glm::vec3 const& pos, QImage const& image, unsigned layer)
+void World::importADTAlphamap(glm::vec3 const& pos, QImage const& image, unsigned layer, bool cleanup)
 {
   ZoneScoped;
   for_all_chunks_on_tile(pos, [](MapChunk* chunk)
@@ -2187,7 +2562,7 @@ void World::importADTAlphamap(glm::vec3 const& pos, QImage const& image, unsigne
     for_tile_at ( pos
       , [&] (MapTile* tile)
                   {
-                    tile->setAlphaImage(scaled, layer);
+                    tile->setAlphaImage(scaled, layer, cleanup);
                   }
     );
 
@@ -2197,14 +2572,14 @@ void World::importADTAlphamap(glm::vec3 const& pos, QImage const& image, unsigne
     for_tile_at ( pos
       , [&] (MapTile* tile)
       {
-        tile->setAlphaImage(image, layer);
+        tile->setAlphaImage(image, layer, cleanup);
       }
     );
   }
 
 }
 
-void World::importADTAlphamap(glm::vec3 const& pos)
+void World::importADTAlphamap(glm::vec3 const& pos, bool cleanup)
 {
   ZoneScoped;
   for_all_chunks_on_tile(pos, [](MapChunk* chunk)
@@ -2236,14 +2611,14 @@ void World::importADTAlphamap(glm::vec3 const& pos)
         if (img.width() != 1024 || img.height() != 1024)
           img = img.scaled(1024, 1024, Qt::AspectRatioMode::IgnoreAspectRatio);
 
-        tile->setAlphaImage(img, i);
+        tile->setAlphaImage(img, i, true);
       }
 
     }
   );
 }
 
-void World::importADTHeightmap(glm::vec3 const& pos, QImage const& image, float multiplier, unsigned mode, bool tiledEdges)
+void World::importADTHeightmap(glm::vec3 const& pos, QImage const& image, float min_height, float max_height, unsigned mode, bool tiledEdges)
 {
   ZoneScoped;
   int desired_dimensions = tiledEdges ? 256 : 257;
@@ -2259,7 +2634,7 @@ void World::importADTHeightmap(glm::vec3 const& pos, QImage const& image, float 
     for_tile_at ( pos
       , [&] (MapTile* tile)
       {
-        tile->setHeightmapImage(scaled, multiplier, mode, tiledEdges);
+        tile->setHeightmapImage(scaled, min_height, max_height, mode, tiledEdges);
       }
     );
 
@@ -2269,13 +2644,13 @@ void World::importADTHeightmap(glm::vec3 const& pos, QImage const& image, float 
     for_tile_at ( pos
       , [&] (MapTile* tile)
       {
-        tile->setHeightmapImage(image, multiplier, mode, tiledEdges);
+        tile->setHeightmapImage(image, min_height, max_height, mode, tiledEdges);
       }
     );
   }
 }
 
-void World::importADTHeightmap(glm::vec3 const& pos, float multiplier, unsigned mode, bool tiledEdges)
+void World::importADTHeightmap(glm::vec3 const& pos, float min_height, float max_height, unsigned mode, bool tiledEdges)
 {
   ZoneScoped;
   for_tile_at ( pos
@@ -2292,8 +2667,17 @@ void World::importADTHeightmap(glm::vec3 const& pos, float multiplier, unsigned 
                          + "_" + std::to_string(tile->index.x).c_str() + "_" + std::to_string(tile->index.z).c_str()
                          + "_height" + ".png";
 
-      if(!QFileInfo::exists(filename))
+      if (!QFileInfo::exists(filename))
+      {
+          QMessageBox::warning
+          (nullptr
+              , "File not found"
+              , "File not found: " + filename
+              , QMessageBox::Ok
+          );
         return;
+      }
+
 
       for_all_chunks_on_tile(pos, [](MapChunk* chunk)
       {
@@ -2307,10 +2691,42 @@ void World::importADTHeightmap(glm::vec3 const& pos, float multiplier, unsigned 
       if (img.width() != desiredSize || img.height() != desiredSize)
         img = img.scaled(static_cast<int>(desiredSize), static_cast<int>(desiredSize), Qt::AspectRatioMode::IgnoreAspectRatio);
 
-      tile->setHeightmapImage(img, multiplier, mode, tiledEdges);
+      tile->setHeightmapImage(img, min_height, max_height, mode, tiledEdges);
 
     }
   );
+}
+
+void World::importADTWatermap(glm::vec3 const& pos, QImage const& image, float min_height, float max_height, unsigned mode, bool tiledEdges)
+{
+    ZoneScoped;
+    int desired_dimensions = tiledEdges ? 256 : 257;
+    for_all_chunks_on_tile(pos, [](MapChunk* chunk)
+        {
+            NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+        });
+
+    if (image.width() != desired_dimensions || image.height() != desired_dimensions)
+    {
+        QImage scaled = image.scaled(desired_dimensions, desired_dimensions, Qt::AspectRatioMode::IgnoreAspectRatio);
+
+        for_tile_at(pos
+            , [&](MapTile* tile)
+            {
+                tile->Water.setWatermapImage(scaled, min_height, max_height, mode, tiledEdges);
+            }
+        );
+
+    }
+    else
+    {
+        for_tile_at(pos
+            , [&](MapTile* tile)
+            {
+                tile->Water.setWatermapImage(image, min_height, max_height, mode, tiledEdges);
+            }
+        );
+    }
 }
 
 void World::importADTVertexColorMap(glm::vec3 const& pos, int mode, bool tiledEdges)
@@ -2432,6 +2848,8 @@ void World::clear_shadows(glm::vec3 const& pos)
   });
 }
 
+constexpr float HALFSHADOWSIZE = (TEXDETAILSIZE / 2.0f);
+
 void World::swapTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex)
 {
   ZoneScoped;
@@ -2515,13 +2933,13 @@ void World::removeTexDuplicateOnADT(glm::vec3 const& pos)
   } );
 }
 
-void World::change_texture_flag(glm::vec3 const& pos, scoped_blp_texture_reference const& tex, std::size_t flag, bool add)
+void World::change_texture_flags(glm::vec3 const& pos, scoped_blp_texture_reference const& tex, std::size_t flags)
 {
   ZoneScoped;
   for_chunk_at(pos, [&] (MapChunk* chunk)
   {
     NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
-    chunk->change_texture_flag(tex, flag, add);
+    chunk->change_texture_flags(tex, flags);
   });
 }
 
@@ -2562,7 +2980,7 @@ void World::setWaterType(const TileIndex& pos, int type, int layer)
               );
 }
 
-int World::getWaterType(const TileIndex& tile, int layer)
+int World::getWaterType(const TileIndex& tile, int layer) const
 {
   ZoneScoped;
   if (mapIndex.tileLoaded(tile))
@@ -2588,6 +3006,36 @@ void World::autoGenWaterTrans(const TileIndex& pos, float factor)
   });
 }
 
+void World::CleanupEmptyTexturesChunks()
+{
+    ZoneScoped;
+    for (MapTile* tile : mapIndex.loaded_tiles())
+    {
+        bool tileChanged = false;
+
+        for (unsigned ty = 0; ty < 16; ty++)
+        {
+            for (unsigned tx = 0; tx < 16; tx++)
+            {
+                MapChunk* chunk = tile->getChunk(tx, ty);
+
+                TextureSet* texture_set = chunk->getTextureSet();
+
+                bool changed = texture_set->eraseUnusedTextures();
+
+                if (changed)
+                {
+                    NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+                    tileChanged = true;
+                }
+            }
+        }
+        if (tileChanged)
+        {
+            mapIndex.setChanged(tile);
+        }
+    }
+}
 
 void World::fixAllGaps()
 {
@@ -2670,7 +3118,7 @@ void World::fixAllGaps()
   }
 }
 
-bool World::isUnderMap(glm::vec3 const& pos)
+bool World::isUnderMap(glm::vec3 const& pos) const
 {
   ZoneScoped;
   TileIndex const tile (pos);
@@ -2876,15 +3324,21 @@ void World::range_add_to_selection(glm::vec3 const& pos, float radius, bool remo
 
   for (auto obj : objects_in_range)
   {
-      if (remove)
-      {
-          remove_from_selection(obj);
-      }
-      else
-      {
-          add_to_selection(obj);
-      }
+    if (remove)
+    {
+      remove_from_selection(obj, false, false);
+    }
+    else
+    {
+      add_to_selection(obj, false, false);
+    }
   }
+  update_selection_pivot();
+}
+
+Noggit::world_model_instances_storage& World::getModelInstanceStorage()
+{
+  return _model_instance_storage;
 }
 
 float World::getMaxTileHeight(const TileIndex& tile)
@@ -2905,7 +3359,7 @@ float World::getMaxTileHeight(const TileIndex& tile)
     {
       auto obj = std::get<selected_object_type>(instance.value());
       obj->ensureExtents();
-      max_height = std::max(max_height, std::max(obj->extents[0].y, obj->extents[1].y));
+      max_height = std::max(max_height, std::max(obj->getExtents()[0].y, obj->getExtents()[1].y));
     }
   }
 
@@ -3176,8 +3630,9 @@ void World::exportAllADTsVertexColorMap()
   }
 }
 
-void World::importAllADTsAlphamaps()
+void World::importAllADTsAlphamaps(QProgressDialog* progress_dialog)
 {
+  bool clean_up = false;
   ZoneScoped;
   QString path = QString(Noggit::Project::CurrentProject::get()->ProjectPath.c_str());
   if (!(path.endsWith('\\') || path.endsWith('/')))
@@ -3185,57 +3640,171 @@ void World::importAllADTsAlphamaps()
     path += "/";
   }
 
-  for (size_t z = 0; z < 64; z++)
+  // use batch to not load the entire map at once, takes 50+gb for 64x64
+  // memory cost is about 5.5mb per tile
+  constexpr int MAX_IN_FLIGHT = 256; // 128 costs 700mb
+
+  int count = 0;
+
+  std::unordered_map< unsigned int, bool> unloads;
+
+  std::vector<TileIndex> allTiles;
+  allTiles.reserve(progress_dialog->maximum());
+
+  // collect all tiles
+  for (int z = 0; z < 64; ++z)
   {
-    for (size_t x = 0; x < 64; x++)
+    for (int x = 0; x < 64; ++x)
     {
       TileIndex tile(x, z);
+      if (!mapIndex.hasTile(tile))
+        continue;
 
-      bool unload = !mapIndex.tileLoaded(tile) && !mapIndex.tileAwaitingLoading(tile);
-      MapTile* mTile = mapIndex.loadTile(tile);
+      bool shouldUnload = !mapIndex.tileLoaded(tile) && !mapIndex.tileAwaitingLoading(tile);
+      unloads[tile.index()] = shouldUnload;
 
-      if (mTile)
+      allTiles.push_back(tile);
+    }
+  }
+
+  assert(progress_dialog->maximum() == allTiles.size());
+  const int total = allTiles.size();
+
+  std::deque<MapTile*> inFlight;
+  size_t nextTileIdx = 0;
+  size_t processed = 0;
+
+  auto processTile = [&](MapTile* mTile)
+    {
+    if (!mTile)
+      return;
+
+    // ensure loaded
+    mTile->wait_until_loaded();
+
+    for (int layer = 1; layer < 4; ++layer)
+    {
+      QString filename = QString("%1/world/maps/%2/%2_%3_%4_layer%5.png")
+        .arg(path)
+        .arg(basename.c_str())
+        .arg(mTile->index.x)
+        .arg(mTile->index.z)
+        .arg(layer);
+
+      if (!QFileInfo::exists(filename))
+        continue;
+
+      QImage img;
+      img.load(filename, "PNG");
+      if (img.width() != 1024 || img.height() != 1024)
+        img = img.scaled(1024, 1024, Qt::IgnoreAspectRatio);
+
+      mTile->setAlphaImage(img, layer, clean_up);
+    }
+
+    mTile->saveTile(this);
+    auto idx = mTile->index;
+    mapIndex.markOnDisc(idx, true);
+    mapIndex.unsetChanged(idx);
+
+    auto it = unloads.find(idx.index());
+    if (it != unloads.end() && it->second)
+      mapIndex.unloadTile(idx);
+
+    ++processed;
+    if ((processed % 5) == 0 || processed == total)
+      progress_dialog->setValue(static_cast<int>(processed));
+    };
+
+  auto tryProcessFinished = [&]() {
+    for (auto it = inFlight.begin(); it != inFlight.end(); )
+    {
+      if (progress_dialog->wasCanceled())
+        return;
+
+      MapTile* mt = *it;
+      if (mt->finishedLoading())
       {
-        mTile->wait_until_loaded();
+        processTile(mt);
+        it = inFlight.erase(it);
+      }
+      else
+      {
+        ++it;
+      }
+    }
+    };
 
-        for (int i = 1; i < 4; ++i)
-        {
-          QString filename = path + "/world/maps/" + basename.c_str() + "/" + basename.c_str()
-                  + "_" + std::to_string(mTile->index.x).c_str() + "_" + std::to_string(mTile->index.z).c_str()
-                  + "_layer" + std::to_string(i).c_str() + ".png";
+  while (processed < total)
+  {
+    if (progress_dialog->wasCanceled())
+      return;
 
-          if(!QFileInfo::exists(filename))
-            continue;
+    tryProcessFinished();
 
-          QImage img;
-          img.load(filename, "PNG");
+    // queue new tiles while we have capacity
+    while (nextTileIdx < total && inFlight.size() < MAX_IN_FLIGHT)
+    {
+      const TileIndex& t = allTiles[nextTileIdx++];
 
-          if (img.width() != 1024 || img.height() != 1024)
-          {
-            QImage scaled = img.scaled(1024, 1024, Qt::IgnoreAspectRatio);
-            mTile->setAlphaImage(scaled, i);
-          }
-          else
-          {
-            mTile->setAlphaImage(img, i);
-          }
+      MapTile* mTile = mapIndex.loadTile(t);
+      if (!mTile)
+        continue;
 
-        }
+      // if it is already finished loading, process immediately
+      if (mTile->finishedLoading())
+      {
+        processTile(mTile);
+      }
+      else
+      {
+        inFlight.push_back(mTile);
+      }
+    }
 
-        mTile->saveTile(this);
-        mapIndex.markOnDisc (tile, true);
-        mapIndex.unsetChanged(tile);
+    // if queue is full and nothing finished, block minimally on the oldest
+    if (!inFlight.empty() && inFlight.size() >= MAX_IN_FLIGHT)
+    {
+      MapTile* oldest = inFlight.front();
+      if (!oldest->finishedLoading())
+      {
+        // minimal blocking only because we are at capacity
+        oldest->wait_until_loaded();
+      }
+      // process oldest
+      processTile(oldest);
+      inFlight.pop_front();
+    }
 
-        if (unload)
-        {
-          mapIndex.unloadTile(tile);
-        }
+    // if there's spare capacity but no new tiles to queue, try processing again
+    if (nextTileIdx >= total && !inFlight.empty())
+    {
+      tryProcessFinished();
+      // If still not finished, block on front
+      if (!inFlight.empty() && !inFlight.front()->finishedLoading())
+      {
+        inFlight.front()->wait_until_loaded();
+        processTile(inFlight.front());
+        inFlight.pop_front();
       }
     }
   }
+
+  // flush any remaining in-flight tiles
+  while (!inFlight.empty())
+  {
+    MapTile* mt = inFlight.front();
+    inFlight.pop_front();
+    if (!mt->finishedLoading())
+      mt->wait_until_loaded();
+    processTile(mt);
+  }
+
+  progress_dialog->setValue(static_cast<int>(processed));
+
 }
 
-void World::importAllADTsHeightmaps(float multiplier, unsigned int mode, bool tiledEdges)
+void World::importAllADTsHeightmaps(QProgressDialog* progress_dialog, float min_height, float max_height, unsigned mode, bool tiledEdges)
 {
   ZoneScoped;
   QString path = QString(Noggit::Project::CurrentProject::get()->ProjectPath.c_str());
@@ -3244,54 +3813,59 @@ void World::importAllADTsHeightmaps(float multiplier, unsigned int mode, bool ti
     path += "/";
   }
 
+  int count = 0;
   for (size_t z = 0; z < 64; z++)
   {
     for (size_t x = 0; x < 64; x++)
     {
+      if (progress_dialog->wasCanceled())
+        return;
       TileIndex tile(x, z);
 
       bool unload = !mapIndex.tileLoaded(tile) && !mapIndex.tileAwaitingLoading(tile);
       MapTile* mTile = mapIndex.loadTile(tile);
-
+      
       if (mTile)
       {
         mTile->wait_until_loaded();
-
+      
         QString filename = path + "/world/maps/" + basename.c_str() + "/" + basename.c_str()
                            + "_" + std::to_string(mTile->index.x).c_str() + "_" + std::to_string(mTile->index.z).c_str()
                            + "_height.png";
-
-        if(!QFileInfo::exists(filename))
-          continue;
-
+      
+        if (!QFileInfo::exists(filename))
+            continue;
+      
         QImage img;
         img.load(filename, "PNG");
-
+      
         size_t desiredSize = tiledEdges ? 256 : 257;
         if (img.width() != desiredSize || img.height() != desiredSize)
         {
           QImage scaled = img.scaled(257, 257, Qt::IgnoreAspectRatio);
-          mTile->setHeightmapImage(scaled, multiplier, mode, tiledEdges);
+          mTile->setHeightmapImage(scaled, min_height, max_height, mode, tiledEdges);
         }
         else
         {
-          mTile->setHeightmapImage(img, multiplier, mode, tiledEdges);
+          mTile->setHeightmapImage(img, min_height, max_height, mode, tiledEdges);
         }
-
+      
         mTile->saveTile(this);
         mapIndex.markOnDisc (tile, true);
         mapIndex.unsetChanged(tile);
-
+      
         if (unload)
         {
           mapIndex.unloadTile(tile);
         }
+        count++;
+        progress_dialog->setValue(count);
       }
     }
   }
 }
 
-void World::importAllADTVertexColorMaps(unsigned int mode, bool tiledEdges)
+void World::importAllADTVertexColorMaps(unsigned mode, bool tiledEdges)
 {
   ZoneScoped;
   QString path = QString(Noggit::Project::CurrentProject::get()->ProjectPath.c_str());
@@ -3410,87 +3984,434 @@ void World::notifyTileRendererOnSelectedTextureChange()
 }
 
 void World::select_objects_in_area(
-    const std::array<glm::vec2, 2> selection_box, 
-    bool reset_selection,
-    glm::mat4x4 view,
-    glm::mat4x4 projection,
-    int viewport_width, 
-    int viewport_height,
-    float user_depth,
-    glm::vec3 camera_position)
+  const std::array<glm::vec2, 2>& selection_box, 
+  bool reset_selection,
+  const glm::mat4x4& view,
+  const glm::mat4x4& projection,
+  int viewport_width, 
+  int viewport_height,
+  float user_depth,
+  const glm::vec3& camera_position)
 {
-    ZoneScoped;
-    
-    if (reset_selection)
+  ZoneScoped;
+  
+  if (reset_selection)
+  {
+    this->reset_selection();
+  }
+
+  glm::mat4 VPmatrix = projection * view;
+  glm::mat4x4 const invertedProjViewMatrix = glm::inverse(VPmatrix);
+  auto const transposed_view = glm::transpose(view);
+
+  constexpr int max_position_raycast_processing = 10000;
+  constexpr int max_bounds_raycast_processing = 5000; // when selecting large amount of objects, avoid doing complex ray calculations to not freeze
+  constexpr float bounds_check_scale = 0.9f; // size of the bounding box to use when interesecting with selection rectangle
+  constexpr float obj_raycast_min_size = 30.0f; // screen size rectangle lenght in pixels
+
+  int processed_obj_count = 0; // num objects that had a raycast test at least once
+  // int debug_count_obj_min_size = 0;
+  // int debug_count_obj_min_size_not = 0;
+
+  for (auto& map_object : _loaded_tiles_buffer)
+  {
+    MapTile* tile = map_object.second;
+
+    if (!tile)
     {
-        this->reset_selection();
+      break;
     }
 
-    for (auto& map_object : _loaded_tiles_buffer)
+    // some optimizations to see if the tile is in selection before iterating objects in it
     {
-        MapTile* tile = map_object.second;
+      // tile not in screen, skip
+      // frustum.intersects(tile_extents[1], tile_extents[0])
+      if (!tile->_was_rendered_last_frame)
+        continue;
 
-        if (!tile)
+      // check if tile combined extents are within selection rectangle
+      // note very useful because cases where a tile is fully rendered and not selected are very rare
+ 
+      // skip if no objects
+      if (tile->getObjectInstances().empty())
+        continue;
+
+      // bool valid = false;
+      // auto screenBounds = misc::getBoundingBoxScreenBounds(tile->getCombinedExtents(), VPmatrix
+      //   , viewport_width, viewport_height, valid,  1.0f);
+      // 
+      // // this only works if all tile points are in screen space
+      // if (valid && !math::boxIntersects(screenBounds[0], screenBounds[1]
+      //   , selection_box[0], selection_box[1]))
+      // {
+      //   continue;
+      // }
+    }
+
+    for (auto const& pair : tile->getObjectInstances())
+    {
+      [[unlikely]]
+      if (!(pair.first->finishedLoading()) || pair.first->loading_failed())
+        continue;
+
+      [[unlikely]]
+      if (pair.second.empty())
+        continue;
+
+      SceneObjectTypes objectType = pair.second[0]->which();
+
+      // check if object is hidden
+      if (objectType == eWMO)
+      {
+        WMOInstance* model_instance = static_cast<WMOInstance*>(pair.second[0]);
+
+        if (model_instance->wmo->is_hidden())
+          continue;
+      }
+      else if (objectType == eMODEL)
+      {
+        ModelInstance* model_instance = static_cast<ModelInstance*>(pair.second[0]);
+
+        if (model_instance->model->is_hidden())
+          continue;
+      }
+      else
+      [[unlikely]]
+      {
+        continue;
+      }
+
+      for (auto const& instance : pair.second)
+      {
+        // problem : M2s have additional sized based culling with >isInRenderDist()
+        // if (!instance->_rendered_last_frame)
+        //   continue;
+
+        // rectangle selection Pipeline
+        // 1 : regular distance checks with object's position
+        // 2 : check if oriented bounding box center is in selection rectangle (2D screen projection)
+        // 3 : If so, do a raycast that position and check if it's occluded (if any terrain is hit before object center point)
+        // if raycast succeeded it's valid !
+        // If not, continue : 
+        // 4 : check if bounding box is within selection in 2D screen space to test other points (extents screen projection + rectangles intersection)
+        //    ! if not, it definitely doesn't intersect, quit.
+        // 5 : First, check if object takes enough screenspace, if not and center point failed, it's useless to test more
+        // 6 : Now iterate a list of key points from bounding box points to check if they're occluded :
+        //    - Optional : get the center of the intersection rectangle (overlap area between obj screen bounds and selection rectangle)
+        //                 Project it to 3D and add it to the list of points to check
+        //    - First, check if each point is in the selection rectangle (screen projection)
+        //    - Now raycast each point and check if each point is occluded by terrain
+        //    - if ANY point succeeds and isn't occluded, it means the object isn't entirely occluded and we can select it
+
+        if (processed_obj_count > max_position_raycast_processing)
+          break;
+
+        // 1 : regular distance checks with object's position
+        const float distance = glm::distance(camera_position, instance->pos);
+        if (distance > user_depth || distance > renderer()->cullDistance())
+          continue;
+
+        math::aabb obj_world_aabb(instance->getExtents()[0], instance->getExtents()[1]);
+        auto aabb_center = obj_world_aabb.center();
+
+        bool point_valid = false;
+        auto center_screen_pos = misc::projectPointToScreen(aabb_center, VPmatrix, viewport_width, viewport_height, point_valid);
+        // if screenPos.w < 0.0f, object is behind camera
+        // check object bounding radius instead to compare the object's size, if it clips with the camera.
+        if (center_screen_pos.w < -instance->getBoundingRadius())
         {
-            break;
+          continue;
         }
 
-        for (auto& pair : tile->getObjectInstances())
+        bool do_selection = false;
+        // 2: check if position point is within rectangle first because it is much cheaper
         {
-            auto objectType = pair.second[0]->which();
-            if (objectType == eMODEL || objectType == eWMO)
+          const glm::vec2 screenPos2D = glm::vec2(center_screen_pos);
+          if (misc::pointInside(screenPos2D, selection_box))
+          {
+            // processed_obj_count++;
+            // 3: check if center point is occluded by terrain
+            if (processed_obj_count < max_position_raycast_processing && 
+              !is_point_occluded_by_terrain(aabb_center, transposed_view, VPmatrix, viewport_width, viewport_height, camera_position))
             {
-                for (auto& instance : pair.second)
-                {
-                    auto model = instance->transformMatrix();
-                    glm::mat4 VPmatrix = projection * view;
-                    glm::vec4 screenPos = VPmatrix * glm::vec4(instance->pos, 1.0f);
-                    screenPos.x /= screenPos.w;
-                    screenPos.y /= screenPos.w;
-
-                    screenPos.x = (screenPos.x + 1.0f) / 2.0f;
-                    screenPos.y = (screenPos.y + 1.0f) / 2.0f;
-                    screenPos.y = 1 - screenPos.y;
-
-                    screenPos.x *= viewport_width;
-                    screenPos.y *= viewport_height;
-                    
-                    auto depth = glm::distance(camera_position, instance->pos);
-                    if (depth <= user_depth)
-                    {
-                        const glm::vec2 screenPos2D = glm::vec2(screenPos);
-                        if (misc::pointInside(screenPos2D, selection_box))
-                        {
-                            auto uid = instance->uid;
-                            auto modelInstance = _model_instance_storage.get_instance(uid);
-                            if (modelInstance && modelInstance.value().index() == eEntry_Object) {
-                                auto obj = std::get<selected_object_type>(modelInstance.value());
-                                auto which = std::get<selected_object_type>(modelInstance.value())->which();
-                                if (which == eWMO)
-                                {
-                                    auto model_instance = static_cast<WMOInstance*>(obj);
-
-                                    if (!is_selected(obj) && !model_instance->wmo->is_hidden())
-                                    {
-                                        this->add_to_selection(obj);
-                                    }
-                                }
-                                else if (which == eMODEL)
-                                {
-                                    auto model_instance = static_cast<ModelInstance*>(obj);
-
-                                    if (!is_selected(obj) && !model_instance->model->is_hidden())
-                                    {
-                                        this->add_to_selection(obj);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+              // if not occluded success! select it and skip other checks
+              add_to_selection(instance, false, false);
+              continue;
             }
+            // else
+            //   bool debug_breakpoint = true;
+          }
         }
+        
+        // 4 : if center point raycast didn't succeed, check again if bounding box is within selection in 2D screen space to test other points
+
+        std::array<glm::vec3, 2> local_extents;
+        if (objectType == eWMO)
+        {
+          WMOInstance* wmo_instance = static_cast<WMOInstance*>(pair.second[0]);
+          local_extents = wmo_instance->getLocalExtents();
+        }
+        else if (objectType == eMODEL)
+        {
+          ModelInstance* model_instance = static_cast<ModelInstance*>(pair.second[0]);
+          local_extents = model_instance->getLocalExtents();
+        }
+
+        int num_valid_points = 0;
+        std::array<glm::vec2, 2> obj_screnbounds = misc::getBoundingBoxScreenBounds(local_extents, VPmatrix
+          , viewport_width, viewport_height, num_valid_points, instance->transformMatrix(), bounds_check_scale);
+          
+        LogError << "point A reached (" << std::endl;
+
+        if (num_valid_points < 3)
+          continue;
+
+        // Screen bounds intersection check 
+        // 
+        // if (!math::boxIntersects(obj_screnbounds[0], obj_screnbounds[1]
+        //   , selection_box[0], selection_box[1]))
+        // {
+        //   // if rectangles don't intersect, just skip
+        //   continue;
+        // }
+
+        LogError << "point B reached (" << std::endl;
+
+        // 1 : get the intersection rectangle of screen space and bounding box
+        glm::vec2 intersectionMin = glm::max(obj_screnbounds[0], selection_box[0]);
+        glm::vec2 intersectionMax = glm::min(obj_screnbounds[1], selection_box[1]);
+        // Check for Valid Intersection:
+        // if (intersectionMin.x < intersectionMax.x && intersectionMin.y < intersectionMax.y)
+        if (!(intersectionMin.x < intersectionMax.x) || !(intersectionMin.y < intersectionMax.y))
+          continue;
+
+        LogError << "point C reached (" << std::endl;
+        
+        // 2 : get center
+        glm::vec2 intersectionCenter = (intersectionMin + intersectionMax) * 0.5f;
+        // 3 : convert 2D screenspace point back to 3d
+        glm::vec4 normalisedView = invertedProjViewMatrix * misc::normalized_device_coords(intersectionCenter.x, intersectionCenter.y,
+          viewport_width, viewport_height);
+        glm::vec3 intersectionCenter_pos = glm::vec3(normalisedView.x / normalisedView.w, normalisedView.y / normalisedView.w, normalisedView.z / normalisedView.w);
+
+        std::array<glm::vec3, 8> obj_world_bounds_corners;
+        // For animated models, recalc vertex bounding box
+        if (objectType == eMODEL)
+        {
+          ModelInstance* model_instance = static_cast<ModelInstance*>(pair.second[0]);
+          if (model_instance->model->animated_mesh() && model_instance->model->mesh_bounds_ratio < 0.8f)
+          {
+            auto animated_local_extents = model_instance->model->getAnimatedBoundingBox();
+
+            // hack, animated coords are already adjusted
+            animated_local_extents[0] = glm::vec3(animated_local_extents[0].x, -animated_local_extents[0].z, animated_local_extents[0].y);
+            animated_local_extents[1] = glm::vec3(animated_local_extents[1].x, -animated_local_extents[1].z, animated_local_extents[1].y);
+
+            // update screen bounds
+            num_valid_points = 0;
+            obj_screnbounds = misc::getBoundingBoxScreenBounds(animated_local_extents, VPmatrix
+              , viewport_width, viewport_height, num_valid_points, instance->transformMatrix(), bounds_check_scale);
+
+
+            // check if animated BB intersected
+            if (num_valid_points < 3)
+              continue;
+            if (!math::boxIntersects(obj_screnbounds[0], obj_screnbounds[1]
+              , selection_box[0], selection_box[1]))
+            {
+              continue;
+            }
+
+            math::aabb animated_local_aabb(animated_local_extents[0], animated_local_extents[1]);
+            // converts to world
+            obj_world_bounds_corners = animated_local_aabb.rotated_corners(instance->transformMatrix(), true);
+
+            // get extents and update bb to use
+            obj_world_aabb = math::aabb(std::vector<glm::vec3>(obj_world_bounds_corners.begin(), obj_world_bounds_corners.end()));
+
+            // raycast the center of the intersecting animated bounds
+            // 
+            // get the center of the intersection rectangle
+            // 1 : get the intersection rectangle of screen space and bounding box
+            intersectionMin = glm::max(obj_screnbounds[0], selection_box[0]);
+            intersectionMax = glm::min(obj_screnbounds[1], selection_box[1]);
+            // Check for Valid Intersection:
+            if (intersectionMin.x < intersectionMax.x && intersectionMin.y < intersectionMax.y) {
+              // Valid intersection
+            }
+            else 
+            {
+              continue;
+            }
+            // 2 : get center
+            intersectionCenter = (intersectionMin + intersectionMax) * 0.5f;
+            // 3 : convert 2D screenspace point back to 3d
+            normalisedView = invertedProjViewMatrix * misc::normalized_device_coords(intersectionCenter.x, intersectionCenter.y,
+              viewport_width, viewport_height);
+            intersectionCenter_pos = glm::vec3(normalisedView.x / normalisedView.w, normalisedView.y / normalisedView.w, normalisedView.z / normalisedView.w);
+            //////
+
+          }
+          else
+          {
+            obj_world_bounds_corners = obj_world_aabb.rotated_corners(instance->transformMatrix(), false);
+          }
+        }
+        else if (objectType == eWMO)
+        {
+          obj_world_bounds_corners = obj_world_aabb.rotated_corners(instance->transformMatrix(), false);
+        }
+
+
+        // 4.5 2nd raycast. Check if center of the intersection box is visible
+        // TODO : for WMOs this is way to generous due to their more complex shape, it would be better to iterate the bounding box of each group
+        if (!is_point_occluded_by_terrain(intersectionCenter_pos, transposed_view, VPmatrix, viewport_width, viewport_height
+          , camera_position, (distance - instance->getBoundingRadius())))
+        {
+          // if not occluded success! select it and skip other checks
+          add_to_selection(instance, false, false);
+          continue;
+        }
+
+        // 5 : Optimization : Only do raycast bounds checks for object that take enough screen space
+        // if object is too small checking other points is useless
+        // we check _rendered_last_frame because m2s that are too small or frustum culled already don't render
+        {
+          float bounds_size = glm::distance(obj_screnbounds[0], obj_screnbounds[1]);
+          if (bounds_size < obj_raycast_min_size || !instance->_rendered_last_frame)
+          {
+            // debug_count_obj_min_size_not++;
+            continue;
+          }
+          else if (processed_obj_count > max_bounds_raycast_processing)
+          {
+            // select it anyways
+            do_selection = true;
+            // debug_count_obj_min_size++;
+          }
+        }
+
+        constexpr bool enable_bounds_raycasts = true;
+        //6 : Occlusion test on object's corners (that are in selection box)
+        // uses ray casting, very expensive
+        if (enable_bounds_raycasts && !do_selection /* && instance->_rendered_last_frame && (processed_obj_count < max_bounds_raycast_processing)*/)
+        {
+          processed_obj_count++;
+
+          // TODO : instead iterate bounds of the intersection rectangle instead of object's bounds
+
+          // Iterate key points instead of all 8 corners
+          std::vector<glm::vec3> key_points = {
+            // intersectionCenter_pos, // checked in 4.5 now
+            // (obj_world_bounds_corners[0] + obj_world_bounds_corners[6]) * 0.5f,  // Center between top corners
+            // obj_world_bounds_corners[0], // Top-right-front
+            // obj_world_bounds_corners[5], // Top-left-back
+            // obj_world_bounds_corners[4], // Top-left-front
+            // obj_world_bounds_corners[1] // Top-right-back
+          };
+
+          // int required_num_unoccluded_corners = 2;
+          bool object_occluded = true;
+
+          // check if points are occluded by terrain
+          // bool first_point = true;// special for intersectionCenter_pos because it doesn't have a distance, just a direction
+
+          for (const auto& corner : key_points /*obj_aabb_corners*/)
+          {
+            // TODO : only need to do max top left and max top right in 2d instead of all corners?
+
+            // only process points that are within selection rectangle
+            bool point_valid = false;
+            auto point_screen_pos = misc::projectPointToScreen(corner, VPmatrix, viewport_width, viewport_height, point_valid);
+            if (!point_valid)
+              continue;
+            if (!misc::pointInside(point_screen_pos, selection_box))
+              continue;
+
+            bool corner_occluded = is_point_occluded_by_terrain(corner
+              , transposed_view
+              , VPmatrix
+              , viewport_width
+              , viewport_height
+              , camera_position
+              /*, first_point ? distance - instance->getBoundingRadius() : 0.0f*/);
+
+            // first_point = false;
+
+            if (!corner_occluded)
+            {
+              // if just one point isn't occluded is enough, select object
+              object_occluded = false;
+              break;
+            }
+            // object_occluded = true;
+          }
+        
+          do_selection = !object_occluded;
+        }
+
+        if (!do_selection)
+          continue;
+
+        add_to_selection(instance, false, false);
+      }
     }
+  }
+
+  this->update_selection_pivot();
+}
+
+
+bool World::is_point_occluded_by_terrain(const glm::vec3& point,
+  const glm::mat4x4& transposed_view,
+  const glm::mat4& VPmatrix,
+  float viewport_width,
+  float viewport_height,
+  const glm::vec3& camera_position,
+  float distance_override
+  )
+{
+  /*
+  bool point_valid = false;
+  auto point_screen_pos = misc::projectPointToScreen(point, VPmatrix, viewport_width, viewport_height, point_valid);
+  
+  if (!point_valid)
+  {
+    return true;
+  }*/
+
+  math::ray ray(camera_position, point - camera_position); // 3d display mode only.
+
+  // intersect only terrain with a ray to object's position
+  selection_result terrain_intersect_results
+  (intersect
+  (transposed_view
+    , ray
+    , true
+    , false
+    , true
+    , false
+    , false
+    , false
+    , false
+    , false
+  )
+  );
+
+  float distance = distance_override == 0.0f ? glm::distance(camera_position, point) : distance_override;
+
+  // bool point_occluded = false;
+  for (const auto& terrain_hit : terrain_intersect_results)
+  {
+    // if terrain hit is further, skip
+    if (terrain_hit.first + 5.0f > distance) // add some leeway, skip hits that are too close, especially for the terrain at object's origin
+      continue;
+
+    return true;
+  }
+
+  // no terrain intersection point above point
+  return false;
 }
 
 void World::add_object_group_from_selection()
@@ -3505,32 +4426,30 @@ void World::add_object_group_from_selection()
     saveSelectionGroups();
 }
 
+/*
 void World::remove_selection_group(selection_group* group)
 {
-    // std::vector<selection_type>::iterator position = std::find(_selection_groups.begin(), _selection_groups.end(), group);
-    // if (position != _selection_groups.end())
-    // {
-    //     _selection_groups.erase(position);
-    // }
+   std::vector<selection_type>::iterator position = std::find(_selection_groups.begin(), _selection_groups.end(), group);
+   if (position != _selection_groups.end())
+   {
+       _selection_groups.erase(position);
+   }
 
-    // for (auto it = _selection_groups.begin(); it != _selection_groups.end(); ++it)
-    // {
-    //     auto it_group = *it;
-    //     if (it_group.getMembers().size() == group->getMembers().size() && it_group.getExtents() == group->getExtents())
-    //     // if (it_group.isSelected())
-    //     {
-    //         _selection_groups.erase(it);
-    //         saveSelectionGroups();
-    //         return;
-    //     }
-    // }
-}
+   for (auto it = _selection_groups.begin(); it != _selection_groups.end(); ++it)
+   {
+       auto it_group = *it;
+       if (it_group.getMembers().size() == group->getMembers().size() && it_group.getExtents() == group->getExtents())
+       // if (it_group.isSelected())
+       {
+           _selection_groups.erase(it);
+           saveSelectionGroups();
+           return;
+       }
+   }
+}*/
 
 void World::clear_selection_groups()
 {
-    // _selection_groups.clear();
-
-    // for (auto it = _selection_groups.begin(); it != _selection_groups.end(); ++it)
     for (auto& group : _selection_groups)
     {
         // auto it_group = *it;

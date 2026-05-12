@@ -4,7 +4,12 @@
 
 #include <noggit/ui/tools/NodeEditor/Nodes/BaseNode.inl>
 #include <noggit/ui/tools/NodeEditor/Nodes/DataTypes/GenericData.hpp>
+#include <noggit/ui/tools/NodeEditor/Nodes/Scene/NodesContext.hpp>
 #include <noggit/tool_enums.hpp>
+
+#include <external/NodeEditor/include/nodes/Node>
+
+#include <QComboBox>
 
 using namespace Noggit::Ui::Tools::NodeEditor::Nodes;
 
@@ -59,7 +64,8 @@ void TileSetHeightmapImageNode::compute()
     return;
   }
 
-  tile->setHeightmapImage(*image_to_use, static_cast<float>(multiplier), _operation->currentIndex(), false);
+  // TODO change to min/max instead of multiplier
+  tile->setHeightmapImage(*image_to_use, -32768.f, 32768.f, _operation->currentIndex(), false);
 
   _out_ports[0].out_value = std::make_shared<LogicData>(true);
   _node->onDataUpdated(0);

@@ -1,12 +1,11 @@
 #include <noggit/project/ApplicationProjectWriter.h>
 #include <noggit/project/ApplicationProject.h>
+#include <noggit/Log.h>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QFile>
 #include <filesystem>
-#include <QtNetwork/QNetworkReply>
 #include <QString>
-#include <chrono>
 #include <QJsonArray>
 
 namespace Noggit::Project

@@ -1,12 +1,10 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/ui/Help.h>
-#include <noggit/ui/FontNoggit.hpp>
 
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
-#include <QtWidgets/QScrollArea>
 #include <QtWidgets/QTabWidget>
 
 #include <initializer_list>
@@ -109,7 +107,8 @@ namespace Noggit
       generate_hotkey_row({FontNoggit::o, FontNoggit::p}, "\aor\aSlower /  Faster movement", adjust_layout);
       generate_hotkey_row({FontNoggit::b, FontNoggit::n}, "\aor\aSlower /  Faster time", adjust_layout);
       generate_hotkey_row({FontNoggit::j}, "\aPause time", adjust_layout);
-      generate_hotkey_row({FontNoggit::shift, FontNoggit::plus, FontNoggit::minus}, "\a+\aor\aFog distance when no model is selected", adjust_layout);
+      // NYI
+      // generate_hotkey_row({FontNoggit::shift, FontNoggit::plus, FontNoggit::minus}, "\a+\aor\aFog distance when no model is selected", adjust_layout);
 
       auto flag_widget (new QWidget (this));
       auto flag_layout (new QFormLayout (flag_widget));
@@ -118,7 +117,7 @@ namespace Noggit
       holes_label->setStyleSheet(header_style);
       flag_layout->addRow(holes_label);
 
-      generate_hotkey_row({FontNoggit::shift, FontNoggit::lmb}, "\a+\aFog distance when no model is selected", flag_layout);
+      generate_hotkey_row({FontNoggit::shift, FontNoggit::lmb}, "\a+\aClear hole", flag_layout);
       generate_hotkey_row({FontNoggit::ctrl, FontNoggit::lmb}, "\a+\aAdd hole", flag_layout);
       generate_hotkey_row({FontNoggit::t}, "\aRemove all holes on ADT", flag_layout);
       generate_hotkey_row({FontNoggit::alt, FontNoggit::t}, "\a+\aRemove all ground on ADT", flag_layout);
@@ -136,6 +135,7 @@ namespace Noggit
 
       generate_hotkey_row({FontNoggit::ctrl, FontNoggit::lmb }, "\a+\aPick existing AreaID", flag_layout);
       generate_hotkey_row({FontNoggit::shift, FontNoggit::lmb }, "\a+\aPaint selected AreaID", flag_layout);
+      generate_hotkey_row({ FontNoggit::f }, "\a -  Fill current ADT with selected AreaID", flag_layout);
 
 
       auto ground_widget (new QWidget (this));
@@ -206,13 +206,13 @@ namespace Noggit
       paint_label->setStyleSheet(header_style);
       texture_layout->addRow(paint_label);
 
-      generate_hotkey_row({FontNoggit::ctrl, FontNoggit::shift, FontNoggit::alt, FontNoggit::lmb }, "\a+\a+\a+\aOpen texture picker for the chunk", texture_layout);
+      generate_hotkey_row({FontNoggit::ctrl, FontNoggit::shift, FontNoggit::alt, FontNoggit::lmb }, "\a+\a+\a+\aErase textures", texture_layout);
       generate_hotkey_row({FontNoggit::shift, FontNoggit::lmb }, "\a+\aDraw texture or fills if chunk is empty", texture_layout);
       generate_hotkey_row({FontNoggit::alt, FontNoggit::lmb_drag }, "\a+\aChange radius", texture_layout);
-      generate_hotkey_row({FontNoggit::alt, FontNoggit::rmb_drag }, "\a+\aChange hardness", texture_layout);
-      generate_hotkey_row({FontNoggit::space, FontNoggit::lmb_drag }, "\a+\aChange pressure", texture_layout);
-      generate_hotkey_row({FontNoggit::space, FontNoggit::mmb }, "\a+\aChange strength (gradient)", texture_layout);
-      generate_hotkey_row({FontNoggit::space, FontNoggit::r }, "\a+\aToggle min and max strength (gradient)", texture_layout);
+      generate_hotkey_row({FontNoggit::alt, FontNoggit::rmb_drag }, "\a+\aChange hardness (falloff)", texture_layout);
+      generate_hotkey_row({FontNoggit::space, FontNoggit::lmb_drag }, "\a+\aChange pressure (strength)", texture_layout);
+      generate_hotkey_row({FontNoggit::space, FontNoggit::mmb }, "\a+\aChange opacity (gradient)", texture_layout);
+      generate_hotkey_row({FontNoggit::space, FontNoggit::r }, "\a+\aToggle min and max oapcity (gradient)", texture_layout);
       generate_hotkey_row({FontNoggit::t }, "\aToggle spray brush", texture_layout);
       generate_hotkey_row({FontNoggit::alt, FontNoggit::mmb }, "\a+\aChange spray radius", texture_layout);
       generate_hotkey_row({FontNoggit::shift, FontNoggit::mmb }, "\a+\aChange spray pressure", texture_layout);

@@ -4,10 +4,10 @@
 #define NOGGIT_ACTIONHISTORYNAVIGATOR_HPP
 
 #include <QWidget>
-#include <QListWidget>
-#include <QButtonGroup>
 
-
+class QListWidget;
+class QButtonGroup;
+class QLabel;
 
 namespace Noggit
 {
@@ -34,7 +34,10 @@ namespace Noggit
     private:
       QListWidget* _action_stack;
       QButtonGroup* _active_action_button_group;
+      QLabel* _stack_size_label;
 
+    private:
+        void updateStackSizeLabel();
 
     };
   }

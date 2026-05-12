@@ -5,8 +5,10 @@
 #include <noggit/scripting/script_exception.hpp>
 #include <noggit/World.h>
 #include <noggit/ModelInstance.h>
+#include <noggit/object_paste_params.hpp>
 #include <noggit/WMOInstance.h>
 #include <noggit/ui/ObjectEditor.h>
+
 #include <sol/sol.hpp>
 
 namespace Noggit
@@ -53,13 +55,10 @@ namespace Noggit
 
     void model::set_scale(float scale)
     {
-      if (_object->which() != eWMO)
-      {
         world()->updateTilesEntry(_object, model_update::remove);
         _object->scale = scale;
         _object->recalcExtents();
         world()->updateTilesEntry(_object, model_update::add);
-      }
     }
 
     unsigned model::get_uid()
@@ -85,8 +84,8 @@ namespace Noggit
 
     void model::remove()
     {
-      std::vector<selection_type> type{_object};
-      world()->deleteObjects(type);
+      std::vector<SceneObject*> type{_object};
+      world()->deleteObjects(type, false);
     }
 
     void model::replace(std::string const& filename)
@@ -101,13 +100,13 @@ namespace Noggit
       if (filename.ends_with(".wmo"))
       {
         _object = 
-          world()->addWMOAndGetInstance(filename, get_pos(), math::degrees::vec3 {get_rot()});
+          world()->addWMOAndGetInstance(filename, get_pos(), math::degrees::vec3 {get_rot()}, get_scale(), false);
       }
       else
       {
         auto params = object_paste_params();
         _object =
-          world()->addM2AndGetInstance(filename, get_pos(), get_scale(), math::degrees::vec3 {get_rot()}, &params);
+          world()->addM2AndGetInstance(filename, get_pos(), get_scale(), math::degrees::vec3 {get_rot()}, &params, false, false);
       }
     }
 

@@ -5,12 +5,19 @@
 
 #include <noggit/rendering/BaseRender.hpp>
 #include <noggit/tool_enums.hpp>
-#include <opengl/scoped.hpp>
-#include <opengl/shader.hpp>
 #include <glm/glm.hpp>
-#include <math/frustum.hpp>
 
 #include <map>
+
+namespace OpenGL::Scoped
+{
+  struct use_program;
+}
+
+namespace math
+{
+  class frustum;
+}
 
 class WMO;
 
@@ -38,6 +45,8 @@ namespace Noggit::Rendering
         , bool world_has_skies
         , display_mode display
         , bool interior_only
+        , bool draw_select_group_bounds
+        , bool grouped
     );
 
     bool drawSkybox(glm::mat4x4 const& model_view

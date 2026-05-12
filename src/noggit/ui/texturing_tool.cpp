@@ -1,21 +1,34 @@
-// This file is part of Noggit3, licensed under GNU General Public License (version 3).
+﻿// This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
-#include <noggit/ui/texturing_tool.hpp>
-#include <noggit/TabletManager.hpp>
-
-#include <noggit/Misc.h>
-#include <noggit/World.h>
+#include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
+#include <noggit/application/NoggitApplication.hpp>
 #include <noggit/MapView.h>
-#include <noggit/tool_enums.hpp>
+#include <noggit/project/CurrentProject.hpp>
+#include <noggit/TabletManager.hpp>
+#include <noggit/TextureManager.h>
 #include <noggit/ui/Checkbox.hpp>
 #include <noggit/ui/CurrentTexture.h>
+#include <noggit/ui/GroundEffectsTool.hpp>
 #include <noggit/ui/texture_swapper.hpp>
-#include <util/qt/overload.hpp>
-
-#include <QtWidgets/QFormLayout>
-#include <QtWidgets/QPushButton>
-#include <QtWidgets/QTabWidget>
+#include <noggit/ui/texturing_tool.hpp>
+#include <noggit/ui/tools/UiCommon/expanderwidget.h>
 #include <noggit/ui/tools/UiCommon/ExtendedSlider.hpp>
+#include <noggit/ui/tools/UiCommon/ImageMaskSelector.hpp>
+#include <noggit/World.h>
+
+#include <QClipboard>
+#include <QMessageBox>
+#include <QPainter>
+#include <QSettings>
+#include <QStyle>
+#include <QStyleOptionSlider>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QDoubleSpinBox>
+#include <QtWidgets/QFormLayout>
+#include <QtWidgets/QGroupBox>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QSpinBox>
+#include <QtWidgets/QTabWidget>
 
 #define _USE_MATH_DEFINES
 #include <math.h>
@@ -93,11 +106,34 @@ namespace Noggit
       _pressure_slider->setValue (0.9f);
       slider_layout_left->addWidget (_pressure_slider);
 
-      _brush_level_slider = new QSlider (Qt::Orientation::Vertical, tool_widget);
+      slider_layout_right->addWidget(new QLabel("Opacity:", tool_widget));
+      _brush_level_slider = new OpacitySlider(Qt::Orientation::Vertical, tool_widget);
       _brush_level_slider->setRange (0, 255);
+      _brush_level_slider->setToolTip("Opacity");
       _brush_level_slider->setSliderPosition (_brush_level);
 
       _brush_level_slider->setObjectName("texturing_brush_level_slider");
+      
+      // TODO : couldn't figure out how to make QSlider::groove:vertical::background-color work, the themes broke it. so made a scuffed subclass of QSlider with a custom paintevent
+
+      /*
+      QString _brush_level_slider_style =
+
+          "QSlider#texturing_brush_level_slider::groove:vertical { \n "
+          "  background-color: qlineargradient(x1:0.5, y1:0, x2:0.5, y2:1, stop: 0 black, stop: 1 white) !important; \n "
+          "  width: 35px; \n"
+          "  margin: 0 0 0 0; \n "
+          "} \n "
+          "QSlider#texturing_brush_level_slider::handle:vertical { \n"
+          "  background-color: red; \n"
+          "  height: 5px; \n"
+          "} \n"
+          "QSlider#texturing_brush_level_slider::vertical { \n"
+          "  width: 35px; \n"
+          "} \n"
+          ;
+      _brush_level_slider->setStyleSheet(_brush_level_slider_style);
+*/
 
       slider_layout_right->addWidget(_brush_level_slider, 0, Qt::AlignHCenter);
 
@@ -107,8 +143,13 @@ namespace Noggit
       _brush_level_spin->setSingleStep(5);
       slider_layout_right->addWidget(_brush_level_spin);
 
+      QSettings settings;
+      bool use_classic_ui = settings.value("classicUI", false).toBool();
+
       _show_unpaintable_chunks_cb = new QCheckBox("Show unpaintable chunks", tool_widget);
       _show_unpaintable_chunks_cb->setChecked(false);
+      if (!use_classic_ui)
+          _show_unpaintable_chunks_cb->hide();
       tool_layout->addWidget(_show_unpaintable_chunks_cb);
 
       connect(_show_unpaintable_chunks_cb, &QCheckBox::toggled, [=](bool checked)
@@ -155,6 +196,8 @@ namespace Noggit
       _texture_switcher = new texture_swapper(tool_widget, camera_pos, map_view);
       _texture_switcher->hide();
 
+      _ground_effect_tool = new GroundEffectsTool(this, map_view, this);
+
       _image_mask_group = new Noggit::Ui::Tools::ImageMaskSelector(map_view, this);
       _image_mask_group->setContinuousActionName("Paint");
       _image_mask_group->setBrushModeVisible(parent == map_view);
@@ -172,6 +215,77 @@ namespace Noggit
       auto quick_palette_btn (new QPushButton("Quick Palette", this));
       tool_layout->addWidget(quick_palette_btn);
       tool_layout->setAlignment(quick_palette_btn, Qt::AlignTop);
+
+      // Mists HeightMapping, only enable if modern feature setting is on
+      bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
+
+      // Define UI elements regardless of modern_features being enabled because they're used later on as well.
+      _heightmapping_group = new QGroupBox("Height Mapping", tool_widget);
+      _heightmapping_group->setVisible(modern_features);
+
+      auto heightmapping_scale_spin = new QDoubleSpinBox(_heightmapping_group);
+      heightmapping_scale_spin->setVisible(modern_features);
+
+      auto heightmapping_heightscale_spin = new QDoubleSpinBox(_heightmapping_group);
+      heightmapping_heightscale_spin->setVisible(modern_features);
+
+      auto heightmapping_heightoffset_spin = new QDoubleSpinBox(_heightmapping_group);
+      heightmapping_heightoffset_spin->setVisible(modern_features);
+
+      QPushButton* _heightmapping_copy_btn = new QPushButton("Copy to JSON", this);
+      _heightmapping_copy_btn->setVisible(modern_features);
+
+      if (modern_features)
+      {
+
+          auto heightmapping_group_layout(new QFormLayout(_heightmapping_group));
+
+          heightmapping_scale_spin->setRange(0, 512);
+          heightmapping_scale_spin->setSingleStep(1);
+          heightmapping_scale_spin->setDecimals(0);
+          heightmapping_scale_spin->setValue(0);
+          heightmapping_group_layout->addRow("Scale:", heightmapping_scale_spin);
+
+          heightmapping_heightscale_spin->setRange(-512, 512);
+          heightmapping_heightscale_spin->setSingleStep(0.1);
+          heightmapping_heightscale_spin->setDecimals(3);
+          heightmapping_heightscale_spin->setValue(0);
+          heightmapping_group_layout->addRow("Height Scale:", heightmapping_heightscale_spin);
+
+          heightmapping_heightoffset_spin->setRange(-512, 512);
+          heightmapping_heightoffset_spin->setSingleStep(0.1);
+          heightmapping_heightoffset_spin->setDecimals(3);
+          heightmapping_heightoffset_spin->setValue(1);
+          heightmapping_group_layout->addRow("Height Offset:", heightmapping_heightoffset_spin);
+
+          auto heightmapping_btngroup_layout(new QVBoxLayout(_heightmapping_group));
+          auto heightmapping_buttons_widget = new QWidget(_heightmapping_group);
+          heightmapping_buttons_widget->setLayout(heightmapping_btngroup_layout);
+
+          auto wrap_label = new QLabel("Note: This doesn't save to .cfg, use copy and do it manually.", _heightmapping_group);
+          wrap_label->setWordWrap(true);
+          heightmapping_group_layout->addRow(wrap_label);
+
+          _heightmapping_apply_global_btn = new QPushButton("Apply (Global)", this);
+          _heightmapping_apply_global_btn->setFixedHeight(30);
+          heightmapping_btngroup_layout->addWidget(_heightmapping_apply_global_btn);
+
+          _heightmapping_apply_adt_btn = new QPushButton("Apply (Current ADT)", this);
+          _heightmapping_apply_adt_btn->setFixedHeight(30);
+          heightmapping_btngroup_layout->addWidget(_heightmapping_apply_adt_btn);
+
+          _heightmapping_copy_btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+          _heightmapping_copy_btn->setFixedHeight(30);
+          heightmapping_btngroup_layout->addWidget(_heightmapping_copy_btn);
+
+          heightmapping_group_layout->addRow(heightmapping_buttons_widget);
+
+          tool_layout->addWidget(_heightmapping_group);
+      }
+      
+      auto geffect_tools_btn(new QPushButton("In development", this));
+      tool_layout->addWidget(geffect_tools_btn);
+      tool_layout->setAlignment(geffect_tools_btn, Qt::AlignTop);
 
       auto anim_widget (new QWidget (this));
       auto anim_layout (new QFormLayout (anim_widget));
@@ -221,6 +335,29 @@ namespace Noggit
 
       connect (anim_speed_slider, &QSlider::valueChanged, &_anim_speed_prop, &Noggit::unsigned_int_property::set);
       connect (anim_orientation_dial, &QDial::valueChanged, &_anim_rotation_prop, &Noggit::unsigned_int_property::set);
+      
+      if (modern_features)
+      {
+          connect(heightmapping_scale_spin, qOverload<double>(&QDoubleSpinBox::valueChanged)
+              , [&](double v)
+              {
+                  textureHeightmappingData.uvScale = v;
+              }
+          );
+
+          connect(heightmapping_heightscale_spin, qOverload<double>(&QDoubleSpinBox::valueChanged)
+              , [&](double v)
+              {
+                  textureHeightmappingData.heightScale = v;
+              }
+          );
+          connect(heightmapping_heightoffset_spin, qOverload<double>(&QDoubleSpinBox::valueChanged)
+              , [&](double v)
+              {
+                  textureHeightmappingData.heightOffset = v;
+              }
+          );
+      }
 
       connect ( tabs, &QTabWidget::currentChanged
               , [this] (int index)
@@ -307,10 +444,16 @@ namespace Noggit
       connect ( quick_palette_btn, &QPushButton::clicked
               , [=] ()
                 {
-              _map_view->getTexturePalette()->setVisible(_map_view->getTexturePalette()->isHidden());
-                  // show_quick_palette->set(!show_quick_palette);
+                  emit texturePaletteToggled();
                 }
               );
+
+      connect(geffect_tools_btn, &QPushButton::clicked
+          , [=]()
+          {
+              _ground_effect_tool->show();
+          }
+      );
 
       connect ( _radius_slider, &Noggit::Ui::Tools::UiCommon::ExtendedSlider::valueChanged
           , [&] (double v)
@@ -331,7 +474,48 @@ namespace Noggit
       connect (_radius_slider, &Noggit::Ui::Tools::UiCommon::ExtendedSlider::valueChanged, this, &texturing_tool::updateMaskImage);
       connect(_image_mask_group, &Noggit::Ui::Tools::ImageMaskSelector::pixmapUpdated, this, &texturing_tool::updateMaskImage);
 
+      // Mists Heightmapping
 
+      if (modern_features)
+      {
+          connect(_current_texture, &Noggit::Ui::current_texture::texture_updated
+              , [=]()
+              {
+                  auto proj = Noggit::Project::CurrentProject::get();
+                  auto foundTexture = proj->ExtraMapData.TextureHeightData_Global.find(_current_texture->filename());
+                  if (foundTexture != proj->ExtraMapData.TextureHeightData_Global.end())
+                  {
+                      heightmapping_scale_spin->setValue(foundTexture->second.uvScale);
+                      heightmapping_heightscale_spin->setValue(foundTexture->second.heightScale);
+                      heightmapping_heightoffset_spin->setValue(foundTexture->second.heightOffset);
+                  }
+
+              }
+          );
+
+          connect(_heightmapping_copy_btn, &QPushButton::pressed
+              , [=]()
+              {
+                  std::ostringstream oss;
+                  oss << "{\r\n    \"" << _current_texture->filename() << "\": {\r\n"
+                      << "    \"Scale\": " << textureHeightmappingData.uvScale << ",\r\n"
+                      << "    \"HeightScale\": " << textureHeightmappingData.heightScale << ",\r\n"
+                      << "    \"HeightOffset\": " << textureHeightmappingData.heightOffset << "\r\n"
+                      << "    }\r\n}";
+
+                  QClipboard* clip = QApplication::clipboard();
+                  clip->setText(QString::fromStdString(oss.str()));
+
+                  QMessageBox::information
+                  (nullptr
+                      , "Copied"
+                      , "JSON Copied to Clipboard",
+                      QMessageBox::Ok
+                  );
+
+              }
+          );
+      }
 
       _spray_content->hide();
       update_brush_hardness();
@@ -343,6 +527,21 @@ namespace Noggit
       setMaximumWidth(250);
     }
 
+    texturing_tool::~texturing_tool()
+    {
+        // _ground_effect_tool->delete_renderer();
+        // delete _ground_effect_tool;
+      unload();
+    }
+
+    void texturing_tool::unload()
+    {
+      if (_ground_effect_tool)
+      {
+        _ground_effect_tool->unload();
+      }
+    }
+
     void texturing_tool::updateMaskImage()
     {
       QPixmap* pixmap = _image_mask_group->getPixmap();
@@ -350,9 +549,7 @@ namespace Noggit
       matrix.rotateRadians(_image_mask_group->getRotation() * M_PI / 180.f);
       _mask_image = pixmap->toImage().transformed(matrix, Qt::SmoothTransformation);
 
-      if (_map_view->get_editing_mode() != editing_mode::stamp
-        || (_map_view->getActiveStampModeItem() && _map_view->getActiveStampModeItem() == this))
-       _map_view->setBrushTexture(&_mask_image);
+      emit _map_view->trySetBrushTexture(&_mask_image, this);
     }
 
     void texturing_tool::update_brush_hardness()
@@ -392,10 +589,16 @@ namespace Noggit
       }
     }
 
+    GroundEffectsTool* texturing_tool::getGroundEffectsTool()
+    {
+      return _ground_effect_tool;
+    }
+
     void texturing_tool::setRadius(float radius)
     {
       _radius_slider->setValue(radius);
       _texture_switcher->change_radius(radius - _texture_switcher->radius());
+      _ground_effect_tool->change_radius(radius);
     }
 
     void texturing_tool::setHardness(float hardness)
@@ -412,6 +615,10 @@ namespace Noggit
       else if (_texturing_mode == texturing_mode::swap)
       {
         _texture_switcher->change_radius(change);
+      }
+      else if (_texturing_mode == texturing_mode::ground_effect)
+      {
+        _ground_effect_tool->change_radius(change);
       }
     }
 
@@ -470,6 +677,26 @@ namespace Noggit
       }
     }
 
+    Noggit::Ui::Tools::UiCommon::ExtendedSlider* texturing_tool::getRadiusSlider()
+    {
+      return _radius_slider;
+    }
+
+    Noggit::Ui::Tools::UiCommon::ExtendedSlider* texturing_tool::getInnerRadiusSlider()
+    {
+      return _hardness_slider;
+    }
+
+    Noggit::Ui::Tools::UiCommon::ExtendedSlider* texturing_tool::getSpeedSlider()
+    {
+      return _pressure_slider;
+    }
+
+    QDial* texturing_tool::getMaskOrientationDial()
+    {
+      return _image_mask_group->getMaskOrientationDial();
+    }
+
     void texturing_tool::set_pressure(float pressure)
     {
       if (_texturing_mode == texturing_mode::paint)
@@ -481,17 +708,18 @@ namespace Noggit
     float texturing_tool::brush_radius() const
     {
       // show only a dot when using the anim / swap mode
-      switch (_texturing_mode)
+      switch (getTexturingMode())
       {
         case texturing_mode::paint: return static_cast<float>(_radius_slider->value());
         case texturing_mode::swap: return (_texture_switcher->brush_mode() ? _texture_switcher->radius() : 0.f);
+        case texturing_mode::ground_effect: return (_ground_effect_tool->brush_mode() != ground_effect_brush_mode::none ? _ground_effect_tool->radius() : 0.f);
         default: return 0.f;
       }
     }
 
     float texturing_tool::hardness() const
     { 
-      switch (_texturing_mode)
+      switch (getTexturingMode())
       {
         case texturing_mode::paint: return static_cast<float>(_hardness_slider->value());
         default: return 0.f;
@@ -500,7 +728,7 @@ namespace Noggit
 
     bool texturing_tool::show_unpaintable_chunks() const
     {
-        return _show_unpaintable_chunks && _texturing_mode == texturing_mode::paint;
+        return _show_unpaintable_chunks && getTexturingMode() == texturing_mode::paint;
     }
 
     void texturing_tool::paint (World* world, glm::vec3 const& pos, float dt, scoped_blp_texture_reference texture)
@@ -511,72 +739,102 @@ namespace Noggit
         update_brush_hardness();
       }
 
-      float strength = 1.0f - pow(1.0f - _pressure_slider->value(), dt * 10.0f);
-
-      if (_texturing_mode == texturing_mode::swap)
+      switch(getTexturingMode())
       {
-        auto to_swap (_texture_switcher->texture_to_swap());
-        if (to_swap)
-        {
-          if (_texture_switcher->brush_mode())
+        case (texturing_mode::swap):
           {
-                std::cout << _texture_switcher->radius() << std::endl;
-            world->replaceTexture(pos, _texture_switcher->radius(), to_swap.value(), texture, _texture_switcher->entireChunk());
+              auto to_swap(_texture_switcher->texture_to_swap());
+              if (to_swap)
+              {
+                  if (_texture_switcher->brush_mode())
+                  {
+                      std::cout << _texture_switcher->radius() << std::endl;
+                      world->replaceTexture(pos, _texture_switcher->radius(), to_swap.value(), texture, _texture_switcher->entireChunk(), _texture_switcher->entireTile());
+                  }
+                  else
+                  {
+                      world->overwriteTextureAtCurrentChunk(pos, to_swap.value(), texture);
+                  }
+              }
+              break;
           }
-          else
+        case (texturing_mode::paint):
           {
-            world->overwriteTextureAtCurrentChunk(pos, to_swap.value(), texture);
-          }          
-        }
-      }
-      else if (_texturing_mode == texturing_mode::paint)
-      {
-        if (_spray_mode_group->isChecked())
-        {
-          world->sprayTexture(pos, &_spray_brush, alpha_target(), strength, static_cast<float>(_radius_slider->value()), _spray_pressure, texture);
+              float strength = 1.0f - pow(1.0f - _pressure_slider->value(), dt * 10.0f);
+              if (_spray_mode_group->isChecked())
+              {
+                  world->sprayTexture(pos, &_spray_brush, alpha_target(), strength, static_cast<float>(_radius_slider->value()), _spray_pressure, texture);
 
-          if (_inner_radius_cb->isChecked())
-          {
-            if (!_image_mask_group->isEnabled())
-            {
-              world->paintTexture(pos, &_inner_brush, alpha_target(), strength, texture);
-            }
-            else
-            {
-              world->stampTexture(pos, &_inner_brush, alpha_target(), strength, texture, &_mask_image, _image_mask_group->getBrushMode());
-            }
+                  if (_inner_radius_cb->isChecked())
+                  {
+                      if (!_image_mask_group->isEnabled())
+                      {
+                          world->paintTexture(pos, &_inner_brush, alpha_target(), strength, texture);
+                      }
+                      else
+                      {
+                          world->stampTexture(pos, &_inner_brush, alpha_target(), strength, texture, &_mask_image, _image_mask_group->getBrushMode());
+                      }
+                  }
+              }
+              else
+              {
+                  if (!_image_mask_group->isEnabled())
+                  {
+                      world->paintTexture(pos, &_texture_brush, alpha_target(), strength, texture);
+                  }
+                  else
+                  {
+                      world->stampTexture(pos, &_texture_brush, alpha_target(), strength, texture, &_mask_image, _image_mask_group->getBrushMode());
+                  }
+              }
+              break;
           }
-        }
-        else
+        case (texturing_mode::anim):
+          {
+              change_tex_flags(world, pos, _anim_prop.get(), texture);
+              break;
+          }
+        case (texturing_mode::ground_effect):
         {
-          if (!_image_mask_group->isEnabled())
-          {
-            world->paintTexture(pos, &_texture_brush, alpha_target(), strength, texture);
-          }
-          else
-          {
-            world->stampTexture(pos, &_texture_brush, alpha_target(), strength, texture, &_mask_image, _image_mask_group->getBrushMode());
-          }
+              // handled directly in MapView::tick()
+
+              // if (_ground_effect_tool->brush_mode() == ground_effect_brush_mode::exclusion)
+              // {
+              //     world->paintGroundEffectExclusion(pos, _ground_effect_tool->radius(), );
+              // }
+              // else if (_ground_effect_tool->brush_mode() == ground_effect_brush_mode::effect)
+              // {
+              // 
+              // }
+        }
+        default:
+        {
 
         }
-      }
-      else if (_texturing_mode == texturing_mode::anim)
-      {
-        change_tex_flag(world, pos, _anim_prop.get(), texture);
       }
     }
 
-    void texturing_tool::change_tex_flag(World* world, glm::vec3 const& pos, bool add, scoped_blp_texture_reference texture)
+    Brush const& texturing_tool::texture_brush() const
     {
-      std::uint32_t flag = 0;
+      return _texture_brush;
+    }
 
-      auto flag_view = reinterpret_cast<MCLYFlags*>(&flag);
+    float texturing_tool::alpha_target() const
+    {
+      return static_cast<float>(_brush_level);
+    }
 
-      flag |= FLAG_ANIMATE;
+    void texturing_tool::change_tex_flags(World* world, glm::vec3 const& pos, bool add, scoped_blp_texture_reference texture)
+    {
+      std::uint32_t flags = 0;
+
+      auto flag_view = reinterpret_cast<MCLYFlags*>(&flags);
 
       // if add == true => flag to add, else it's the flags to remove
       if (add)
       {
+        flags |= FLAG_ANIMATE;
         // the qdial in inverted compared to the anim rotation
         flag_view->animation_rotation = (_anim_rotation_prop.get() + 4) % 8;
         flag_view->animation_speed = _anim_speed_prop.get();
@@ -585,15 +843,38 @@ namespace Noggit
       // the texture's flag glow is set if the property is true, removed otherwise
       if (_overbright_prop.get())
       {
-        flag |= FLAG_GLOW;
+        flags |= FLAG_GLOW;
       }
 
-      world->change_texture_flag(pos, texture, flag, add);
+      world->change_texture_flags(pos, texture, flags);
+    }
+
+    texture_swapper* const texturing_tool::texture_swap_tool()
+    {
+      return _texture_switcher;
     }
 
     QSize texturing_tool::sizeHint() const
     {
       return QSize(215, height());
+    }
+
+    Noggit::Ui::Tools::ImageMaskSelector* texturing_tool::getImageMaskSelector()
+    {
+      return _image_mask_group;
+    }
+
+    QImage* texturing_tool::getMaskImage()
+    {
+      return &_mask_image;
+    }
+
+    texturing_mode texturing_tool::getTexturingMode() const
+    {
+      if (_ground_effect_tool->isVisible())
+        return texturing_mode::ground_effect;
+      else
+        return _texturing_mode;
     }
 
     QJsonObject texturing_tool::toJSON()
@@ -667,5 +948,90 @@ namespace Noggit
         _texture_switcher->set_texture(tex_to_swap_path.toStdString());
 
     }
-  }
+
+    QPushButton* const texturing_tool::heightmappingApplyGlobalButton()
+    {
+      return _heightmapping_apply_global_btn;
+    }
+
+    QPushButton* const texturing_tool::heightmappingApplyAdtButton()
+    {
+      return _heightmapping_apply_adt_btn;
+    }
+
+    texture_heightmapping_data& texturing_tool::getCurrentHeightMappingSetting()
+    {
+      return textureHeightmappingData;
+    }
+
+    OpacitySlider::OpacitySlider(Qt::Orientation orientation, QWidget* parent)
+      : QSlider(orientation, parent)
+    {
+      setFixedWidth(35);
+    }
+
+    void OpacitySlider::paintEvent(QPaintEvent* event)
+    {
+      // QSlider::paintEvent(event);
+
+      // chat-gpt code, can probably be improved...
+
+      QPainter p(this);
+      QStyleOptionSlider opt;
+      initStyleOption(&opt);
+      opt.subControls = QStyle::SC_SliderGroove | QStyle::SC_SliderHandle;
+      if (tickPosition() != NoTicks)
+        opt.subControls |= QStyle::SC_SliderTickmarks;
+      if (isSliderDown()) {
+        opt.activeSubControls = QStyle::SC_SliderHandle;
+        opt.state |= QStyle::State_Sunken;
+      }
+      else {
+        opt.activeSubControls = QStyle::SC_None;
+      }
+
+      // Draw the groove with a linear gradient
+      QRect grooveRect = style()->subControlRect(QStyle::CC_Slider, &opt, QStyle::SC_SliderGroove, this);
+      grooveRect.setLeft((width() - 35) / 2);
+      grooveRect.setRight((width() + 35) / 2);
+      QLinearGradient gradient(grooveRect.topLeft(), grooveRect.bottomLeft());
+      gradient.setColorAt(0, Qt::black);
+      gradient.setColorAt(1, Qt::white);
+      p.fillRect(grooveRect.adjusted(0, 0, -1, -1), gradient);
+
+      // Draw the handle with red color
+      QRect handleRect = style()->subControlRect(QStyle::CC_Slider, &opt, QStyle::SC_SliderHandle, this);
+      handleRect.setLeft((width() - 35) / 2);
+      handleRect.setRight((width() + 35) / 2);
+      handleRect.setHeight(5); // Set handle height to 5
+      p.setBrush(Qt::red);
+      p.setPen(Qt::NoPen);
+      p.drawRect(handleRect);
+
+      // Draw the ticks if needed
+      if (tickPosition() != NoTicks) {
+        opt.subControls = QStyle::SC_SliderTickmarks;
+        style()->drawComplexControl(QStyle::CC_Slider, &opt, &p, this);
+      }
+
+      // QSlider::paintEvent() source code :
+      /*
+      Q_D(QSlider);
+      QPainter p(this);
+      QStyleOptionSlider opt;
+      initStyleOption(&opt);
+      opt.subControls = QStyle::SC_SliderGroove | QStyle::SC_SliderHandle;
+      if (d->tickPosition != NoTicks)
+      opt.subControls |= QStyle::SC_SliderTickmarks;
+      if (d->pressedControl) {
+      opt.activeSubControls = d->pressedControl;
+      opt.state |= QStyle::State_Sunken;
+      }
+      else {
+      opt.activeSubControls = d->hoverControl;
+      }
+      style()->drawComplexControl(QStyle::CC_Slider, &opt, &p, this);
+      */
+    }
+}
 }

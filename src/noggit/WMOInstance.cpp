@@ -1,15 +1,21 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
-#include <math/bounding_box.hpp>
-#include <noggit/Log.h>
+#include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
+#include <noggit/application/NoggitApplication.hpp>
 #include <noggit/MapHeaders.h>
-#include <noggit/Misc.h> // checkinside
-#include <noggit/ModelInstance.h>
-#include <noggit/WMO.h> // WMO
 #include <noggit/MapTile.h>
-#include <noggit/WMOInstance.h>
+#include <noggit/ModelInstance.h>
 #include <noggit/rendering/Primitives.hpp>
-#include <opengl/scoped.hpp>
+#include <noggit/scoped_blp_texture_reference.hpp>
+#include <noggit/TextureManager.h>
+#include <noggit/WMO.h> // WMO
+#include <noggit/WMOInstance.h>
+
+#include <opengl/shader.hpp>
+
+#include <math/bounding_box.hpp>
+#include <math/frustum.hpp>
+#include <math/ray.hpp>
 
 #include <sstream>
 
@@ -17,7 +23,7 @@ WMOInstance::WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, ENT
   : SceneObject(SceneObjectTypes::eWMO, context)
   , wmo(file_key, context)
   , mFlags(d->flags)
-  , mUnknown(d->unknown), mNameset(d->nameSet)
+  , mNameset(d->nameSet)
   , _doodadset(d->doodadSet)
 {
   pos = glm::vec3(d->pos[0], d->pos[1], d->pos[2]);
@@ -25,9 +31,21 @@ WMOInstance::WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, ENT
 
   uid = d->uniqueID;
 
-  extents[0] = glm::vec3(d->extents[0][0], d->extents[0][1], d->extents[0][2]);
-  extents[1] = glm::vec3(d->extents[1][0], d->extents[1][1], d->extents[1][2]);
+  bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
 
+  if (modern_features)
+  {
+      scale = static_cast<float>(d->scale) / 1024.0f;
+  }
+  else
+  {
+      scale = 1.0f;
+  }
+
+  extents[0] = d->extents[0];
+  extents[1] = d->extents[1];
+
+  _need_recalc_extents = true;
   updateTransformMatrix();
   change_doodadset(_doodadset);
 }
@@ -36,7 +54,6 @@ WMOInstance::WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, Nog
   : SceneObject(SceneObjectTypes::eWMO, context)
   , wmo(file_key, context)
   , mFlags(0)
-  , mUnknown(0)
   , mNameset(0)
   , _doodadset(0)
 {
@@ -46,25 +63,80 @@ WMOInstance::WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, Nog
   uid = 0;
   _context = context;
 
+  _need_recalc_extents = true;
   updateTransformMatrix();
 }
 
+WMOInstance::WMOInstance(WMOInstance&& other) noexcept
+  : SceneObject(other._type, other._context)
+  , wmo(std::move(other.wmo))
+  , group_extents(other.group_extents)
+  , mFlags(other.mFlags)
+  , mNameset(other.mNameset)
+  , _doodadset(other._doodadset)
+  , _doodads_per_group(other._doodads_per_group)
+  , _need_doodadset_update(other._need_doodadset_update)
+  , _update_group_extents(other._update_group_extents)
+  // , hasLowResModel(other.hasLowResModel)
+  , render_low_res(other.render_low_res)
+  , lowResInstance(other.lowResInstance)
+  , lowResWmo(other.lowResWmo)
+{
+  std::swap(extents, other.extents);
+  pos = other.pos;
+  scale = other.scale;
+  dir = other.dir;
+  _context = other._context;
+  uid = other.uid;
+
+  _transform_mat = other._transform_mat;
+  _transform_mat_inverted = other._transform_mat_inverted;
+}
+
+WMOInstance& WMOInstance::operator= (WMOInstance&& other) noexcept
+{
+  std::swap(wmo, other.wmo);
+  std::swap(pos, other.pos);
+  std::swap(extents, other.extents);
+  std::swap(group_extents, other.group_extents);
+  std::swap(dir, other.dir);
+  std::swap(uid, other.uid);
+  std::swap(scale, other.scale);
+  std::swap(mFlags, other.mFlags);
+  std::swap(mNameset, other.mNameset);
+  std::swap(_doodadset, other._doodadset);
+  std::swap(_doodads_per_group, other._doodads_per_group);
+  std::swap(_need_doodadset_update, other._need_doodadset_update);
+  std::swap(_transform_mat, other._transform_mat);
+  std::swap(_transform_mat_inverted, other._transform_mat_inverted);
+  std::swap(_context, other._context);
+  std::swap(_need_recalc_extents, other._need_recalc_extents);
+  std::swap(_update_group_extents, other._update_group_extents);
+  // std::swap(hasLowResModel, other.hasLowResModel);
+  std::swap(render_low_res, other.render_low_res);
+  std::swap(lowResInstance, other.lowResInstance);
+  std::swap(lowResWmo, other.lowResWmo);
+  return *this;
+}
 
 void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
-                       , glm::mat4x4 const& model_view
-                       , glm::mat4x4 const& projection
+                       , const glm::mat4x4 const& model_view
+                       , const glm::mat4x4 const& projection
                        , math::frustum const& frustum
                        , const float& cull_distance
                        , const glm::vec3& camera
                        , bool force_box
                        , bool draw_doodads
                        , bool draw_fog
-                       , std::vector<selection_type> selection
+                       , bool is_selected
                        , int animtime
                        , bool world_has_skies
                        , display_mode display
                        , bool no_cull
                        , bool draw_exterior
+                       , bool render_selection_aabb
+                       , bool render_group_bounds
+                       , bool /*render_lowres*/
                        )
 {
   if (!wmo->finishedLoading() || wmo->loading_failed())
@@ -72,15 +144,7 @@ void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
     return;
   }
 
-  const uint id = this->uid;
-  bool const is_selected = selection.size() > 0 &&
-                           std::find_if(selection.begin(), selection.end(),
-                                        [id](selection_type type)
-                                        {
-                                          return var_type(type) == typeid(selected_object_type)
-                                          && std::get<selected_object_type>(type)->which() == SceneObjectTypes::eWMO
-                                          && static_cast<WMOInstance*>(std::get<selected_object_type>(type))->uid == id;
-                                        }) != selection.end();
+  ensureExtents();
 
   {
     unsigned region_visible = 0;
@@ -106,30 +170,60 @@ void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
 
     wmo_shader.uniform("transform", _transform_mat);
 
-    wmo->renderer()->draw( wmo_shader
-              , model_view
-              , projection
-              , _transform_mat
-              , is_selected && !_grouped
-              , frustum
-              , cull_distance
-              , camera
-              , draw_doodads
-              , draw_fog
-              , animtime
-              , world_has_skies
-              , display
-              , !draw_exterior
-              );
+    // render WDL model
+    [[unlikely]]
+    if (render_low_res && lowResWmo.has_value()
+      && lowResWmo.value()->get()->finishedLoading() && !lowResWmo.value()->get()->loading_failed())
+    {
+      lowResWmo.value()->get()->renderer()->draw(wmo_shader
+        , model_view
+        , projection
+        , _transform_mat
+        , is_selected || _grouped
+        , frustum
+        , cull_distance
+        , camera
+        , draw_doodads
+        , draw_fog
+        , animtime
+        , world_has_skies
+        , display
+        , !draw_exterior
+        , render_group_bounds
+        , _grouped
+      );
+    }
+    else // regular model
+    {
+      wmo->renderer()->draw( wmo_shader
+                , model_view
+                , projection
+                , _transform_mat
+                , is_selected || _grouped
+                , frustum
+                , cull_distance
+                , camera
+                , draw_doodads
+                , draw_fog
+                , animtime
+                , world_has_skies
+                , display
+                , !draw_exterior
+                , render_group_bounds
+                , _grouped
+                );
+      }
+
   }
 
-  if (force_box || is_selected)
+  // axis aligned bounding box (extents)
+  if (render_selection_aabb && (force_box || is_selected) && !_grouped)
   {
     gl.enable(GL_BLEND);
     gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    glm::vec4 color = force_box || _grouped ? glm::vec4(0.5f, 0.5f, 1.0f, 0.5f)
-        : glm::vec4(0.0f, 1.0f, 0.0f, 1.0f);
+    glm::vec4 color = force_box || _grouped ? glm::vec4(0.5f, 0.5f, 1.0f, 0.5f) // light purple-blue
+        : glm::vec4(0.0f, 1.0f, 0.0f, 1.0f); // green
 
     Noggit::Rendering::Primitives::WireBox::getInstance(_context).draw(model_view
        , projection
@@ -140,8 +234,13 @@ void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
   }
 }
 
-void WMOInstance::intersect (math::ray const& ray, selection_result* results, bool do_exterior)
+void WMOInstance::intersect (math::ray const& ray, selection_result* results, bool do_exterior, bool do_interior, bool first_occurence)
 {
+  if (!finishedLoading() || wmo->loading_failed())
+    return;
+
+  ensureExtents();
+
   if (!ray.intersect_bounds (extents[0], extents[1]))
   {
     return;
@@ -149,16 +248,55 @@ void WMOInstance::intersect (math::ray const& ray, selection_result* results, bo
 
   math::ray subray(_transform_mat_inverted, ray);
 
-  for (auto&& result : wmo->intersect(subray, do_exterior))
+  for (auto&& result : wmo->intersect(subray, do_exterior, do_interior, first_occurence))
   {
     results->emplace_back (result, this);
   }
 }
 
+std::array<glm::vec3, 2> const& WMOInstance::getExtents()
+{
+  ensureExtents();
+
+  return extents;
+}
+
+std::array<glm::vec3, 2> const& WMOInstance::getLocalExtents() const
+{
+
+  return { wmo->extents[0], wmo->extents[1] };
+}
+
+std::array<glm::vec3, 8> WMOInstance::getBoundingBox()
+{
+  // auto extents = getExtents();
+  if (_need_recalc_extents)
+    updateTransformMatrix();
+
+  // note, doesn't include group bounds like recalcExtents(), this just trusts blizzard.
+
+  math::aabb const relative_to_model(wmo->extents[0], wmo->extents[1]);
+
+  return relative_to_model.rotated_corners(_transform_mat, true);
+}
+
+// not axis aligned
+bool WMOInstance::extentsDirty() const
+{
+  return _need_recalc_extents || !wmo->finishedLoading();
+}
+
 void WMOInstance::ensureExtents()
 {
-  recalcExtents();
-  // TODO: optimize
+  if ( (_need_recalc_extents || _update_group_extents) && wmo->finishedLoading())
+  {
+    recalcExtents();
+  }
+}
+
+bool WMOInstance::finishedLoading()
+{
+  return wmo->finishedLoading();
 }
 
 void WMOInstance::updateDetails(Noggit::Ui::detail_infos* detail_widget)
@@ -204,13 +342,26 @@ void WMOInstance::updateDetails(Noggit::Ui::detail_infos* detail_widget)
   detail_widget->setText(select_info.str());
 }
 
+[[nodiscard]]
+AsyncObject* WMOInstance::instance_model() const
+{
+  return wmo.get();
+}
+
 void WMOInstance::recalcExtents()
 {
-  // todo: keep track of whether the extents need to be recalculated or not
   // keep the old extents since they are saved in the adt
-  if (wmo->loading_failed() || !wmo->finishedLoading())
+  if (!wmo->finishedLoading())
   {
-    return;
+      _need_recalc_extents = true;
+      return;
+  }
+
+  if (wmo->loading_failed())
+  {
+      extents[0] = extents[1] = pos;
+      _need_recalc_extents = false;
+      return;
   }
 
   updateTransformMatrix();
@@ -218,16 +369,7 @@ void WMOInstance::recalcExtents()
 
   std::vector<glm::vec3> points;
 
-  glm::vec3 wmo_min(misc::transform_model_box_coords(wmo->extents[0]));
-  glm::vec3 wmo_max(misc::transform_model_box_coords(wmo->extents[1]));
-
-  auto&& root_points = math::aabb(wmo_min, wmo_max).all_corners(); 
-  auto adjustedPoints = std::vector<glm::vec3>();
-
-  for (auto const& point : root_points)
-  {
-    adjustedPoints.push_back(_transform_mat * glm::vec4(point, 1.f));
-  }
+  std::array<glm::vec3, 8> const adjustedPoints = math::aabb(wmo->extents[0], wmo->extents[1]).rotated_corners(_transform_mat, true);
 
   points.insert(points.end(), adjustedPoints.begin(), adjustedPoints.end());
 
@@ -235,35 +377,62 @@ void WMOInstance::recalcExtents()
   {
     auto const& group = wmo->groups[i];
 
-    auto&& group_points = math::aabb(group.BoundingBoxMin, group.BoundingBoxMax).all_corners();
-    auto adjustedGroupPoints = std::vector<glm::vec3>();
+    const auto&& group_points = math::aabb(group.BoundingBoxMin, group.BoundingBoxMax).all_corners();
+    std::array<glm::vec3, 8> adjustedGroupPoints;
 
-    for (auto const& point : group_points)
+    for (int i = 0; i < 8; ++i)
     {
-      adjustedGroupPoints.push_back(_transform_mat * glm::vec4(point, 1.f));
+      adjustedGroupPoints[i] = _transform_mat * glm::vec4(group_points[i], 1.f);
     }
-
 
     points.insert(points.end(), adjustedGroupPoints.begin(), adjustedGroupPoints.end());
 
     if (group.has_skybox() || _update_group_extents)
     {
-      math::aabb const group_aabb(adjustedGroupPoints);
+      math::aabb const group_aabb(std::vector<glm::vec3>(adjustedGroupPoints.begin()
+                                  , adjustedGroupPoints.end()));
 
       group_extents[i] = {group_aabb.min, group_aabb.max};
+      _update_group_extents = false;
     }
   }
-  _update_group_extents = false;
 
   math::aabb const wmo_aabb(points);
 
   extents[0] = wmo_aabb.min;
   extents[1] = wmo_aabb.max;
+
+  bounding_radius = glm::distance(wmo->extents[1], wmo->extents[0]) * scale / 2.0f;
+
+  // Update wdl if needed
+  [[unlikely]]
+  if (lowResWmo.has_value())
+  {
+    lowResInstance->pos[0] = pos.x;
+    lowResInstance->pos[1] = pos.y;
+    lowResInstance->pos[2] = pos.z;
+
+    lowResInstance->rot[0] = dir.x;
+    lowResInstance->rot[1] = dir.y;
+    lowResInstance->rot[2] = dir.z;
+
+    lowResInstance->scale = scale * 1024.0f;
+
+    lowResInstance->extents[0] = extents[0];
+    lowResInstance->extents[1] = extents[1];
+  }
+
+  _need_recalc_extents = false;
 }
 
 void WMOInstance::change_nameset(uint16_t name_set)
 {
     mNameset = name_set;
+}
+
+uint16_t WMOInstance::doodadset() const
+{
+  return _doodadset;
 }
 
 void WMOInstance::change_doodadset(uint16_t doodad_set)
@@ -284,7 +453,16 @@ void WMOInstance::change_doodadset(uint16_t doodad_set)
   _doodads_per_group = wmo->doodads_per_group(_doodadset);
   _need_doodadset_update = false;
 
+  ensureExtents();
   update_doodads();
+}
+
+[[nodiscard]]
+std::map<int, std::pair<glm::vec3, glm::vec3>> const& WMOInstance::getGroupExtents()
+{
+  _update_group_extents = true;
+  ensureExtents();
+  return group_extents;
 }
 
 void WMOInstance::update_doodads()
@@ -293,8 +471,8 @@ void WMOInstance::update_doodads()
   {
     for (auto& doodad : group_doodads.second)
     {
-      if (!doodad.need_matrix_update())
-        continue;
+      // if (!doodad.need_matrix_update())
+      //   continue;
 
       doodad.update_transform_matrix_wmo(this);
     }

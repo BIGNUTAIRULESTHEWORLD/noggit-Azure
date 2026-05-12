@@ -1,34 +1,35 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
+#include <noggit/Alphamap.hpp>
+#include <noggit/application/NoggitApplication.hpp>
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/Misc.h>
+#include <noggit/Model.h>
 #include <noggit/ModelInstance.h> // ModelInstance
 #include <noggit/ModelManager.h> // ModelManager
+#include <noggit/project/CurrentProject.hpp>
+#include <noggit/texture_set.hpp>
 #include <noggit/TileWater.hpp>
 #include <noggit/WMOInstance.h> // WMOInstance
 #include <noggit/World.h>
-#include <noggit/Alphamap.hpp>
-#include <noggit/texture_set.hpp>
-#include <noggit/ui/TexturingGUI.h>
-#include <noggit/application/NoggitApplication.hpp>
-#include <ClientFile.hpp>
-#include <opengl/scoped.hpp>
-#include <opengl/shader.hpp>
-#include <external/tracy/Tracy.hpp>
-#include <util/CurrentFunction.hpp>
-
 #include <noggit/World.inl>
+
+#include <math/ray.hpp>
+
+#include <ClientFile.hpp>
+
+#include <util/sExtendableArray.hpp>
+
 #include <QtCore/QSettings>
 
 #include <cassert>
-#include <list>
+#include <limits>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
-#include <limits>
 
 
 MapTile::MapTile( int pX
@@ -42,6 +43,7 @@ MapTile::MapTile( int pX
                 , Noggit::NoggitRenderContext context
                 , tile_mode mode
                 , bool pLoadTextures
+                , bool initRender
                 )
   : AsyncObject(pFilename)
   , _renderer(this)
@@ -61,7 +63,8 @@ MapTile::MapTile( int pX
   , _chunk_update_flags(ChunkUpdateFlags::VERTEX | ChunkUpdateFlags::ALPHAMAP
                         | ChunkUpdateFlags::SHADOW | ChunkUpdateFlags::MCCV
                         | ChunkUpdateFlags::NORMALS| ChunkUpdateFlags::HOLES
-                        | ChunkUpdateFlags::AREA_ID| ChunkUpdateFlags::FLAGS)
+                        | ChunkUpdateFlags::AREA_ID| ChunkUpdateFlags::FLAGS
+                        | ChunkUpdateFlags::GROUND_EFFECT | ChunkUpdateFlags::DETAILDOODADS_EXCLUSION)
   , _extents{glm::vec3{pX * TILESIZE, std::numeric_limits<float>::max(), pZ * TILESIZE},
              glm::vec3{pX * TILESIZE + TILESIZE, std::numeric_limits<float>::lowest(), pZ * TILESIZE + TILESIZE}}
   , _combined_extents{glm::vec3{pX * TILESIZE, std::numeric_limits<float>::max(), pZ * TILESIZE},
@@ -73,11 +76,15 @@ MapTile::MapTile( int pX
 
 MapTile::~MapTile()
 {
-  for (auto& pair : object_instances)
   {
-    for (auto& instance : pair.second)
+    std::lock_guard<std::mutex> const lock(_mutex);
+    
+    for (auto& pair : object_instances)
     {
-      instance->derefTile(this);
+      for (auto& instance : pair.second)
+      {
+        instance->derefTile(this);
+      }
     }
   }
 
@@ -120,6 +127,11 @@ void MapTile::finishLoading()
   uint32_t lMCNKOffsets[256];
   std::vector<ENTRY_MDDF> lModelInstances;
   std::vector<ENTRY_MODF> lWMOInstances;
+
+  std::vector<std::string> mModelFilenames;
+  std::vector<std::string> mWMOFilenames;
+
+  // std::map<std::string, mtxf_entry> _mtxf_entries;
 
   uint32_t fourcc;
   uint32_t size;
@@ -248,6 +260,8 @@ void MapTile::finishLoading()
     for (unsigned int i = 0; i < size / sizeof(ENTRY_MODF); ++i)
     {
       lWMOInstances.push_back(modf_ptr[i]);
+      if(lWMOInstances[i].scale == 0.0f)
+        lWMOInstances[i].scale = 1024.0f;
     }
   }
 
@@ -265,6 +279,8 @@ void MapTile::finishLoading()
     assert(fourcc == 'MH2O');
 
     Water.readFromFile(theFile, ofsW);
+
+    // Water.update_underground_vertices_depth();
   }
 
   // - MFBO ----------------------------------------------
@@ -298,34 +314,30 @@ void MapTile::finishLoading()
     }
   }
 
-  // - MTFX ----------------------------------------------
-  /*
-  //! \todo Implement this or just use Terrain Cube maps?
-  Log << "MTFX offs: " << Header.mtfx << std::endl;
-  if(Header.mtfx != 0){
-  Log << "Try to load MTFX" << std::endl;
-  theFile.seek( Header.mtfx + 0x14 );
-
-  theFile.read( &fourcc, 4 );
-  theFile.read( &size, 4 );
-
-  assert( fourcc == 'MTFX' );
-
-
+  // - MTXF ----------------------------------------------
+  if (Header.mtxf != 0)
   {
-  char* lCurPos = reinterpret_cast<char*>( theFile.getPointer() );
-  char* lEnd = lCurPos + size;
-  int tCount = 0;
-  while( lCurPos < lEnd ) {
-  int temp = 0;
-  theFile.read(&temp, 4);
-  Log << "Adding to " << mTextureFilenames[tCount].first << " texture effect: " << temp << std::endl;
-  mTextureFilenames[tCount++].second = temp;
-  lCurPos += 4;
-  }
-  }
+      theFile.seek(Header.mtxf + 0x14);
 
-  }*/
+      theFile.read(&fourcc, 4);
+      theFile.read(&size, 4);
+
+      assert(fourcc == 'MTXF');
+
+      int count = size / 0x4;
+
+      std::vector<mtxf_entry> mtxf_data(count);
+
+      theFile.read(mtxf_data.data(), size);
+
+      for (int i = 0; i < count; ++i)
+      {
+          // _mtxf_entries[mTextureFilenames[i]] = mtxf_data[i];
+          // only save those with flags set
+          if (mtxf_data[i].use_cubemap)
+              _mtxf_entries[mTextureFilenames[i]] = mtxf_data[i];
+      }
+  }
 
   // - Done. ---------------------------------------------
 
@@ -340,7 +352,7 @@ void MapTile::finishLoading()
     for (auto const& object : lWMOInstances)
     {
       add_model(_world->add_wmo_instance(WMOInstance(mWMOFilenames[object.nameID],
-                                                     &object, _context), _tile_is_being_reloaded));
+                                                     &object, _context), _tile_is_being_reloaded, false));
     }
 
     // - Load M2s ------------------------------------------
@@ -348,7 +360,7 @@ void MapTile::finishLoading()
     for (auto const& model : lModelInstances)
     {
       add_model(_world->add_model_instance(ModelInstance(mModelFilenames[model.nameID],
-                                                         &model, _context), _tile_is_being_reloaded));
+                                                         &model, _context), _tile_is_being_reloaded, false));
     }
 
     _world->need_model_updates = true;
@@ -366,8 +378,13 @@ void MapTile::finishLoading()
     mChunks[x][z] = std::make_unique<MapChunk> (this, &theFile, mBigAlpha, _mode, _context, false, 0, _load_textures);
 
     auto& chunk = mChunks[x][z];
+
+    // if (_init_render)
     _renderer.initChunkData(chunk.get());
   }
+  // can be cleared after texture sets are loaded in chunks.
+  mTextureFilenames.clear();
+  _mtxf_entries.clear();
 
   theFile.close();
 
@@ -384,14 +401,29 @@ bool MapTile::isTile(int pX, int pZ)
   return pX == index.x && pZ == index.z;
 }
 
+bool MapTile::hasFlightBounds() const
+{
+  return mFlags & 1;
+}
+
+async_priority MapTile::loading_priority() const
+{
+  return async_priority::high;
+}
+
+bool MapTile::has_model(uint32_t uid) const
+{
+  return std::find(uids.begin(), uids.end(), uid) != uids.end();
+}
+
 float MapTile::getMaxHeight()
 {
-  return _extents[1].y;
+  return getExtents()[1].y;
 }
 
 float MapTile::getMinHeight()
 {
-  return _extents[0].y;
+  return getExtents()[0].y;
 }
 
 void MapTile::forceRecalcExtents()
@@ -421,12 +453,14 @@ void MapTile::convert_alphamap(bool to_big_alpha)
 }
 
 
-bool MapTile::intersect (math::ray const& ray, selection_result* results) const
+bool MapTile::intersect (math::ray const& ray, selection_result* results)
 {
   if (!finished)
   {
     return false;
   }
+
+  recalcExtents();
 
   if (!ray.intersect_bounds(_extents[0], _extents[1]))
   {
@@ -518,6 +552,24 @@ void MapTile::getVertexInternal(float x, float z, glm::vec3* v)
 
 void MapTile::saveTile(World* world)
 {
+  // if we want to save a duplicate with mclq in a separate folder
+  /*
+  save(world, false);
+
+  if (NoggitSettings.value("use_mclq_liquids_export", false).toBool())
+  {
+    save(world, true);
+  }
+  */
+
+  QSettings settings;
+  bool use_mclq = settings.value("use_mclq_liquids_export", false).toBool();
+
+  save(world, use_mclq);
+}
+
+void MapTile::save(World* world, bool save_using_mclq_liquids)
+{
   Log << "Saving ADT \"" << _file_key.stringRepr() << "\"." << std::endl;
 
   int lID;  // This is a global counting variable. Do not store something in here you need later.
@@ -530,7 +582,7 @@ void MapTile::saveTile(World* world)
   lTileExtents[1] = glm::vec3(xbase + TILESIZE, 0.0f, zbase + TILESIZE);
 
   // get every models on the tile
-  for (std::uint32_t uid : uids)
+  for (std::uint32_t const uid : uids)
   {
     auto model = world->get_model(uid);
 
@@ -569,6 +621,7 @@ void MapTile::saveTile(World* world)
 
   for (auto const& model : lModelInstances)
   {
+    model->ensureExtents();
     if (lModels.find(model->model->file_key().filepath()) == lModels.end())
     {
       lModels.emplace (model->model->file_key().filepath(), nullyThing);
@@ -624,7 +677,7 @@ void MapTile::saveTile(World* world)
     texture.second = lID++;
 
   // Now write the file.
-  sExtendableArray lADTFile;
+  util::sExtendableArray lADTFile;
 
   int lCurrentPosition = 0;
 
@@ -700,7 +753,7 @@ void MapTile::saveTile(World* world)
 
   // MMID data
   // WMO model names
-  int * lMMID_Data = lADTFile.GetPointer<int>(lCurrentPosition + 8);
+  auto const lMMID_Data = lADTFile.GetPointer<int>(lCurrentPosition + 8);
 
   lID = 0;
   for (auto const& model : lModels)
@@ -735,7 +788,7 @@ void MapTile::saveTile(World* world)
   lADTFile.GetPointer<MHDR>(lMHDR_Position + 8)->mwid = lCurrentPosition - 0x14;
 
   // MWID data
-  int * lMWID_Data = lADTFile.GetPointer<int>(lCurrentPosition + 8);
+  auto const lMWID_Data = lADTFile.GetPointer<int>(lCurrentPosition + 8);
 
   lID = 0;
   for (auto const& object : lObjects)
@@ -750,7 +803,7 @@ void MapTile::saveTile(World* world)
   lADTFile.GetPointer<MHDR>(lMHDR_Position + 8)->mddf = lCurrentPosition - 0x14;
 
   // MDDF data
-  ENTRY_MDDF* lMDDF_Data = lADTFile.GetPointer<ENTRY_MDDF>(lCurrentPosition + 8);
+  auto const lMDDF_Data = lADTFile.GetPointer<ENTRY_MDDF>(lCurrentPosition + 8);
 
   if(world->mapIndex.sort_models_by_size_class())
   {
@@ -794,7 +847,7 @@ void MapTile::saveTile(World* world)
   lADTFile.GetPointer<MHDR>(lMHDR_Position + 8)->modf = lCurrentPosition - 0x14;
 
   // MODF data
-  ENTRY_MODF *lMODF_Data = lADTFile.GetPointer<ENTRY_MODF>(lCurrentPosition + 8);
+  auto const lMODF_Data = lADTFile.GetPointer<ENTRY_MODF>(lCurrentPosition + 8);
 
   lID = 0;
   for (auto const& object : lObjectInstances)
@@ -816,18 +869,18 @@ void MapTile::saveTile(World* world)
     lMODF_Data[lID].rot[1] = object->dir.y;
     lMODF_Data[lID].rot[2] = object->dir.z;
 
-    lMODF_Data[lID].extents[0][0] = object->extents[0].x;
-    lMODF_Data[lID].extents[0][1] = object->extents[0].y;
-    lMODF_Data[lID].extents[0][2] = object->extents[0].z;
+    lMODF_Data[lID].extents[0][0] = object->getExtents()[0].x;
+    lMODF_Data[lID].extents[0][1] = object->getExtents()[0].y;
+    lMODF_Data[lID].extents[0][2] = object->getExtents()[0].z;
 
-    lMODF_Data[lID].extents[1][0] = object->extents[1].x;
-    lMODF_Data[lID].extents[1][1] = object->extents[1].y;
-    lMODF_Data[lID].extents[1][2] = object->extents[1].z;
+    lMODF_Data[lID].extents[1][0] = object->getExtents()[1].x;
+    lMODF_Data[lID].extents[1][1] = object->getExtents()[1].y;
+    lMODF_Data[lID].extents[1][2] = object->getExtents()[1].z;
 
     lMODF_Data[lID].flags = object->mFlags;
     lMODF_Data[lID].doodadSet = object->doodadset();
     lMODF_Data[lID].nameSet = object->mNameset;
-    lMODF_Data[lID].unknown = object->mUnknown;
+    lMODF_Data[lID].scale = (uint16_t)(object->scale * 1024);
     lID++;
   }
 
@@ -836,14 +889,17 @@ void MapTile::saveTile(World* world)
   lCurrentPosition += 8 + lMODF_Size;
 
   //MH2O
-  Water.saveToFile(lADTFile, lMHDR_Position, lCurrentPosition);
+  if (!save_using_mclq_liquids)
+  {
+    Water.saveToFile(lADTFile, lMHDR_Position, lCurrentPosition);
+  }
 
   // MCNK
   for (int y = 0; y < 16; ++y)
   {
     for (int x = 0; x < 16; ++x)
     {
-      mChunks[y][x]->save(lADTFile, lCurrentPosition, lMCIN_Position, lTextures, lObjectInstances, lModelInstances);
+      mChunks[y][x]->save(lADTFile, lCurrentPosition, lMCIN_Position, lTextures, lObjectInstances, lModelInstances, save_using_mclq_liquids);
     }
   }
 
@@ -855,7 +911,7 @@ void MapTile::saveTile(World* world)
     SetChunkHeader(lADTFile, lCurrentPosition, 'MFBO', static_cast<int>(chunkSize));
     lADTFile.GetPointer<MHDR>(lMHDR_Position + 8)->mfbo = lCurrentPosition - 0x14;
 
-    int16_t *lMFBO_Data = lADTFile.GetPointer<int16_t>(lCurrentPosition + 8);
+    auto const lMFBO_Data = lADTFile.GetPointer<int16_t>(lCurrentPosition + 8);
 
     lID = 0;
 
@@ -874,9 +930,9 @@ void MapTile::saveTile(World* world)
     //! \todo check if nTexEffects == nTextures, correct order etc.
     lADTFile.Extend(8 + 4 * mTextureEffects.size());
     SetChunkHeader(lADTFile, lCurrentPosition, 'MTFX', 4 * mTextureEffects.size());
-    lADTFile.GetPointer<MHDR>(lMHDR_Position + 8)->mtfx = lCurrentPosition - 0x14;
+    lADTFile.GetPointer<MHDR>(lMHDR_Position + 8)->mtxf = lCurrentPosition - 0x14;
 
-    uint32_t* lMTFX_Data = lADTFile.GetPointer<uint32_t>(lCurrentPosition + 8);
+    auto const lMTFX_Data = lADTFile.GetPointer<uint32_t>(lCurrentPosition + 8);
 
     lID = 0;
     //they should be in the correct order...
@@ -889,14 +945,24 @@ void MapTile::saveTile(World* world)
   }
 #endif
 
-  lADTFile.Extend(static_cast<long>(lCurrentPosition - lADTFile.data.size())); // cleaning unused nulls at the end of file
-
-
   {
     BlizzardArchive::ClientFile f(_file_key.filepath(), Noggit::Application::NoggitApplication::instance()->clientData()
       , BlizzardArchive::ClientFile::NEW_FILE);
-    f.setBuffer(lADTFile.data);
+    // \todo This sounds wrong. There shouldn't *be* unused nulls to
+    // begin with.
+    f.setBuffer(lADTFile.data_up_to(lCurrentPosition)); // cleaning unused nulls at the end of file
     f.save();
+
+    // adspartan's way, save MCLQ files separately
+    /*
+        if (save_using_mclq_liquids)
+    {
+      f.save_file_to_folder(NoggitSettings.value("project/mclq_liquids_path").toString().toStdString());
+    }
+    else
+    {
+      f.save();
+    }*/
   }
 
   lObjectInstances.clear();
@@ -926,8 +992,11 @@ void MapTile::remove_model(uint32_t uid)
   {
     uids.erase(it);
 
-    const auto obj = _world->get_model(uid).value();
-    auto instance = std::get<selected_object_type>(obj);
+    const auto obj = _world->get_model(uid);
+    if (!obj.has_value())
+      return;
+
+    auto instance = std::get<selected_object_type>(obj.value());
 
     auto& instances = object_instances[instance->instance_model()];
     auto it2 = std::find(instances.begin(), instances.end(), instance);
@@ -983,21 +1052,24 @@ void MapTile::add_model(uint32_t uid)
   {
     uids.push_back(uid);
 
-    const auto& obj = _world->get_model(uid).value();
-    auto instance = std::get<selected_object_type>(obj);
+    const auto obj = _world->get_model(uid);
+    if (!obj)
+      return;
+
+    auto instance = std::get<selected_object_type>(obj.value());
     object_instances[instance->instance_model()].push_back(instance);
 
     if (instance->finishedLoading())
     {
       instance->ensureExtents();
 
-      _object_instance_extents[0].x = std::min(_object_instance_extents[0].x, instance->extents[0].x);
-      _object_instance_extents[0].y = std::min(_object_instance_extents[0].y, instance->extents[0].y);
-      _object_instance_extents[0].z = std::min(_object_instance_extents[0].z, instance->extents[0].z);
+      _object_instance_extents[0].x = std::min(_object_instance_extents[0].x, instance->getExtents()[0].x);
+      _object_instance_extents[0].y = std::min(_object_instance_extents[0].y, instance->getExtents()[0].y);
+      _object_instance_extents[0].z = std::min(_object_instance_extents[0].z, instance->getExtents()[0].z);
 
-      _object_instance_extents[1].x = std::max(_object_instance_extents[1].x, instance->extents[1].x);
-      _object_instance_extents[1].y = std::max(_object_instance_extents[1].y, instance->extents[1].y);
-      _object_instance_extents[1].z = std::max(_object_instance_extents[1].z, instance->extents[1].z);
+      _object_instance_extents[1].x = std::max(_object_instance_extents[1].x, instance->getExtents()[1].x);
+      _object_instance_extents[1].y = std::max(_object_instance_extents[1].y, instance->getExtents()[1].y);
+      _object_instance_extents[1].z = std::max(_object_instance_extents[1].z, instance->getExtents()[1].z);
 
       tagCombinedExtents(true);
     }
@@ -1024,13 +1096,13 @@ void MapTile::add_model(SceneObject* instance)
     {
       instance->ensureExtents();
 
-      _object_instance_extents[0].x = std::min(_object_instance_extents[0].x, instance->extents[0].x);
-      _object_instance_extents[0].y = std::min(_object_instance_extents[0].y, instance->extents[0].y);
-      _object_instance_extents[0].z = std::min(_object_instance_extents[0].z, instance->extents[0].z);
+      _object_instance_extents[0].x = std::min(_object_instance_extents[0].x, instance->getExtents()[0].x);
+      _object_instance_extents[0].y = std::min(_object_instance_extents[0].y, instance->getExtents()[0].y);
+      _object_instance_extents[0].z = std::min(_object_instance_extents[0].z, instance->getExtents()[0].z);
 
-      _object_instance_extents[1].x = std::max(_object_instance_extents[1].x, instance->extents[1].x);
-      _object_instance_extents[1].y = std::max(_object_instance_extents[1].y, instance->extents[1].y);
-      _object_instance_extents[1].z = std::max(_object_instance_extents[1].z, instance->extents[1].z);
+      _object_instance_extents[1].x = std::max(_object_instance_extents[1].x, instance->getExtents()[1].x);
+      _object_instance_extents[1].y = std::max(_object_instance_extents[1].y, instance->getExtents()[1].y);
+      _object_instance_extents[1].z = std::max(_object_instance_extents[1].z, instance->getExtents()[1].z);
 
       tagCombinedExtents(true);
     }
@@ -1043,6 +1115,16 @@ void MapTile::add_model(SceneObject* instance)
   }
 }
 
+bool MapTile::tile_is_being_reloaded() const
+{
+  return _tile_is_being_reloaded;
+}
+
+std::vector<uint32_t>* MapTile::get_uids()
+{
+  return &uids;
+}
+
 void MapTile::initEmptyChunks()
 {
   for (int nextChunk = 0; nextChunk < 256; ++nextChunk)
@@ -1053,7 +1135,9 @@ void MapTile::initEmptyChunks()
 
 QImage MapTile::getHeightmapImage(float min_height, float max_height)
 {
-    QImage image(257, 257, QImage::Format_Grayscale16);
+    // grayscale 16 doesn't work, it rounds values or is actually 8bit
+    QImage image(257, 257, QImage::Format_RGBA64);
+    int depth = image.depth();
 
   unsigned const LONG{9}, SHORT{8}, SUM{LONG + SHORT}, DSUM{SUM * 2};
 
@@ -1075,7 +1159,7 @@ QImage MapTile::getHeightmapImage(float min_height, float max_height)
           unsigned const idx {(plain - (is_virtual ? (erp ? SUM : 1) : 0)) / 2};
           float value = is_virtual ? (heightmap[idx].y + heightmap[idx + (erp ? SUM : 1)].y) / 2.f : heightmap[idx].y;
           value = std::min(1.0f, std::max(0.0f, ((value - min_height) / (max_height - min_height))));
-          image.setPixelColor((k * 16) + x,  (l * 16) + y, QColor::fromRgbF(value, value, value, 1.0));
+          image.setPixelColor((k * 16) + x,  (l * 16) + y, QColor::fromRgbF(value, value, value, 1.0)); // grayscale uses alpha channel ?
         }
       }
     }
@@ -1125,7 +1209,7 @@ QImage MapTile::getNormalmapImage()
 
 QImage MapTile::getAlphamapImage(unsigned layer)
 {
-  QImage image(1024, 1024, QImage::Format_Grayscale8);
+  QImage image(1024, 1024, QImage::Format_RGBA8888);
   image.fill(Qt::black);
 
   for (int i = 0; i < 16; ++i)
@@ -1140,7 +1224,7 @@ QImage MapTile::getAlphamapImage(unsigned layer)
       chunk->texture_set->apply_alpha_changes();
       auto alphamaps = chunk->texture_set->getAlphamaps();
 
-      auto alpha_layer = alphamaps->at(layer - 1).value();
+      auto alpha_layer = *alphamaps->at(layer - 1);
 
       for (int k = 0; k < 64; ++k)
       {
@@ -1158,7 +1242,7 @@ QImage MapTile::getAlphamapImage(unsigned layer)
 
 QImage MapTile::getAlphamapImage(std::string const& filename)
 {
-  QImage image(1024, 1024, QImage::Format_Grayscale8);
+  QImage image(1024, 1024, QImage::Format_RGBA8888);
   image.fill(Qt::black);
 
   for (int i = 0; i < 16; ++i)
@@ -1199,23 +1283,23 @@ QImage MapTile::getAlphamapImage(std::string const& filename)
         {
           for (int l = 0; l < 64; ++l)
           {
-            if (layer == 0) // titi test
+            if (layer == 0)
             {
               // WoW calculates layer 0 as 255 - sum(Layer[1]...Layer[3])
               int layers_sum = 0;
-              if (alphamaps->at(0).has_value())
-                  layers_sum += alphamaps->at(0).value().getAlpha(64 * l + k);
-              if (alphamaps->at(1).has_value())
-                  layers_sum += alphamaps->at(1).value().getAlpha(64 * l + k);
-              if (alphamaps->at(2).has_value())
-                  layers_sum += alphamaps->at(2).value().getAlpha(64 * l + k);
+              if (alphamaps->at(0))
+                  layers_sum += alphamaps->at(0)->getAlpha(64 * l + k);
+              if (alphamaps->at(1))
+                  layers_sum += alphamaps->at(1)->getAlpha(64 * l + k);
+              if (alphamaps->at(2))
+                  layers_sum += alphamaps->at(2)->getAlpha(64 * l + k);
               
               int value = std::clamp((255 - layers_sum), 0, 255);
               image.setPixelColor((i * 64) + k, (j * 64) + l, QColor(value, value, value, 255));
             }
             else // layer 1-3
             {
-              auto alpha_layer = alphamaps->at(layer - 1).value();
+                auto& alpha_layer = *alphamaps->at(layer - 1);
 
               int value = alpha_layer.getAlpha(64 * l + k);
               image.setPixelColor((i * 64) + k, (j * 64) + l, QColor(value, value, value, 255));
@@ -1229,9 +1313,11 @@ QImage MapTile::getAlphamapImage(std::string const& filename)
   return std::move(image);
 }
 
-void MapTile::setHeightmapImage(QImage const& baseimage, float multiplier, int mode, bool tiledEdges) // image
+void MapTile::setHeightmapImage(QImage const& baseimage, float min_height, float max_height, int mode, bool tiledEdges) // image
 {
-  auto image = baseimage.convertToFormat(QImage::Format_Grayscale16);
+  auto image = baseimage.convertToFormat(QImage::Format_RGBA64);
+
+  float const height_range = (max_height - min_height);
 
   unsigned const LONG{9}, SHORT{8}, SUM{LONG + SHORT}, DSUM{SUM * 2};
   for (int k = 0; k < 16; ++k)
@@ -1267,22 +1353,27 @@ void MapTile::setHeightmapImage(QImage const& baseimage, float multiplier, int m
             case 16:
             case 32:
             {
+              float const ratio = qGray(image.pixel((k * 16) + x, (l * 16) + y)) / 255.0f; // 0.0 - 1.0
+              float const new_height = (height_range * ratio) + min_height;
+
+              float test_newheight = (ratio + min_height) * (height_range);
+
               switch (mode)
               {
                 case 0: // Set
-                  heightmap[idx].y = qGray(image.pixel((k * 16) + x, (l * 16) + y)) / 255.0f * multiplier;
+                  heightmap[idx].y = new_height;
                   break;
 
                 case 1: // Add
-                  heightmap[idx].y += qGray(image.pixel((k * 16) + x, (l * 16) + y)) / 255.0f * multiplier;
+                  heightmap[idx].y += new_height;
                   break;
 
                 case 2: // Subtract
-                  heightmap[idx].y -= qGray(image.pixel((k * 16) + x, (l * 16) + y)) / 255.0f * multiplier;
+                  heightmap[idx].y -= new_height;
                   break;
 
                 case 3: // Multiply
-                  heightmap[idx].y *= qGray(image.pixel((k * 16) + x, (l * 16) + y)) / 255.0f * multiplier;
+                  heightmap[idx].y *= new_height;
                   break;
               }
 
@@ -1291,22 +1382,25 @@ void MapTile::setHeightmapImage(QImage const& baseimage, float multiplier, int m
 
             case 64:
             {
+              double const ratio = image.pixelColor((k * 16) + x, (l * 16) + y).redF(); // 0.0 - 1.0
+              float new_height = height_range * ratio + min_height;
+
               switch (mode)
               {
                 case 0: // Set
-                  heightmap[idx].y = image.pixelColor((k * 16) + x, (l * 16) + y).redF() * multiplier;
+                  heightmap[idx].y = new_height;
                   break;
 
                 case 1: // Add
-                  heightmap[idx].y += image.pixelColor((k * 16) + x, (l * 16) + y).redF() * multiplier;;
+                  heightmap[idx].y += new_height;
                   break;
 
                 case 2: // Subtract
-                  heightmap[idx].y -= image.pixelColor((k * 16) + x, (l * 16) + y).redF() * multiplier;;
+                  heightmap[idx].y -= new_height;
                   break;
 
                 case 3: // Multiply
-                  heightmap[idx].y *= image.pixelColor((k * 16) + x, (l * 16) + y).redF() * multiplier;;
+                  heightmap[idx].y *= new_height;
                   break;
               }
 
@@ -1317,6 +1411,10 @@ void MapTile::setHeightmapImage(QImage const& baseimage, float multiplier, int m
         }
 
       registerChunkUpdate(ChunkUpdateFlags::VERTEX);
+
+      // else we recalculate after tiled edges updates
+      if (!tiledEdges)
+        chunk->recalcNorms();
     }
   }
 
@@ -1338,6 +1436,7 @@ void MapTile::setHeightmapImage(QImage const& baseimage, float multiplier, int m
                 int source_vert = vert_x;
                 targetChunk->getHeightmap()[target_vert].y = sourceChunk->getHeightmap()[source_vert].y;
             }
+            targetChunk->recalcNorms();
           }
           tile->registerChunkUpdate(ChunkUpdateFlags::VERTEX);
         }
@@ -1360,6 +1459,7 @@ void MapTile::setHeightmapImage(QImage const& baseimage, float multiplier, int m
                 int source_vert = vert_y * 17;
                 targetChunk->getHeightmap()[target_vert].y = sourceChunk->getHeightmap()[source_vert].y;
             }
+            targetChunk->recalcNorms();
           }
           tile->registerChunkUpdate(ChunkUpdateFlags::VERTEX);
         }
@@ -1374,16 +1474,35 @@ void MapTile::setHeightmapImage(QImage const& baseimage, float multiplier, int m
           MapChunk* targetChunk = tile->getChunk(15, 15);
           targetChunk->registerChunkUpdate(ChunkUpdateFlags::VERTEX);
           tile->getChunk(15,15)->getHeightmap()[144].y = this->getChunk(0,0)->getHeightmap()[0].y;
+          targetChunk->recalcNorms();
           tile->registerChunkUpdate(ChunkUpdateFlags::VERTEX);
         }
       );
     }
+  
+    for (int k = 0; k < 16; ++k)
+    {
+        for (int l = 0; l < 16; ++l)
+        {
+            MapChunk* chunk = getChunk(k, l);
+            // chunk->recalcNorms();
+        }
+    }
   }
 }
 
-void MapTile::setAlphaImage(QImage const& baseimage, unsigned layer)
+void MapTile::setAlphaImage(QImage const& baseimage, unsigned layer, bool cleanup)
 {
-  auto image = baseimage.convertToFormat(QImage::Format_Grayscale8);
+  QImage image;
+  auto format = baseimage.format();
+  if (baseimage.format() == QImage::Format_Grayscale8)
+  {
+    image = baseimage;
+  }
+  else
+  {
+    image = baseimage.convertToFormat(QImage::Format_Grayscale8);
+  }
 
   for (int k = 0; k < 16; ++k)
   {
@@ -1396,19 +1515,55 @@ void MapTile::setAlphaImage(QImage const& baseimage, unsigned layer)
 
       chunk->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
 
-      chunk->texture_set->create_temporary_alphamaps_if_needed();
-      auto& temp_alphamaps = chunk->texture_set->getTempAlphamaps()->value();
+      // chunk->texture_set->create_temporary_alphamaps_if_needed();
+      // auto& temp_alphamaps = *chunk->texture_set->getTempAlphamaps();
+      // float* dst = temp_alphamaps[layer].data();
 
-      for (int i = 0; i < 64; ++i)
+      unsigned char pAmap[64 * 64]; // use direct alphamap instead 
+
+      const int base_x = k * 64;
+      const int base_y = l * 64;
+
+      for (int j = 0; j < 64; ++j)
       {
-        for (int j = 0; j < 64; ++j)
+        const int row_offset = j * 64;
+        // const int img_y = base_y + j;
+
+        constexpr bool gray_convert = false;
+
+        if (!gray_convert)
         {
-          temp_alphamaps[layer][64 * j + i] = static_cast<float>(qGray(image.pixel((k * 64) + i, (l * 64) + j)));
+          const uchar* scanLine = image.scanLine(base_y + j) + base_x;
+          memcpy(pAmap + row_offset, scanLine, 64);
+        }
+        else
+        {
+          const uchar* scanLine = image.scanLine(base_y + j);
+          for (int i = 0; i < 64; ++i)
+          {
+            // const int img_x = base_x + i;
+            // QRgb px = image.pixel(img_x, img_y);
+            // 
+            // // dst[row_offset + i] = static_cast<float>(qGray(px));
+            // // alphamap->setAlpha()
+            // unsigned char value = static_cast<unsigned char>(qGray(px));
+            // pAmap[row_offset + i] = value;
+          
+            const QRgb* px = reinterpret_cast<const QRgb*>(scanLine + (base_x + i) * 4);
+            pAmap[row_offset + i] = static_cast<unsigned char>(qGray(*px));
+          }
         }
       }
+      auto alphamap = chunk->texture_set->getAlphamaps()->at(layer - 1).get();
+      alphamap->setAlpha(pAmap);
+      chunk->texture_set->getTempAlphamaps().reset();
+
+      if (cleanup)
+          chunk->texture_set->eraseUnusedTextures();
 
       chunk->texture_set->markDirty();
-      chunk->texture_set->apply_alpha_changes();
+      // chunk->texture_set->apply_alpha_changes();
+
 
     }
   }
@@ -1464,6 +1619,11 @@ void MapTile::setVertexColorImage(QImage const& baseimage, int mode, bool tiledE
     {
       MapChunk* chunk = getChunk(k, l);
 
+      if (!chunk->hasColors())
+      {
+          chunk->initMCCV();
+      }
+
       chunk->registerChunkUpdate(ChunkUpdateFlags::MCCV);
 
       glm::vec3* colors = chunk->getVertexColors();
@@ -1498,27 +1658,27 @@ void MapTile::setVertexColorImage(QImage const& baseimage, int mode, bool tiledE
             case 1: // Add
             {
               auto color = image.pixelColor((k * 16) + x, (l * 16) + y);
-              colors[idx].x =  std::min(2.0, std::max(0.0, colors[idx].x + color.redF() * 2.f));
-              colors[idx].y =  std::min(2.0, std::max(0.0, colors[idx].y + color.greenF() * 2.f));
-              colors[idx].z =  std::min(2.0, std::max(0.0, colors[idx].z + color.blueF() * 2.f));
+              colors[idx].x = std::min(2.0f, std::max(0.0f, colors[idx].x + static_cast<float>(color.redF() * 2.f)));
+              colors[idx].y =  std::min(2.0f, std::max(0.0f, colors[idx].y + static_cast<float>(color.greenF() * 2.f)));
+              colors[idx].z =  std::min(2.0f, std::max(0.0f, colors[idx].z + static_cast<float>(color.blueF() * 2.f)));
               break;
             }
 
             case 2: // Subtract
             {
               auto color = image.pixelColor((k * 16) + x, (l * 16) + y);
-              colors[idx].x =  std::min(2.0, std::max(0.0, colors[idx].x - color.redF() * 2.f));
-              colors[idx].y =  std::min(2.0, std::max(0.0, colors[idx].y - color.greenF() * 2.f));
-              colors[idx].z =  std::min(2.0, std::max(0.0, colors[idx].z - color.blueF() * 2.f));
+              colors[idx].x =  std::min(2.0f, std::max(0.0f, colors[idx].x - static_cast<float>(color.redF() * 2.f)));
+              colors[idx].y =  std::min(2.0f, std::max(0.0f, colors[idx].y - static_cast<float>(color.greenF() * 2.f)));
+              colors[idx].z =  std::min(2.0f, std::max(0.0f, colors[idx].z - static_cast<float>(color.blueF() * 2.f)));
               break;
             }
 
             case 3: // Multiply
             {
               auto color = image.pixelColor((k * 16) + x, (l * 16) + y);
-              colors[idx].x =  std::min(2.0, std::max(0.0, colors[idx].x * color.redF() * 2.f));
-              colors[idx].y =  std::min(2.0, std::max(0.0, colors[idx].y * color.greenF() * 2.f));
-              colors[idx].z =  std::min(2.0, std::max(0.0, colors[idx].z * color.blueF() * 2.f));
+              colors[idx].x =  std::min(2.0f, std::max(0.0f, colors[idx].x * static_cast<float>(color.redF() * 2.f)));
+              colors[idx].y =  std::min(2.0f, std::max(0.0f, colors[idx].y * static_cast<float>(color.greenF() * 2.f)));
+              colors[idx].z =  std::min(2.0f, std::max(0.0f, colors[idx].z * static_cast<float>(color.blueF() * 2.f)));
               break;
             }
           }
@@ -1539,6 +1699,12 @@ void MapTile::setVertexColorImage(QImage const& baseimage, int mode, bool tiledE
           {
             MapChunk* targetChunk = tile->getChunk(chunk_x, 15);
             MapChunk* sourceChunk = this->getChunk(chunk_x, 0);
+
+            if (!targetChunk->hasColors())
+            {
+                targetChunk->initMCCV();
+            }
+
             targetChunk->registerChunkUpdate(ChunkUpdateFlags::MCCV);
             for (int vert_x = 0; vert_x < 9; ++vert_x)
             {
@@ -1562,6 +1728,12 @@ void MapTile::setVertexColorImage(QImage const& baseimage, int mode, bool tiledE
           {
             MapChunk* targetChunk = tile->getChunk(15, chunk_y);
             MapChunk* sourceChunk = this->getChunk(0, chunk_y);
+
+            if (!targetChunk->hasColors())
+            {
+                targetChunk->initMCCV();
+            }
+
             targetChunk->registerChunkUpdate(ChunkUpdateFlags::MCCV);
             for (int vert_y = 0; vert_y < 9; ++vert_y)
             {
@@ -1581,6 +1753,12 @@ void MapTile::setVertexColorImage(QImage const& baseimage, int mode, bool tiledE
         , [&] (MapTile* tile)
         {
           MapChunk* targetChunk = tile->getChunk(15, 15);
+
+          if (!targetChunk->hasColors())
+          {
+              targetChunk->initMCCV();
+          }
+
           targetChunk->registerChunkUpdate(ChunkUpdateFlags::MCCV);
           tile->getChunk(15,15)->getVertexColors()[144] = this->getChunk(0,0)->getVertexColors()[0];
           tile->registerChunkUpdate(ChunkUpdateFlags::MCCV);
@@ -1590,6 +1768,26 @@ void MapTile::setVertexColorImage(QImage const& baseimage, int mode, bool tiledE
   }
 }
 
+void MapTile::registerChunkUpdate(unsigned flags)
+{
+  _chunk_update_flags |= flags;
+}
+
+void MapTile::endChunkUpdates()
+{
+  _chunk_update_flags = 0;
+}
+
+std::array<float, 145 * 256 * 4>& MapTile::getChunkHeightmapBuffer()
+{
+  return _chunk_heightmap_buffer;
+}
+
+unsigned MapTile::getChunkUpdateFlags() const
+{
+  return _chunk_update_flags;
+}
+
 void MapTile::recalcExtents()
 {
   if (!_extents_dirty)
@@ -1597,6 +1795,18 @@ void MapTile::recalcExtents()
 
   _extents[0].y = std::numeric_limits<float>::max();
   _extents[1].y = std::numeric_limits<float>::lowest();
+
+  if (!finishedLoading())
+  {
+    _extents_dirty = true;
+    return;
+  }
+
+  if (loading_failed())
+  {
+    _extents_dirty = false;
+    return;
+  }
 
   for (int i = 0; i < 256; ++i)
   {
@@ -1654,8 +1864,8 @@ void MapTile::recalcObjectInstanceExtents()
 
       instance->ensureExtents();
 
-      glm::vec3& min = instance->extents[0];
-      glm::vec3& max = instance->extents[1];
+      glm::vec3 min = instance->getExtents()[0];
+      glm::vec3 max = instance->getExtents()[1];
 
       _object_instance_extents[0].x = std::min(_object_instance_extents[0].x, min.x);
       _object_instance_extents[0].y = std::min(_object_instance_extents[0].y, min.y);
@@ -1671,15 +1881,132 @@ void MapTile::recalcObjectInstanceExtents()
 
 }
 
+float MapTile::camDist() const
+{
+  return _cam_dist;
+}
+
 void MapTile::calcCamDist(glm::vec3 const& camera)
 {
   _cam_dist = glm::distance(camera, _center);
+}
+
+void MapTile::markExtentsDirty()
+{
+  _extents_dirty = true;
+}
+
+void MapTile::tagCombinedExtents(bool state)
+{
+  _combined_extents_dirty = state;
+}
+
+Noggit::Rendering::TileRender* MapTile::renderer()
+{
+  return &_renderer;
+}
+
+Noggit::Rendering::FlightBoundsRender* MapTile::flightBoundsRenderer()
+{
+  return &_fl_bounds_render;
+}
+
+const texture_heightmapping_data& MapTile::GetTextureHeightMappingData(const std::string& name) const
+{
+    return Noggit::Project::CurrentProject::get()->ExtraMapData.GetTextureHeightDataForADT(_world->mapIndex._map_id, index,name);
+}
+
+void MapTile::forceAlphaUpdate()
+{
+    for (int i = 0; i < 16; ++i)
+    {
+        for (int j = 0; j < 16; ++j)
+        {
+            auto chunk = mChunks[i][j].get();
+            auto texSet = chunk->getTextureSet();
+            texSet->markDirty();
+        }
+    }
+}
+
+bool MapTile::childrenFinishedLoading()
+{
+  if (!objectsFinishedLoading())
+    return false;
+
+  if (!texturesFinishedLoading())
+    return false;
+
+  return true;
+}
+
+// TODO : Is there a way for objects to notify their parent when they finish loading ?
+// TODO : we can store a cache of unloaded models/textures to check fast instead of re iterating everything.
+bool MapTile::texturesFinishedLoading()
+{
+  if (_textures_finished_loading)
+    return true;
+
+  // having a list of textures in the adt would speed this up
+  for (int i = 0; i < 16; ++i)
+  {
+    for (int j = 0; j < 16; ++j)
+    {
+      auto& chunk = *mChunks[j][i];
+      auto& chunk_textures = *(chunk.texture_set->getTextures());
+      for (int k = 0; k < chunk.texture_set->num(); ++k)
+      {
+        if (!chunk_textures[k]->finishedLoading())
+          return false;
+      }
+    }
+  }
+
+  return _textures_finished_loading = true;
+}
+
+bool MapTile::objectsFinishedLoading()
+{
+  if (_objects_finished_loading)
+    return true;
+
+  for (auto& instance : object_instances)
+  {
+    if (!instance.first->finishedLoading())
+      return false;
+  }
+
+  return _objects_finished_loading = true;
 }
 
 void MapTile::recalcCombinedExtents()
 {
   if (!_combined_extents_dirty)
     return;
+
+  if (!finishedLoading())
+  {
+    _combined_extents_dirty = true;
+    return;
+  }
+
+  if (loading_failed())
+  {
+    _combined_extents_dirty = false;
+    return;
+  }
+
+  // ensure all extents are updated
+  {
+    recalcExtents();
+
+    if (Water.needsUpdate())
+    {
+      Water.recalcExtents();
+    }
+
+    recalcObjectInstanceExtents();
+  }
 
   _combined_extents = _extents;
 
@@ -1703,4 +2030,23 @@ void MapTile::recalcCombinedExtents()
   _combined_extents_dirty = false;
 }
 
+std::array<glm::vec3, 2>& MapTile::getExtents()
+{
+  recalcExtents(); return _extents;
+}
 
+std::array<glm::vec3, 2>& MapTile::getCombinedExtents()
+{
+  recalcCombinedExtents(); return _combined_extents;
+}
+
+World* MapTile::getWorld()
+{
+  return _world;
+}
+
+[[nodiscard]]
+tsl::robin_map<AsyncObject*, std::vector<SceneObject*>> const& MapTile::getObjectInstances() const
+{
+  return object_instances;
+}

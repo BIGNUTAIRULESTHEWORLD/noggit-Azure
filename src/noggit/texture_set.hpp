@@ -3,7 +3,6 @@
 #pragma once
 
 #include <noggit/Alphamap.hpp>
-#include <noggit/MapHeaders.h>
 #include <noggit/ContextObject.hpp>
 #include <noggit/TextureManager.h>
 
@@ -13,6 +12,7 @@
 class Brush;
 class MapTile;
 class MapChunk;
+struct MapChunkHeader;
 
 namespace BlizzardArchive
 {
@@ -31,13 +31,21 @@ struct tmp_edit_alpha_values
   }
 };
 
+struct layer_info
+{
+    // uint32_t  textureID = 0;
+    uint32_t  flags = 0;
+    // uint32_t  ofsAlpha = 0;
+    uint32_t  effectID = 0xFFFFFFFF; // default value, see https://wowdev.wiki/ADT/v18#MCLY_sub-chunk
+};
+
 class TextureSet
 {
 public:
   TextureSet() = delete;
-  TextureSet(MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t base, MapTile* tile
+  TextureSet(MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t base
              , bool use_big_alphamaps, bool do_not_fix_alpha_map, bool do_not_convert_alphamaps
-             , Noggit::NoggitRenderContext context);
+             , Noggit::NoggitRenderContext context, MapChunkHeader const& header);
 
   int addTexture(scoped_blp_texture_reference texture);
   void eraseTexture(size_t id);
@@ -61,11 +69,11 @@ public:
 
   const std::string& filename(size_t id);
 
-  size_t const& num() const { return nTextures; }
+  size_t const& num() const;
   unsigned int flag(size_t id);
   unsigned int effect(size_t id);
   bool is_animated(std::size_t id) const;
-  void change_texture_flag(scoped_blp_texture_reference const& tex, std::size_t flag, bool add);
+  void change_texture_flags(scoped_blp_texture_reference const& tex, std::size_t flags);
 
   std::vector<std::vector<uint8_t>> save_alpha(bool big_alphamap);
 
@@ -91,16 +99,33 @@ public:
 
   std::array<std::uint16_t, 8> lod_texture_map();
 
-  std::array<std::optional<Alphamap>, 3>* getAlphamaps() { return &alphamaps; };
-  std::optional<tmp_edit_alpha_values>* getTempAlphamaps() { return &tmp_edit_values; };
+  std::array<std::unique_ptr<Alphamap>, MAX_ALPHAMAPS>* getAlphamaps();;
+  std::unique_ptr<tmp_edit_alpha_values>& getTempAlphamaps();;
+
+  void setAlphamaps(const std::array<std::unique_ptr<Alphamap>, MAX_ALPHAMAPS>& newAlphamaps);
 
   int get_texture_index_or_add (scoped_blp_texture_reference texture, float target);
-  auto getDoodadMappingBase(void) -> std::uint16_t* { return _doodadMapping.data(); }
-  auto getDoodadStencilBase(void) -> std::uint8_t* { return _doodadStencil.data(); }
-  auto getEffectForLayer(std::size_t idx) const -> unsigned { return _layers_info[idx].effectID; }
-  ENTRY_MCLY* getMCLYEntries() { return &_layers_info[0]; };
-  void setNTextures(size_t n) { nTextures = n; };
-  std::vector<scoped_blp_texture_reference>* getTextures() { return &textures; };
+
+  auto getDoodadMappingBase(void) -> std::uint16_t*;
+  std::array<std::uint16_t, 8> const& getDoodadMapping();
+  std::array<std::array<std::uint8_t, 8>, 8> const getDoodadMappingReadable(); // get array of readable values
+  uint8_t const getDoodadActiveLayerIdAt(unsigned int unit_x, unsigned int unit_y);
+
+  std::array<std::uint8_t, 8> _doodadStencil; // doodads disabled if 1; WoD: may be an explicit MCDD chunk
+                                                // this is actually uint1_t[8][8] (8*8 -> 1 bit each)
+  auto getDoodadStencilBase(void) -> std::uint8_t*;
+  bool const getDoodadDisabledAt(int x, int y); // max is 8
+  void setDetailDoodadsExclusion(float xbase, float zbase, glm::vec3 const& pos, float radius, bool big, bool add);
+
+  auto getEffectForLayer(std::size_t idx) const -> unsigned;
+  layer_info* getMCLYEntries();;
+  void setNTextures(size_t n);;
+  std::vector<scoped_blp_texture_reference>* getTextures();;
+
+  // get the weight of each texture in a chunk unit
+  std::array<float, 4> get_textures_weight_for_unit(unsigned int unit_x, unsigned int unit_y);
+
+  void updateDoodadMapping();
 
 private:
 
@@ -112,21 +137,33 @@ private:
   void update_lod_texture_map(); // todo: remove. WHAT?
 
   MapChunk* _chunk;
-  MapTile* _tile;
 
   std::vector<scoped_blp_texture_reference> textures;
-  std::array<std::optional<Alphamap>, 3> alphamaps;
+  std::array<std::unique_ptr<Alphamap>, MAX_ALPHAMAPS> alphamaps;
+
+  // Mists Heightmapping
+  std::vector<scoped_blp_texture_reference> heightTextures;
+  std::array<texture_heightmapping_data, 4> heightMappingData;
+
   size_t nTextures;
 
-  std::array<std::uint16_t, 8> _doodadMapping;
-  std::array<std::uint8_t, 8> _doodadStencil;
+  // byte[8][8] // can store the 2bits value in a byte, but might never be higher than 3 or layer count.
+  std::array<std::uint16_t, 8> _doodadMapping; // "predTex", It is used to determine which detail doodads to show.Values are an array of two bit unsigned integers, naming the layer.
+                                                // this is actually uint2_t[8][8] (8*8 -> 2 bit each)
+                                                // getting the layer id from the two bits :  MCLY textureLayer entry ID (can be only one of: 00 | 01 | 10 | 11)
+  // bool[8][8]
+
   bool _need_lod_texture_map_update = false;
 
-  ENTRY_MCLY _layers_info[4];
+  layer_info _layers_info[4];
 
-  std::optional<tmp_edit_alpha_values> tmp_edit_values;
+  std::unique_ptr<tmp_edit_alpha_values> tmp_edit_values;
 
   bool _do_not_convert_alphamaps;
+
+  static constexpr std::array<std::uint8_t, 256 * 256> make_alpha_lookup_array();
+
+  static std::array<std::uint8_t, 256 * 256> alpha_convertion_lookup;
 
   Noggit::NoggitRenderContext _context;
 };

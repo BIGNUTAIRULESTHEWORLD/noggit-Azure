@@ -2,23 +2,30 @@
 
 #pragma once
 
-#include "qcheckbox.h"
+#include <noggit/ui/FontNoggit.hpp>
+
 #include <functional>
 
+#include <QWidgetAction>
 #include <QtWidgets/QActionGroup>
 #include <QtWidgets/QToolBar>
+#include <QHBoxLayout>
 
-#include <noggit/MapView.h>
-#include <noggit/ui/FontNoggit.hpp>
-#include <noggit/BoolToggleProperty.hpp>
-#include <noggit/ui/FlattenTool.hpp>
+class MapView;
+
+class QPushButton;
+class QCheckBox;
 
 namespace Noggit
 {
+  struct BoolToggleProperty;
+
   namespace Ui::Tools::ViewToolbar::Ui
   {
     class ViewToolbar: public QToolBar
     {
+        Q_OBJECT
+
     public:
       ViewToolbar(MapView* mapView);
       ViewToolbar(MapView* mapView, ViewToolbar* tb);
@@ -26,7 +33,7 @@ namespace Noggit
 
       void setCurrentMode(MapView* mapView, editing_mode mode);
 
-      editing_mode getCurrentMode() const { return current_mode; }
+      editing_mode getCurrentMode() const;
 
       /*secondary top tool*/
       QVector<QWidgetAction*> _climb_secondary_tool;
@@ -34,7 +41,7 @@ namespace Noggit
 
       /*secondary left tool*/
       QVector<QWidgetAction*> _flatten_secondary_tool;
-      void nextFlattenMode(MapView* mapView);
+      void nextFlattenMode();
 
       QVector<QWidgetAction*> _texture_secondary_tool;
       bool showUnpaintableChunk();
@@ -45,6 +52,10 @@ namespace Noggit
       bool drawOnlyInsideSphereLight();
       bool drawWireframeSphereLight();
       float getAlphaSphereLight();
+
+    signals:
+        void updateStateRaise(bool newState);
+        void updateStateLower(bool newState);
 
     private:
       QActionGroup _tool_group;
@@ -67,67 +78,12 @@ namespace Noggit
 
     };
 
-    class SliderAction : public QWidgetAction
-    {
-    public:
-        template <typename T>
-        SliderAction (const QString &title, int min, int max, int value, const QString& prec,
-            std::function<T(T v)> func)
-            : QWidgetAction(NULL)
-        {
-            static_assert (std::is_arithmetic<T>::value, "<T>SliderAction - T must be numeric");
-
-            QWidget* _widget = new QWidget(NULL);
-            QHBoxLayout* _layout = new QHBoxLayout();
-            _layout->setSpacing(3);
-            _layout->setMargin(0);
-            QLabel* _label = new QLabel(title);
-            QLabel* _display = new QLabel(QString::number(func(static_cast<T>(value)), 'f', 2) + tr(" %1").arg(prec));
-
-            _slider = new QSlider(NULL);
-            _slider->setOrientation(Qt::Horizontal);
-            _slider->setMinimum(min);
-            _slider->setMaximum(max);
-            _slider->setValue(value);
-
-            connect(_slider, &QSlider::valueChanged, [_display, prec, func](int value)
-                    {
-                        _display->setText(QString::number(func(static_cast<T>(value)), 'f', 2) + tr(" %1").arg(prec));
-                    });
-
-            _layout->addWidget(_label);
-            _layout->addWidget(_slider);
-            _layout->addWidget(_display);
-            _widget->setLayout(_layout);
-
-            setDefaultWidget(_widget);
-        }
-
-        QSlider* slider() { return _slider; }
-
-    private:
-        QSlider *_slider;
-    };
-
     class PushButtonAction : public QWidgetAction
     {
     public:
-        PushButtonAction (const QString& text)
-            : QWidgetAction(NULL)
-        {
-            QWidget* _widget = new QWidget(NULL);
-            QHBoxLayout* _layout = new QHBoxLayout();
-            _layout->setMargin(0);
+        PushButtonAction (const QString& text);
 
-            _push = new QPushButton(text);
-
-            _layout->addWidget(_push);
-            _widget->setLayout(_layout);
-
-            setDefaultWidget(_widget);
-        }
-
-        QPushButton* pushbutton() { return _push; };
+        QPushButton* pushbutton();;
 
     private:
         QPushButton *_push;
@@ -136,23 +92,9 @@ namespace Noggit
     class CheckBoxAction : public QWidgetAction
     {
     public:
-        CheckBoxAction (const QString& text, bool checked = false)
-            : QWidgetAction(NULL)
-        {
-            QWidget* _widget = new QWidget(NULL);
-            QHBoxLayout* _layout = new QHBoxLayout();
-            _layout->setMargin(0);
+        CheckBoxAction (const QString& text, bool checked = false);
 
-            _checkbox = new QCheckBox(text);
-            _checkbox->setChecked(checked);
-
-            _layout->addWidget(_checkbox);
-            _widget->setLayout(_layout);
-
-            setDefaultWidget(_widget);
-        }
-
-        QCheckBox* checkbox() { return _checkbox; };
+        QCheckBox* checkbox();;
 
     private:
         QCheckBox *_checkbox;
@@ -161,22 +103,9 @@ namespace Noggit
     class IconAction : public QWidgetAction
     {
     public:
-        IconAction (const QIcon& icon)
-            : QWidgetAction(NULL)
-        {
-            QWidget* _widget = new QWidget(NULL);
-            QHBoxLayout* _layout = new QHBoxLayout();
-            _layout->setMargin(0);
+        IconAction (const QIcon& icon);
 
-            _icon = new QLabel();
-            _icon->setPixmap(icon.pixmap(QSize(22,22)));
-
-            _layout->addWidget(_icon);
-            _widget->setLayout(_layout);
-            setDefaultWidget(_widget);
-        }
-
-        QLabel* icon() { return _icon; };
+        QLabel* icon();;
 
     private:
         QLabel *_icon;
@@ -185,48 +114,15 @@ namespace Noggit
     class SpacerAction : public QWidgetAction
     {
     public:
-        SpacerAction(Qt::Orientation orientation)
-            : QWidgetAction(NULL)
-        {
-            QWidget* _widget = new QWidget(NULL);
-            QHBoxLayout* _layout = new QHBoxLayout();
-            _layout->setMargin(0);
-
-            if (orientation == Qt::Vertical)
-                _layout->addSpacerItem(new QSpacerItem(0, 0, QSizePolicy::Minimum, QSizePolicy::Expanding));
-            
-            if (orientation == Qt::Horizontal)
-                _layout->addSpacerItem(new QSpacerItem(0, 0, QSizePolicy::Expanding, QSizePolicy::Minimum));
-
-            _widget->setLayout(_layout);
-            setDefaultWidget(_widget);
-        }
+        SpacerAction(Qt::Orientation orientation);
     };
 
     class SubToolBarAction : public QWidgetAction
     {
     public:
-        SubToolBarAction()
-            : QWidgetAction(NULL)
-        {
-            QWidget* _widget = new QWidget(NULL);
-            QHBoxLayout* _layout = new QHBoxLayout();
-            _layout->setSpacing(5);
-            _layout->setMargin(0);
+        SubToolBarAction();;
 
-            _toolbar = new QToolBar();
-            _toolbar->setContextMenuPolicy(Qt::PreventContextMenu);
-            _toolbar->setAllowedAreas(Qt::TopToolBarArea | Qt::BottomToolBarArea);
-            _toolbar->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
-            _toolbar->setOrientation(Qt::Horizontal);
-
-            _layout->addWidget(_toolbar);
-            _widget->setLayout(_layout);
-
-            setDefaultWidget(_widget);
-        };
-
-        QToolBar* toolbar() { return _toolbar; };
+        QToolBar* toolbar();;
 
         template <typename T>
         T GET(int index)
@@ -237,27 +133,8 @@ namespace Noggit
             return T();
         }
 
-        void ADD_ACTION(QWidgetAction* _act) { _actions.push_back(_act); };
-        void SETUP_WIDGET(bool forceSpacer, Qt::Orientation orientation = Qt::Horizontal) {
-            _toolbar->clear();
-            for (int i = 0; i < _actions.size(); ++i)
-            {
-                _toolbar->addAction(_actions[i]);
-                if (i == _actions.size() - 1)
-                {
-                    if (forceSpacer)
-                    {
-                        /* TODO: fix this spacer */
-
-                        _toolbar->addAction(new SpacerAction(orientation));
-                    }
-                }
-                else
-                {
-                    _toolbar->addSeparator();
-                }
-            }
-        };
+        void ADD_ACTION(QWidgetAction* _act);;
+        void SETUP_WIDGET(bool forceSpacer, Qt::Orientation orientation = Qt::Horizontal);;
 
     private:
         QToolBar* _toolbar;

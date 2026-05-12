@@ -3,9 +3,16 @@
 #include "ModelRender.hpp"
 #include <noggit/Model.h>
 #include <noggit/ModelInstance.h>
-#include <external/tracy/Tracy.hpp>
-#include <math/bounding_box.hpp>
 #include <noggit/Misc.h>
+#include <noggit/Particle.h>
+#include <noggit/TextureManager.h>
+
+#include <math/bounding_box.hpp>
+#include <math/frustum.hpp>
+
+#include <opengl/shader.hpp>
+
+#include <external/tracy/Tracy.hpp>
 
 
 using namespace Noggit::Rendering;
@@ -19,8 +26,8 @@ ModelRender::ModelRender(Model* model)
 void ModelRender::upload()
 {
   _vertex_box_points = math::box_points(
-      misc::transform_model_box_coords(_model->header.bounding_box_min)
-      , misc::transform_model_box_coords(_model->header.bounding_box_max));
+      misc::transform_model_box_coords(_model->bounding_box_min)
+      , misc::transform_model_box_coords(_model->bounding_box_max));
 
   for (std::string const& texture : _model->_textureFilenames)
     _model->_textures.emplace_back(texture, _model->_context);
@@ -93,6 +100,7 @@ void ModelRender::draw(glm::mat4x4 const& model_view
     , int animtime
     , display_mode display
     , bool no_cull
+    , bool animate
 )
 {
   if (!_model->finishedLoading() || _model->loading_failed())
@@ -108,26 +116,27 @@ void ModelRender::draw(glm::mat4x4 const& model_view
   if (!_uploaded)
   {
     upload();
+
+    OpenGL::Scoped::vao_binder const _(_vao);
+
+    {
+        OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const binder(_vertices_buffer);
+        m2_shader.attrib("pos", 3, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), 0);
+        m2_shader.attrib("normal", 3, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), reinterpret_cast<void*> (sizeof(::glm::vec3) + 8));
+        m2_shader.attrib("texcoord1", 2, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), reinterpret_cast<void*> (sizeof(::glm::vec3) * 2 + 8));
+        m2_shader.attrib("texcoord2", 2, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), reinterpret_cast<void*> (sizeof(::glm::vec3) * 2 + 8 + sizeof(glm::vec2)));
+    }
+
+    {
+        OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const transform_binder(_transform_buffer);
+        m2_shader.uniform("transform", instance.transformMatrix());
+    }
   }
 
-  if (_model->animated && (!_model->animcalc || _model->_per_instance_animation))
+  if (_model->animated && animate && (!_model->anim_calculated || _model->_per_instance_animation))
   {
     _model->animate(model_view, 0, animtime);
-    _model->animcalc = true;
-  }
-
-  OpenGL::Scoped::vao_binder const _(_vao);
-
-  m2_shader.uniform("transform", instance.transformMatrix());
-
-  {
-    OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const binder(_vertices_buffer);
-    m2_shader.attrib("pos", 3, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), 0);
-    m2_shader.attrib("bones_weight",  4, GL_UNSIGNED_BYTE,  GL_FALSE, sizeof (ModelVertex), reinterpret_cast<void*> (sizeof (::glm::vec3)));
-    m2_shader.attrib("bones_indices", 4, GL_UNSIGNED_BYTE,  GL_FALSE, sizeof (ModelVertex), reinterpret_cast<void*> (sizeof (::glm::vec3) + 4));
-    m2_shader.attrib("normal", 3, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), reinterpret_cast<void*> (sizeof(::glm::vec3) + 8));
-    m2_shader.attrib("texcoord1", 2, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), reinterpret_cast<void*> (sizeof(::glm::vec3) * 2 + 8));
-    m2_shader.attrib("texcoord2", 2, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), reinterpret_cast<void*> (sizeof(::glm::vec3) * 2 + 8 + sizeof(glm::vec2)));
+    _model->anim_calculated = true;
   }
 
   OpenGL::Scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> indices_binder(_indices_buffer);
@@ -151,13 +160,16 @@ void ModelRender::draw(glm::mat4x4 const& model_view
     , OpenGL::Scoped::use_program& m2_shader
     , OpenGL::M2RenderState& model_render_state
     , math::frustum const& frustum
-    , const float& cull_distance
-    , const glm::vec3& camera
+    , const float cull_distance
+    , glm::vec3 const& camera
     , int animtime
     , bool all_boxes
     , std::unordered_map<Model*, std::size_t>& model_boxes_to_draw
     , display_mode display
     , bool no_cull
+    , bool animate
+    , bool draw_fake_geometry_box
+    , bool draw_animation_box
 )
 {
   ZoneScopedN(NOGGIT_CURRENT_FUNCTION);
@@ -189,15 +201,24 @@ void ModelRender::draw(glm::mat4x4 const& model_view
   {
     ZoneScopedN("Model::draw() : drawing")
 
-    if (_model->animated && (!_model->animcalc || _model->_per_instance_animation))
+    if (_model->animated && animate && (!_model->anim_calculated || _model->_per_instance_animation))
     {
       _model->animate(model_view, 0, animtime);
-      _model->animcalc = true;
+      _model->anim_calculated = true;
     }
 
     // store the model count to draw the bounding boxes later
-    if (all_boxes || _model->_hidden)
+    if (all_boxes || _model->_hidden ) 
     {
+      model_boxes_to_draw.emplace(_model, instances.size());
+
+      if (draw_animation_box)
+      {
+      }
+
+    }
+    else if (draw_fake_geometry_box && _model->use_fake_geometry() /*|| _model->particles_only()*/)
+    { // hackfix for rendering particle only objects bounds as they currently don't render
       model_boxes_to_draw.emplace(_model, instances.size());
     }
 
@@ -282,6 +303,12 @@ void ModelRender::drawBox(OpenGL::Scoped::use_program& m2_box_shader, std::size_
   gl.drawElementsInstanced (GL_LINE_STRIP, static_cast<GLsizei>(_box_indices.size()), GL_UNSIGNED_SHORT, nullptr, static_cast<GLsizei>(box_count));
 }
 
+[[nodiscard]]
+std::vector<ModelRenderPass> const& Noggit::Rendering::ModelRender::renderPasses() const
+{
+  return _render_passes;
+}
+
 void ModelRender::setupVAO(OpenGL::Scoped::use_program& m2_shader)
 {
   OpenGL::Scoped::vao_binder const _(_vao);
@@ -316,7 +343,7 @@ void ModelRender::fixShaderIdBlendOverride()
     }
 
     int shader = 0;
-    bool blend_mode_override = (_model->header.Flags & 8);
+    bool blend_mode_override = (_model->Flags & m2_flag_use_texture_combiner_combos);
 
     // fuckporting check
     if (pass.texture_coord_combo_index + pass.texture_count - 1 >= _model->_texture_unit_lookup.size())
@@ -425,6 +452,9 @@ void ModelRender::fixShaderIDLayer()
 
         first_pass = &pass;
       }
+      assert(first_pass);
+      if (first_pass == nullptr)
+        return;
 
       bool xor_unlit = ((_model->_render_flags[pass.renderflag_index].flags.unlit ^ _model->_render_flags[first_pass->renderflag_index].flags.unlit) & 1) == 0;
 
@@ -990,6 +1020,12 @@ void ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState&
   }
   else
   {
+    if (m->_specialTextures[tex] >= m->_replaceTextures.size())
+	{
+	  LogError << "model: special texture index out of range " << m->file_key().stringRepr() << std::endl;
+	  return;
+	}
+
     auto& texture = m->_replaceTextures.at (m->_specialTextures[tex]);
     texture->upload();
     GLuint tex_array = texture->texture_array();
@@ -1051,5 +1087,21 @@ void ModelRenderPass::initUVTypes(Model* m)
       case 0: tu_lookups[i] = texture_unit_lookup::t1; break;
       case 1: tu_lookups[i] = texture_unit_lookup::t2; break;
     }
+  }
+}
+
+bool ModelRenderPass::operator< (const ModelRenderPass& m) const
+{
+  if (priority_plane < m.priority_plane)
+  {
+    return true;
+  }
+  else if (priority_plane > m.priority_plane)
+  {
+    return false;
+  }
+  else
+  {
+    return blend_mode == m.blend_mode ? (ordering_thingy < m.ordering_thingy) : blend_mode < m.blend_mode;
   }
 }

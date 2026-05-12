@@ -5,6 +5,8 @@
 #include <math/frustum.hpp>
 
 #include <noggit/tool_enums.hpp>
+#include <noggit/WMO.h>
+#include <noggit/MapHeaders.h>
 
 #include <opengl/texture.hpp>
 #include <opengl/scoped.hpp>
@@ -78,11 +80,11 @@ public:
     minimap(const map_horizon& horizon);
   };
 
-  map_horizon(const std::string& basename, const MapIndex * const index);
+  map_horizon(const std::string& basename, World * const world);
 
   void update_minimap_tile(int y, int x, bool has_data);
 
-  void set_minimap(const MapIndex* const index);
+  void set_minimap(const MapIndex* const index, bool set_empty = false);
 
   void remove_horizon_tile(int y, int x);
 
@@ -94,13 +96,20 @@ public:
 
   void save_wdl(World* world, bool regenerate = false);
 
+  bool wmoHasLowRes(WMOInstance* instance);
+  // void updateWmoLowRes(WMOInstance* instance);
+
+  // note : access those two with ENTRY_MODF.nameID
+  // TODO make a proper structure instead of raw access to wow chunks
+  std::vector<std::string> mWMOFilenames;
+  std::vector<ENTRY_MODF> lWMOInstances;
+
+  std::vector<scoped_wmo_reference> wmos;
+
 private:
   int16_t getWdlheight(MapTile* tile, float x, float y);
 
   std::string _filename;
-
-  std::vector<std::string> mWMOFilenames;
-  // std::vector<ENTRY_MODF> lWMOInstances;
 
   std::unique_ptr<map_horizon_tile> _tiles[64][64];
 };

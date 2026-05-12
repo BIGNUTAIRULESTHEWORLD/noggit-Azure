@@ -2,6 +2,17 @@
 
 #include "WMOGroupRender.hpp"
 #include <noggit/WMO.h>
+#include <noggit/wmo_liquid.hpp>
+#include <noggit/Log.h> // LogDebug
+#include <noggit/TextureManager.h>
+#include <noggit/application/NoggitApplication.hpp>
+#include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
+
+#include <math/frustum.hpp>
+
+#include <opengl/shader.hpp>
+
+#include <QSettings>
 
 using namespace Noggit::Rendering;
 
@@ -20,7 +31,11 @@ void WMOGroupRender::upload()
   std::size_t batch_counter = 0;
   for (auto& batch : _wmo_group->_batches)
   {
-    WMOMaterial const& mat (_wmo_group->wmo->materials.at (batch.texture));
+    std::uint16_t material_to_use = batch.texture;
+    if (batch.flags == 2)
+        material_to_use = batch.unused[5];
+
+    WMOMaterial const& mat(_wmo_group->wmo->materials.at(material_to_use));
 
     auto& tex1 = _wmo_group->wmo->textures.at(mat.texture1);
 
@@ -32,7 +47,8 @@ void WMOGroupRender::upload()
 
     std::uint32_t tex_array1 = 0;
     std::uint32_t array_index1 = 0;
-    bool use_tex2 = mat.shader == 6 || mat.shader == 5 || mat.shader == 3;
+
+    bool use_tex2 = mat.shader == 6 || mat.shader == 5 || mat.shader == 3 || mat.shader == 21 || mat.shader == 23;
 
     if (use_tex2)
     {
@@ -60,13 +76,19 @@ void WMOGroupRender::upload()
   _draw_calls.clear();
   WMOCombinedDrawCall* draw_call = nullptr;
   std::vector<WMORenderBatch*> _used_batches;
+  bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
 
   batch_counter = 0;
   for (auto& batch : _wmo_group->_batches)
   {
-    WMOMaterial& mat = _wmo_group->wmo->materials.at(batch.texture);
+    std::uint16_t material_to_use = batch.texture;
+    if (modern_features && batch.flags & 2)
+        material_to_use = batch.unused[5];
+
+    WMOMaterial& mat(_wmo_group->wmo->materials.at(material_to_use));
+
     bool backface_cull = !mat.flags.unculled;
-    bool use_tex2 = mat.shader == 6 || mat.shader == 5 || mat.shader == 3;
+    bool use_tex2 = mat.shader == 6 || mat.shader == 5 || mat.shader == 3 || mat.shader == 21 || mat.shader == 23;
 
     bool create_draw_call = false;
     if (draw_call && draw_call->backface_cull == backface_cull && batch.index_start == draw_call->index_start + draw_call->index_count)
@@ -335,13 +357,22 @@ void WMOGroupRender::initRenderBatches()
 
   _render_batches.resize(_wmo_group->_batches.size());
 
+  QSettings settings;
+  bool modern_features = settings.value("modern_features", false).toBool();
+
   std::size_t batch_counter = 0;
   for (auto& batch : _wmo_group->_batches)
   {
-    for (std::size_t i = 0; i < (batch.vertex_end - batch.vertex_start + 1); ++i)
+    // some custom models have bugged batch.vertex_end as 0, avoid crash
+    if (batch.vertex_end >= batch.vertex_start)
     {
-      _render_batch_mapping[batch.vertex_start + i] = static_cast<unsigned>(batch_counter + 1);
+        for (std::size_t i = 0; i < (batch.vertex_end - batch.vertex_start + 1); ++i)
+        {
+          _render_batch_mapping[batch.vertex_start + i] = static_cast<unsigned>(batch_counter + 1);
+        }
     }
+    else
+        LogError << "WMO has incorrect render batch data. batch.vertex_end < batch.vertex_start" << std::endl;
 
     std::uint32_t flags = 0;
 
@@ -354,7 +385,11 @@ void WMOGroupRender::initRenderBatches()
       flags |= WMORenderBatchFlags::eWMOBatch_HasMOCV;
     }
 
-    WMOMaterial const& mat (_wmo_group->wmo->materials.at (batch.texture));
+    std::uint16_t material_to_use = batch.texture;
+    if (modern_features && batch.flags == 2)
+        material_to_use = batch.unused[5];
+
+    WMOMaterial const& mat (_wmo_group->wmo->materials.at (material_to_use));
 
     if (mat.flags.unlit)
     {
@@ -364,6 +399,11 @@ void WMOGroupRender::initRenderBatches()
     if (mat.flags.unfogged)
     {
       flags |= WMORenderBatchFlags::eWMOBatch_Unfogged;
+    }
+
+    if (mat.flags.sidn)
+    {
+      flags |= WMORenderBatchFlags::eWMOBatch_SIDN;
     }
 
     std::uint32_t alpha_test;
@@ -386,7 +426,13 @@ void WMOGroupRender::initRenderBatches()
         break;
     }
 
-    _render_batches[batch_counter] = WMORenderBatch{flags, mat.shader, 0, 0, 0, 0, alpha_test, 0};
+    auto sidn_color =
+      (std::uint32_t(mat.sidn_color.a) << 24) |
+      (std::uint32_t(mat.sidn_color.r) << 16) |
+      (std::uint32_t(mat.sidn_color.g) << 8) |
+      std::uint32_t(mat.sidn_color.b);
+
+    _render_batches[batch_counter] = WMORenderBatch{flags, mat.shader, 0, 0, 0, 0, alpha_test, sidn_color};
 
     batch_counter++;
   }

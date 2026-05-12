@@ -1,17 +1,27 @@
 #include <noggit/application/Configuration/NoggitApplicationConfigurationReader.hpp>
+#include <QFile>
 #include <QJsonObject>
 #include <QJsonDocument>
+#include <QtCore/QSettings>
 
 namespace Noggit::Application {
 
     NoggitApplicationConfiguration NoggitApplicationConfigurationReader::ReadConfigurationState(QFile& inputFile)
     {
+        auto noggitApplicationConfiguration = NoggitApplicationConfiguration();
+
+        // TODO move qsetting stuff to config file
+        QSettings settings;
+        noggitApplicationConfiguration.modern_features = settings.value("modern_features", false).toBool();
+
+        settings.sync();
+        //
+
         inputFile.open(QIODevice::ReadOnly);
 
         auto document = QJsonDocument().fromJson(inputFile.readAll());
         auto root = document.object();
 
-        auto noggitApplicationConfiguration = NoggitApplicationConfiguration();
         if (root.contains("Noggit") && root["Noggit"].isObject())
         {
             auto noggitConfiguration = root["Noggit"].toObject();
@@ -21,6 +31,12 @@ namespace Noggit::Application {
                 noggitApplicationConfiguration.ApplicationThemePath = noggitConfiguration["ApplicationThemePath"].toString().toStdString();
             if (noggitConfiguration.contains("ApplicationDatabaseDefinitionsPath"))
                 noggitApplicationConfiguration.ApplicationDatabaseDefinitionsPath = noggitConfiguration["ApplicationDatabaseDefinitionsPath"].toString().toStdString();
+            if (noggitConfiguration.contains("ApplicationNoggitDefinitionsPath"))
+            {
+              noggitApplicationConfiguration.ApplicationNoggitDefinitionsPath = noggitConfiguration["ApplicationNoggitDefinitionsPath"].toString().toStdString();
+            }
+            else
+
             if (noggitConfiguration.contains("ApplicationListFilePath"))
                 noggitApplicationConfiguration.ApplicationListFilePath = noggitConfiguration["ApplicationListFilePath"].toString().toStdString();
 

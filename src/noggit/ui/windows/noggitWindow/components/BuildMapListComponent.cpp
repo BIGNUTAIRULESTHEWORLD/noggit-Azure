@@ -1,21 +1,32 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
-#include <noggit/ui/windows/noggitWindow/components/BuildMapListComponent.hpp>
-#include <noggit/ui/windows/noggitWindow/widgets/MapListItem.hpp>
-#include <noggit/ui/windows/noggitWindow/NoggitWindow.hpp>
 #include <noggit/application/Utils.hpp>
-#include <QMenuBar>
+#include <noggit/project/ApplicationProject.h>
+#include <noggit/ui/FontAwesome.hpp>
+#include <noggit/ui/windows/noggitWindow/components/BuildMapListComponent.hpp>
+#include <noggit/ui/windows/noggitWindow/NoggitWindow.hpp>
+#include <noggit/ui/windows/noggitWindow/widgets/MapListItem.hpp>
+#include <noggit/World.h>
+#include <noggit/database/ClientDatabase.h>
+
+#include <blizzard-database-library/include/BlizzardDatabase.h>
+
 #include <QAction>
+#include <QListWidgetItem>
+#include <QMenu>
 #include <QObject>
 
 using namespace Noggit::Ui::Component;
 
 void BuildMapListComponent::buildMapList(Noggit::Ui::Windows::NoggitWindow* parent)
 {
-  parent->_continents_table->clear();
+  {
+    QSignalBlocker const blocker(parent->_continents_table);
+    parent->_continents_table->clear(); // // calls itemSelectionChanged
+  }
 
   const auto& table = std::string("Map");
-  auto map_table = parent->_project->ClientDatabase->LoadTable(table, readFileAsIMemStream);
+  auto map_table = ClientDatabase::getTable(table);
 
   auto iterator = map_table.Records();
   auto pinned_maps = std::vector<Widget::MapListData>();
@@ -116,6 +127,4 @@ void BuildMapListComponent::buildMapList(Noggit::Ui::Windows::NoggitWindow* pare
     item->setData(Qt::UserRole, QVariant(map.map_id));
     parent->_continents_table->setItemWidget(item, map_list_item);
   }
-
-  parent->_project->ClientDatabase->UnloadTable(table);
 }

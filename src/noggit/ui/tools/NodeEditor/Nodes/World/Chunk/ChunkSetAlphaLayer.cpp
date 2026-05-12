@@ -2,9 +2,13 @@
 
 #include "ChunkSetAlphaLayer.hpp"
 
+#include <noggit/texture_set.hpp>
+#include <noggit/tool_enums.hpp>
 #include <noggit/ui/tools/NodeEditor/Nodes/BaseNode.inl>
 #include <noggit/ui/tools/NodeEditor/Nodes/DataTypes/GenericData.hpp>
-#include <noggit/tool_enums.hpp>
+#include <noggit/ui/tools/NodeEditor/Nodes/Scene/NodesContext.hpp>
+
+#include <external/NodeEditor/include/nodes/Node>
 
 using namespace Noggit::Ui::Tools::NodeEditor::Nodes;
 
@@ -65,7 +69,7 @@ void ChunkSetAlphaLayerNode::compute()
   }
 
   texture_set->create_temporary_alphamaps_if_needed();
-  auto& temp_alphamaps = texture_set->getTempAlphamaps()->value();
+  auto& temp_alphamaps = *texture_set->getTempAlphamaps();
 
   for (int i = 0; i < 64; ++i)
   {

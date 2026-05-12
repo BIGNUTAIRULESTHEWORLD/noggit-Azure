@@ -5,6 +5,7 @@
 #include <noggit/scripting/script_context.hpp>
 #include <noggit/scripting/script_math.hpp>
 #include <noggit/scripting/script_image.hpp>
+#include <noggit/texture_set.hpp>
 
 #include <sol/sol.hpp>
 
@@ -25,7 +26,7 @@ namespace Noggit {
     {
       auto& ts = _chunk->texture_set;
       ts->create_temporary_alphamaps_if_needed();
-      return ts->getTempAlphamaps()->value()[index][_index];
+      return ts->getTempAlphamaps()->map[index][_index];
     }
 
     void tex::set_alpha(int index, float value)
@@ -41,7 +42,7 @@ namespace Noggit {
       }
       auto& ts = _chunk->texture_set;
       ts->create_temporary_alphamaps_if_needed();
-      ts->getTempAlphamaps()->value()[index][_index] = value;
+      ts->getTempAlphamaps()->map[index][_index] = value;
     }
 
     namespace {

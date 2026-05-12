@@ -1,7 +1,7 @@
 #include "NodeScene.hpp"
 #include "LogicBranch.hpp"
 #include "noggit/ui/tools/NodeEditor/Nodes/BaseNode.hpp"
-#include "noggit/ui/tools/NodeEditor/Nodes/Scene/Context.hpp"
+#include "noggit/ui/tools/NodeEditor/Nodes/Scene/NodesContext.hpp"
 
 #include <external/NodeEditor/include/nodes/Node>
 #include <noggit/Log.h>
@@ -11,6 +11,11 @@
 
 using namespace Noggit::Ui::Tools::NodeEditor::Nodes;
 
+
+NodeScene::NodeScene(std::shared_ptr<DataModelRegistry> registry, QObject* parent)
+  : FlowScene(std::move(registry), parent)
+{
+}
 
 bool NodeScene::execute()
 {
@@ -73,4 +78,19 @@ bool NodeScene::validate()
   }
 
   return true;
+}
+
+Node* NodeScene::getBeginNode()
+{
+  return _begin_node;
+}
+
+Node* NodeScene::getReturnNode()
+{
+  return _return_node;
+}
+
+VariableMap* NodeScene::getVariableMap()
+{
+  return &_variables;
 }

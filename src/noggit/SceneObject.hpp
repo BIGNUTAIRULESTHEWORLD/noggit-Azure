@@ -4,11 +4,8 @@
 #define NOGGIT_3DOBJECT_HPP
 
 #include <glm/mat4x4.hpp>
-#include <math/ray.hpp>
 #include <noggit/Selection.h>
 #include <noggit/ContextObject.hpp>
-#include <cstdint>
-#include <unordered_set>
 #include <array>
 
 namespace BlizzardArchive::Listfile
@@ -29,6 +26,9 @@ class MapTile;
 class SceneObject : public Selectable
 {
 public:
+  constexpr static float min_scale() { return 1.f / 1024.f; };
+  constexpr static float max_scale() { return static_cast<float>((1 << 16) - 1) / 1024.f; };
+
   SceneObject(SceneObjectTypes type, Noggit::NoggitRenderContext context);
 
   [[nodiscard]]
@@ -50,43 +50,54 @@ public:
   void normalizeDirection();
 
   [[nodiscard]]
-  glm::mat4x4 transformMatrix() const { return _transform_mat; };
+  glm::mat4x4 transformMatrix() const;; // can't recalc extent directly there because recalc extents functions call this and it causes an infinite loop
 
   [[nodiscard]]
-  glm::mat4x4 transformMatrixInverted() const { return _transform_mat_inverted; };
+  glm::mat4x4 transformMatrixInverted() const;;
 
   [[nodiscard]]
-  SceneObjectTypes which() const { return _type; };
+  SceneObjectTypes which() const;;
 
   void refTile(MapTile* tile);
   void derefTile(MapTile* tile);
 
   [[nodiscard]]
-  std::vector<MapTile*> const& getTiles() const { return _tiles; };
+  std::vector<MapTile*> const& getTiles() const;;
 
   [[nodiscard]]
   virtual AsyncObject* instance_model() const = 0;
 
   [[nodiscard]]
-  std::array<glm::vec3, 2> const& getExtents() { ensureExtents(); return extents; }
+  virtual std::array<glm::vec3, 2> const& getExtents(); // axis aligned
 
-  glm::vec3 const getServerPos() { return glm::vec3(ZEROPOINT - pos.z, ZEROPOINT - pos.x, pos.y); }
+  [[nodiscard]]
+  virtual std::array<glm::vec3, 8> getBoundingBox() = 0; // non axis aligned
 
-  bool _grouped = false;
+  [[nodiscard]]
+  float getBoundingRadius();
+
+  glm::vec3 const getServerPos() const;
 
 public:
   glm::vec3 pos;
-  std::array<glm::vec3, 2> extents;
+
   glm::vec3 dir;
-  float scale = 1.f;
+  float scale = 1.f; // Note : max scale is uint16 max / 1024 = 63.999
   unsigned int uid;
   int frame;
+
+  // Note : First, need to check if the tile that contained it was rendered too
+  bool _rendered_last_frame = false;
+
+  bool _grouped = false;
 
 protected:
   SceneObjectTypes _type;
 
   glm::mat4x4 _transform_mat = glm::mat4x4();
   glm::mat4x4 _transform_mat_inverted = glm::mat4x4();
+  std::array<glm::vec3, 2> extents; // axis aligned bounding box min and max corners
+  float bounding_radius;
 
   Noggit::NoggitRenderContext _context;
 

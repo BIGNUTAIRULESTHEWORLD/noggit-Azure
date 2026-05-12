@@ -2,12 +2,13 @@
 
 #pragma once
 
-#include <noggit/MapChunk.h>
+#include <noggit/scoped_blp_texture_reference.hpp>
 #include <noggit/Selection.h>
 #include <noggit/ui/widget.hpp>
 
 #include <vector>
 
+class MapChunk;
 class QGridLayout;
 
 namespace Noggit
@@ -34,9 +35,11 @@ namespace Noggit
       void update(bool set_changed = true);
 
       QGridLayout* layout;
+      bool _display_alphamaps = true;
 
       std::vector<current_texture*> _labels;
       std::vector<scoped_blp_texture_reference> _textures;
+      std::vector<QLabel*> _alphamap_preview_labels;
       MapChunk* _chunk;
       current_texture* _main_texture_window;
 

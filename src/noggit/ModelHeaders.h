@@ -75,11 +75,11 @@ struct ModelHeader {
   glm::vec3 collision_box_max;
   float collision_box_radius;
 
-  uint32_t nBoundingTriangles;
+  uint32_t nBoundingTriangles; // aka collisionIndices or collision_triangles
   uint32_t ofsBoundingTriangles;
   uint32_t nBoundingVertices;
   uint32_t ofsBoundingVertices;
-  uint32_t nBoundingNormals;
+  uint32_t nBoundingNormals; // collisionFaceNormals
   uint32_t ofsBoundingNormals;
 
   uint32_t nAttachments; // O
@@ -219,8 +219,8 @@ struct ModelRenderFlags {
     uint16_t unlit : 1;
     uint16_t unfogged : 1;
     uint16_t two_sided : 1;
-    uint16_t billboard : 1;
-    uint16_t z_buffered : 1;
+    uint16_t billboard : 1; // depthTest
+    uint16_t z_buffered : 1; // depthWrite
     uint16_t unused : 11;
   }flags;
   uint16_t blend;

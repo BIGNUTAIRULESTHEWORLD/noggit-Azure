@@ -4,8 +4,12 @@
 
 #include <noggit/ui/tools/NodeEditor/Nodes/BaseNode.inl>
 #include <noggit/ui/tools/NodeEditor/Nodes/DataTypes/GenericData.hpp>
+#include <noggit/ui/tools/NodeEditor/Nodes/Scene/NodesContext.hpp>
 #include <noggit/ActionManager.hpp>
 #include <noggit/Action.hpp>
+#include <noggit/application/NoggitApplication.hpp>
+
+#include <external/NodeEditor/include/nodes/Node>
 
 using namespace Noggit::Ui::Tools::NodeEditor::Nodes;
 
@@ -39,7 +43,21 @@ void ObjectInstanceSetScaleNode::compute()
     return;
   }
 
-  obj->scale = obj->which() == eMODEL ? scale : 1.0;
+  if (obj->which() == eWMO)
+  {
+      bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
+      if (modern_features)
+      {
+        obj->scale = scale;
+      }
+      else
+      {
+        obj->scale = 1.0;
+      }
+  }
+  else {
+      obj->scale = scale;
+  }
 
   obj->recalcExtents();
 

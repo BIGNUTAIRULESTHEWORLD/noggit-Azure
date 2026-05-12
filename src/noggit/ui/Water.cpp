@@ -1,21 +1,19 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/DBC.h>
-#include <noggit/Log.h>
-#include <noggit/Misc.h>
-#include <noggit/World.h>
+#include <noggit/MapHeaders.h>
+#include <noggit/ui/Checkbox.hpp>
 #include <noggit/ui/pushbutton.hpp>
 #include <noggit/ui/Water.h>
-#include <util/qt/overload.hpp>
+#include <noggit/unsigned_int_property.hpp>
+#include <noggit/World.h>
 
 #include <QtWidgets/QButtonGroup>
-#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QGroupBox>
-#include <QtWidgets/QComboBox>
 #include <QtWidgets/QLabel>
-#include <QtWidgets/QListWidget>
 #include <QtWidgets/QRadioButton>
 
 namespace Noggit
@@ -28,6 +26,7 @@ namespace Noggit
                  )
       : QWidget (parent)
       , _liquid_id(5)
+      , _liquid_type(liquid_basic_types_water)
       , _radius(10.0f)
       , _angle(10.0f)
       , _orientation(0.0f)
@@ -35,13 +34,13 @@ namespace Noggit
       , _angled_mode(false)
       , _override_liquid_id(true)
       , _override_height(true)
-      , _opacity_mode(river_opacity)
-      , _custom_opacity_factor(0.0337f)
+      , _opacity_mode(auto_opacity)
+      , _custom_opacity_factor(RIVER_OPACITY_VALUE)
       , _lock_pos(glm::vec3(0.0f, 0.0f, 0.0f))
       , tile(0, 0)
     {
       setMinimumWidth(250);
-      setMaximumWidth(250);
+      // setMaximumWidth(250);
 
       auto layout (new QFormLayout (this));
 
@@ -63,7 +62,8 @@ namespace Noggit
         int liquid_id = i->getInt(LiquidTypeDB::ID);
 
         // filter WMO liquids
-        if (liquid_id == 13 || liquid_id == 14 || liquid_id == 17 || liquid_id == 19 || liquid_id == 20)
+        if (liquid_id == LIQUID_WMO_Water || liquid_id == LIQUID_WMO_Ocean || liquid_id == LIQUID_WMO_Water_Interior
+            || liquid_id == LIQUID_WMO_Magma || liquid_id == LIQUID_WMO_Slime)
             continue;
 
         std::stringstream ss;
@@ -76,6 +76,24 @@ namespace Noggit
               , [&]
                 {
                   changeWaterType(waterType->currentData().toInt());
+
+                  // change auto opacity based on liquid type
+                  if (_opacity_mode == custom_opacity || _opacity_mode == auto_opacity)
+                      return;
+
+                  // other liquid types shouldn't use opacity(depth)
+                  int liquid_type = LiquidTypeDB::getLiquidType(_liquid_id);
+                  if (liquid_type == liquid_basic_types_ocean) // ocean
+                  {
+                      ocean_button->setChecked(true);
+                      _opacity_mode = ocean_opacity;
+                  }
+                  else // water. opacity doesn't matter for lava/slim
+                  {
+                      river_button->setChecked(true);
+                      _opacity_mode = river_opacity;
+                  }
+
                 }
               );
 
@@ -164,11 +182,16 @@ namespace Noggit
       auto opacity_group (new QGroupBox ("Auto opacity", this));
       auto opacity_layout (new QFormLayout (opacity_group));
 
-      auto river_button (new QRadioButton ("River", this));
-      auto ocean_button (new QRadioButton ("Ocean", this));
-      auto custom_button (new QRadioButton ("Custom factor:", this));
+      auto auto_button(new QRadioButton("Auto", this));
+      auto_button->setToolTip("Automatically uses river or ocean opacity based on liquid type.");
+      river_button = new QRadioButton ("River", this);
+      river_button->setToolTip(std::to_string(RIVER_OPACITY_VALUE).c_str());
+      ocean_button = new QRadioButton ("Ocean", this);
+      ocean_button->setToolTip(std::to_string(OCEAN_OPACITY_VALUE).c_str());
+      custom_button = new QRadioButton ("Custom factor:", this);
 
-      QButtonGroup *transparency_toggle = new QButtonGroup (this);
+      transparency_toggle = new QButtonGroup (this);
+      transparency_toggle->addButton(auto_button, auto_opacity);
       transparency_toggle->addButton (river_button, river_opacity);
       transparency_toggle->addButton (ocean_button, ocean_opacity);
       transparency_toggle->addButton (custom_button, custom_opacity);
@@ -177,11 +200,12 @@ namespace Noggit
               , [&] (int id) { _opacity_mode = id; }
               );
 
+      opacity_layout->addRow(auto_button);
       opacity_layout->addRow (river_button);
       opacity_layout->addRow (ocean_button);
       opacity_layout->addRow (custom_button);
 
-      transparency_toggle->button (river_opacity)->setChecked (true);
+      transparency_toggle->button (_opacity_mode)->setChecked (true);
 
       QDoubleSpinBox *opacity_spin = new QDoubleSpinBox (this);
       opacity_spin->setRange (0.f, 1.f);
@@ -251,11 +275,13 @@ namespace Noggit
       std::stringstream mt;
       mt << _liquid_id << " - " << LiquidTypeDB::getLiquidName(_liquid_id);
       waterType->setCurrentText (QString::fromStdString (mt.str()));
+      _liquid_type = static_cast<liquid_basic_types>(LiquidTypeDB::getLiquidType(_liquid_id));
     }
 
     void water::changeWaterType(int waterint)
     {
       _liquid_id = waterint;
+
       updateData();
     }
 
@@ -291,7 +317,7 @@ namespace Noggit
     }
 
     void water::change_height(float change)
-    { 
+    {
       _h_spin->setValue(_lock_pos.y + change);
     }
 
@@ -338,14 +364,54 @@ namespace Noggit
       _angled_mode.toggle();
     }
 
+    float water::brushRadius() const
+    {
+      return _radius;
+    }
+
+    float water::angle() const
+    {
+      return _angle;
+    }
+
+    float water::orientation() const
+    {
+      return _orientation;
+    }
+
+    bool water::angled_mode() const
+    {
+      return _angled_mode.get();
+    }
+
+    bool water::use_ref_pos() const
+    {
+      return _locked.get();
+    }
+
+    glm::vec3 water::ref_pos() const
+    {
+      return _lock_pos;
+    }
+
     float water::get_opacity_factor() const
     {
       switch (_opacity_mode)
       {
       default:          // values found by experimenting
-      case river_opacity:  return 0.0337f;
-      case ocean_opacity:  return 0.007f;
+      case river_opacity:  return RIVER_OPACITY_VALUE;
+      case ocean_opacity:  return OCEAN_OPACITY_VALUE;
       case custom_opacity: return _custom_opacity_factor;
+      case auto_opacity:
+      {
+        switch (_liquid_type)
+        {
+        case 0: return RIVER_OPACITY_VALUE;
+        case 1: return OCEAN_OPACITY_VALUE;
+        default:  return RIVER_OPACITY_VALUE; // lava and slime, opacity isn't used
+        }
+      }
+      break;
       }
     }
 

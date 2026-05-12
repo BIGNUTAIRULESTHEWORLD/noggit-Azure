@@ -1,14 +1,10 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/Misc.h>
-#include <noggit/Selection.h>
-#include <noggit/ModelInstance.h>
-#include <noggit/WMOInstance.h>
-#include <ClientData.hpp>
+#include <math/bounding_box.hpp>
+#include <util/sExtendableArray.hpp>
 
-#include <iomanip>
-#include <map>
-#include <sstream>
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -27,6 +23,99 @@ namespace misc
            point.x <= extents[1].x && point.y <= extents[1].y;
   }
 
+  glm::vec4 normalized_device_coords(int x, int y, int screen_width, int screen_height)
+  {
+    return { 2.0f * x / screen_width - 1.0f, 1.0f - 2.0f * y / screen_height, 0.0f, 1.0f };
+  }
+
+  // project 3D point to 2d screen space.
+  // Note : When working with noggit 3D coords, need to swap Y and Z !
+  glm::vec4 projectPointToScreen(const glm::vec3& point, const glm::mat4& VPmatrix, float viewport_width, float viewport_height, bool& valid)
+  {
+    glm::vec4 clipSpacePos = VPmatrix * glm::vec4(point, 1.0f);
+
+    if (clipSpacePos.w <= 0.0f)
+    {
+      valid = false;  // not valid, point is behind camera
+      return clipSpacePos;
+    }
+
+    // Perspective division to move to normalized device coordinates (NDC)
+    float ndcX = clipSpacePos.x / clipSpacePos.w;
+    float ndcY = clipSpacePos.y / clipSpacePos.w;
+    // float ndcZ = clipSpacePos.z / clipSpacePos.w; // unnecessary but could be used for extra checks
+
+    // If the point is out of the normalized device coordinates range, it's off-screen
+    if (ndcX < -1.0f || ndcX > 1.0f || ndcY < -1.0f || ndcY > 1.0f)
+    {
+        valid = false;
+        return glm::vec4(-1.0f, -1.0f, -1.0f, -1.0f);
+    }
+
+    // Convert NDC to screen space coordinates
+    clipSpacePos.x = (ndcX + 1.0f) * 0.5f * viewport_width;
+    clipSpacePos.y = (1.0f - (ndcY + 1.0f) * 0.5f) * viewport_height;
+    // test inverting the MapView::normalized_device_coords formula.
+    // clipSpacePos.y = (1.0f - ndcY) * 0.5f * viewport_height;
+
+    // from MapView::normalized_device_coords
+    // x 2.0f * x / viewport_width - 1.0f
+    // y 1.0f - 2.0f * y / viewport_height
+    // z 0.0f
+    // w 1.0f
+
+    valid = true;
+    return clipSpacePos;
+  }
+
+  std::array<glm::vec2, 2> getBoundingBoxScreenBounds(const std::array<glm::vec3, 2>& local_extents
+                                              , const glm::mat4& VPmatrix
+                                              , float viewport_width
+                                              , float viewport_height
+                                              , int& valid_points
+                                              , glm::mat4x4 const& obj_matrix
+                                              , float scale)
+  {
+    math::aabb obj_aabb(local_extents[0], local_extents[1]);
+    auto corners = obj_aabb.rotated_corners(obj_matrix, true);
+
+    glm::vec2 minScreen = glm::vec2(std::numeric_limits<float>::max());
+    glm::vec2 maxScreen = glm::vec2(std::numeric_limits<float>::lowest());
+
+    valid_points = 0;
+
+    for (const auto& corner : corners)
+    {
+      bool point_valid;
+      const glm::vec4 screenPos = projectPointToScreen(corner, VPmatrix, viewport_width, viewport_height, point_valid);
+
+      if (!point_valid)
+      {
+        // valid = false; // one point was outside of screen space
+        // TODO, only require two valid points ?
+        // return { glm::vec2(0.0f), glm::vec2(0.0f) };
+        continue;
+      }
+
+      // Update min and max screen bounds if the point is valid (within screen space)
+      minScreen = glm::min(minScreen, glm::vec2(screenPos.x, screenPos.y));
+      maxScreen = glm::max(maxScreen, glm::vec2(screenPos.x, screenPos.y));
+      valid_points++;
+    }
+    // valid = true;
+
+    if (scale != 1.0f)
+    {
+      glm::vec2 center = (minScreen + maxScreen) * 0.5f;
+      glm::vec2 halfSize = (maxScreen - minScreen) * 0.5f * scale;
+
+      minScreen = center - halfSize;
+      maxScreen = center + halfSize;
+    }
+
+    return { minScreen, maxScreen };
+  }
+
   void minmax(glm::vec3* a, glm::vec3* b)
   {
     if (a->x > b->x)
@@ -40,6 +129,31 @@ namespace misc
     if (a->z > b->z)
     {
       std::swap(a->z, b->z);
+    }
+  }
+
+  int rounded_int_div(int value, int div)
+  {
+    return value / div + (value % div <= (div >> 1) ? 0 : 1);
+  }
+
+  int rounded_255_int_div(int value)
+  {
+    return value / 255 + (value % 255 <= 127 ? 0 : 1);
+  }
+
+  // treat the value as an 8x8 array of bit
+  void set_bit(std::uint64_t& value, int x, int y, bool on)
+  {
+    std::uint64_t bit = std::uint64_t(1) << (y * 8 + x);
+    value = on ? (value | bit) : (value & ~bit);
+  }
+
+  void bit_or(std::uint64_t& value, int x, int y, bool on)
+  {
+    if (on)
+    {
+      value |= (std::uint64_t(1) << (y * 8 + x));
     }
   }
 
@@ -197,6 +311,13 @@ namespace misc
     return filename;
   }
 
+
+  // see http://realtimecollisiondetection.net/blog/?p=89 for more info
+  bool float_equals(float const& a, float const& b)
+  {
+      return std::abs(a - b) < (std::max(1.f, std::max(a, b)) * std::numeric_limits<float>::epsilon());
+  }
+
   bool vec3d_equals(glm::vec3 const& v1, glm::vec3 const& v2)
   {
     return float_equals(v1.x, v2.x) && float_equals(v1.y, v2.y) && float_equals(v1.z, v2.z);
@@ -208,9 +329,9 @@ namespace misc
   }
 }
 
-void SetChunkHeader(sExtendableArray& pArray, int pPosition, int pMagix, int pSize)
+void SetChunkHeader(util::sExtendableArray& pArray, int pPosition, int pMagix, int pSize)
 {
-  sChunkHeader* Header = pArray.GetPointer<sChunkHeader>(pPosition);
+  auto const Header = pArray.GetPointer<sChunkHeader>(pPosition);
   Header->mMagic = pMagix;
   Header->mSize = pSize;
 }

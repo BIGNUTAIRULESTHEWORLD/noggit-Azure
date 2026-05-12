@@ -57,14 +57,14 @@ recent version).
 * build INSTALL
 * Repeat for both release and debug.
 
-### MySQL (Optional) ###
-Optional, required for MySQL GUID Storage builds.
+### MySQL ###
+Required for MySQL GUID Storage builds.
 download MySQL server https://dev.mysql.com/downloads/installer/
 and MySQL C++ Connector https://dev.mysql.com/downloads/connector/cpp/
 * open CMake GUI
-* enable `USE_SQL`
 * set `MYSQL_LIBRARY` (path) to `libmysql.lib` from your MYSQL server install.
 e.g `"C:/Program Files/MySQL/MySQL Server 8.0/lib/libmysql.lib"`
+Note : In new connector versions, developments components aren't included by default anymore in the "Typical" setting, you need to enable `Legacy JDBC API->Development Components` during installation.
 * set `MYSQLCPPCONN_INCLUDE` (path) to the folder containing `cppconn/driver.h` from your MYSQL Connector C++ install.
 e.g `"C:/Program Files/MySQL/Connector C++ 8.0/include/jdbc"`
 * set `MYSQLCPPCONN_LIBRARY` (path) to `mysqlcppconn.lib` from your MYSQL Connector C++ install.

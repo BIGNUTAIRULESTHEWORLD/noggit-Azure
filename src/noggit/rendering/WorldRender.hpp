@@ -6,7 +6,6 @@
 #include <noggit/rendering/BaseRender.hpp>
 
 #include <external/glm/glm.hpp>
-#include <math/trig.hpp>
 
 #include <noggit/tool_enums.hpp>
 #include <noggit/rendering/CursorRender.hpp>
@@ -14,13 +13,61 @@
 #include <noggit/map_horizon.h>
 #include <noggit/Sky.h>
 
-#include <opengl/shader.hpp>
 #include <noggit/rendering/Primitives.hpp>
 
 #include <memory>
 
+namespace OpenGL
+{
+  struct program;
+}
+
+struct TileIndex;
 class World;
 struct MinimapRenderSettings;
+
+
+struct WorldRenderParams 
+{
+  float cursorRotation;
+  CursorType cursor_type;
+  float brush_radius;
+  bool show_unpaintable_chunks;
+  bool draw_only_inside_light_sphere;
+  bool draw_wireframe_light_sphere;
+  float alpha_light_sphere;
+  float inner_radius_ratio;
+  float angle;
+  float orientation;
+  bool use_ref_pos;
+  bool angled_mode;
+  bool draw_paintability_overlay;
+  editing_mode editing_mode;
+  bool camera_moved;
+  bool draw_mfbo;
+  bool draw_terrain;
+  bool draw_wmo;
+  bool draw_water;
+  bool draw_wmo_doodads;
+  bool draw_models;
+  bool draw_model_animations;
+  bool draw_models_with_box;
+  bool draw_hidden_models;
+  bool draw_sky;
+  bool draw_skybox;
+  bool draw_fog;
+  eTerrainType ground_editing_brush;
+  int water_layer;
+  display_mode display_mode;
+  bool draw_occlusion_boxes;
+  bool minimap_render;
+  bool draw_wmo_exterior;
+
+  bool render_select_m2_aabb;
+  bool render_select_m2_collission_bbox;
+  bool render_select_wmo_aabb;
+  bool render_select_wmo_groups_bounds;
+};
 
 namespace Noggit::Rendering
 {
@@ -35,41 +82,11 @@ namespace Noggit::Rendering
     void draw (glm::mat4x4 const& model_view
         , glm::mat4x4 const& projection
         , glm::vec3 const& cursor_pos
-        , float cursorRotation
         , glm::vec4 const& cursor_color
-        , CursorType cursor_type
-        , float brush_radius
-        , bool show_unpaintable_chunks
-        , bool draw_only_inside_light_sphere
-        , bool draw_wireframe_light_sphere
-        , float alpha_light_sphere
-        , float inner_radius_ratio
         , glm::vec3 const& ref_pos
-        , float angle
-        , float orientation
-        , bool use_ref_pos
-        , bool angled_mode
-        , bool draw_paintability_overlay
-        , editing_mode terrainMode
         , glm::vec3 const& camera_pos
-        , bool camera_moved
-        , bool draw_mfbo
-        , bool draw_terrain
-        , bool draw_wmo
-        , bool draw_water
-        , bool draw_wmo_doodads
-        , bool draw_models
-        , bool draw_model_animations
-        , bool draw_models_with_box
-        , bool draw_hidden_models
         , MinimapRenderSettings* minimap_render_settings
-        , bool draw_fog
-        , eTerrainType ground_editing_brush
-        , int water_layer
-        , display_mode display
-        , bool draw_occlusion_boxes = false
-        , bool minimap_render = false
-        , bool draw_wmo_exterior = true
+        , WorldRenderParams const& render_settings
     );
 
     bool saveMinimap (TileIndex const& tile_idx
@@ -77,12 +94,20 @@ namespace Noggit::Rendering
                       , std::optional<QImage>& combined_image);
 
     [[nodiscard]]
-    OpenGL::TerrainParamsUniformBlock* getTerrainParamsUniformBlock() { return &_terrain_params_ubo_data; };
+    OpenGL::TerrainParamsUniformBlock* getTerrainParamsUniformBlock();;
 
     void updateTerrainParamsUniformBlock();
-    void markTerrainParamsUniformBlockDirty() { _need_terrain_params_ubo_update = true; };
+    void markTerrainParamsUniformBlockDirty();;
 
-    [[nodiscard]] std::unique_ptr<Skies>& skies() { return _skies; };
+    [[nodiscard]] std::unique_ptr<Skies>& skies();;
+
+    float _view_distance;
+    float cullDistance() const;
+
+    unsigned int _frame_max_chunk_updates = 256;
+
+    bool directional_lightning;
+    bool local_lightning;
 
   private:
 
@@ -105,7 +130,6 @@ namespace Noggit::Rendering
 
     World* _world;
     float _cull_distance;
-    float _view_distance;
 
     // shaders
     std::unique_ptr<OpenGL::program> _mcnk_program;;
@@ -130,6 +154,7 @@ namespace Noggit::Rendering
     Noggit::Rendering::Primitives::Sphere _sphere_render;
     Noggit::Rendering::Primitives::Square _square_render;
     Noggit::Rendering::Primitives::Line _line_render;
+    Noggit::Rendering::Primitives::WireBox _wirebox_render;
 
     // buffers
     OpenGL::Scoped::deferred_upload_buffers<8> _buffers;
@@ -146,7 +171,6 @@ namespace Noggit::Rendering
     OpenGL::MVPUniformBlock _mvp_ubo_data;
     OpenGL::LightingUniformBlock _lighting_ubo_data;
     OpenGL::TerrainParamsUniformBlock _terrain_params_ubo_data;
-
 
     // VAOs
     OpenGL::Scoped::deferred_upload_vertex_arrays<3> _vertex_arrays;

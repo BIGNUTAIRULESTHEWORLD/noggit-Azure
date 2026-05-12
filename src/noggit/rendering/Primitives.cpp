@@ -3,19 +3,34 @@
 #include <noggit/rendering/Primitives.hpp>
 
 #include <math/bounding_box.hpp>
-#include <noggit/Misc.h>
 #include <opengl/scoped.hpp>
 #include <opengl/context.hpp>
-#include <opengl/types.hpp>
-#include <noggit/World.h>
+#include <opengl/shader.hpp>
 
-#include <numbers>
+#include <glm/gtc/constants.hpp>
+
 #include <array>
 #include <vector>
-#include <glm/gtx/quaternion.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 
 using namespace Noggit::Rendering::Primitives;
+
+WireBox& WireBox::operator=(WireBox& box)
+{
+  return *this;
+}
+
+WireBox& Noggit::Rendering::Primitives::WireBox::getInstance(Noggit::NoggitRenderContext context)
+{
+  static std::unordered_map<Noggit::NoggitRenderContext, WireBox> instances;
+
+  if (instances.find(context) == instances.end())
+  {
+    WireBox instance;
+    instances[context] = instance;
+  }
+
+  return instances.at(context);
+}
 
 void WireBox::draw ( glm::mat4x4 const& model_view
                     , glm::mat4x4 const& projection
@@ -35,18 +50,19 @@ void WireBox::draw ( glm::mat4x4 const& model_view
 
   auto points = math::box_points(min_point, max_point);
 
-  auto glmPoints = std::vector<glm::vec3>();
+  /*auto glmPoints = std::vector<glm::vec3>();
 
-  for(auto const point : points)
+
+  for(auto const &point : points)
     {
         glmPoints.push_back(glm::vec3(point.x, point.y, point.z));
-    }
+    }*/
 
   wire_box_shader.uniform("model_view", model_view);
   wire_box_shader.uniform("projection", projection);
   wire_box_shader.uniform("transform", transform);
   wire_box_shader.uniform("color", color);
-  wire_box_shader.uniform("pointPositions", glmPoints);
+  wire_box_shader.uniform("pointPositions", points);
 
   OpenGL::Scoped::bool_setter<GL_LINE_SMOOTH, GL_TRUE> const line_smooth;
   gl.hint(GL_LINE_SMOOTH_HINT, GL_NICEST);
@@ -512,7 +528,7 @@ void Square::setup_buffers()
   }
 
   void Line::draw(glm::mat4x4 const& mvp
-      , std::vector<glm::vec3> const points
+      , std::vector<glm::vec3> const& points
       , glm::vec4 const& color
       , bool spline
   )

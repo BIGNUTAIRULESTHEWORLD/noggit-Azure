@@ -1,7 +1,11 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include "LiquidRender.hpp"
+#include <noggit/ChunkWater.hpp>
 #include <noggit/MapTile.h>
+#include <noggit/rendering/LiquidTextureManager.hpp>
+
+#include <opengl/shader.hpp>
 
 using namespace Noggit::Rendering;
 
@@ -20,7 +24,7 @@ void LiquidRender::draw(math::frustum const& frustum
     , LiquidTextureManager* tex_manager
 )
 {
-  if (!_map_tile->Water.hasData())
+  if (!_map_tile->Water.hasData() && !_map_tile->Water.needsUpdate())
   {
     return;
   }
@@ -51,6 +55,10 @@ void LiquidRender::draw(math::frustum const& frustum
     }
     else
     {
+      // In some cases samplers_upload_buf becomes empty and causes crash
+      if (samplers_upload_buf.size() < N_SAMPLERS)
+          samplers_upload_buf.resize(N_SAMPLERS);
+
       std::fill(samplers_upload_buf.begin(), samplers_upload_buf.end(), -1);
 
       for (std::size_t j = 0; j < render_layer.texture_samplers.size(); ++j)
@@ -157,16 +165,16 @@ void LiquidRender::updateLayerData(LiquidTextureManager* tex_manager)
 
           // fill vertex data
           auto& vertices = layer.getVertices();
-          auto& tex_coords = layer.getTexCoords();
-          auto& depth = layer.getDepth();
+          // auto& tex_coords = layer.getTexCoords();
+          // auto& depth = layer.getDepth();
 
           for (int z_v = 0; z_v < 9; ++z_v)
           {
             for (int x_v = 0; x_v < 9; ++x_v)
             {
               const unsigned v_index = z_v * 9 + x_v;
-              glm::vec2& tex_coord = tex_coords[v_index];
-              layer_params.vertex_data[n_chunks][v_index] = glm::vec4(vertices[v_index].y, depth[v_index], tex_coord.x, tex_coord.y);
+              glm::vec2& tex_coord = vertices[v_index].uv;
+              layer_params.vertex_data[n_chunks][v_index] = glm::vec4(vertices[v_index].position.y, vertices[v_index].depth, tex_coord.x, tex_coord.y);
             }
           }
 

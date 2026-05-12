@@ -4,6 +4,10 @@
 #include <opengl/context.inl>
 #include <opengl/texture.hpp>
 
+#include <noggit/Log.h>
+
+#include <QOpenGLContext>
+
 #include <utility>
 
 namespace OpenGL
@@ -18,7 +22,15 @@ namespace OpenGL
   {
     if (_id > 0 && _id != -1)
     {
-      gl.deleteTextures (1, &_id);
+      auto* current_context = gl.getCurrentContext();
+      if (current_context && current_context->isValid() && QOpenGLContext::currentContext() == current_context)
+      {
+        gl.deleteTextures (1, &_id);
+      }
+      else
+      {
+        LogError << "A texture could not be released because no valid OpenGL context is current." << std::endl;
+      }
     }
   }
 
@@ -43,9 +55,15 @@ namespace OpenGL
     gl.bindTexture (GL_TEXTURE_2D, _id);
   }
 
+  size_t texture::current_active_texture = -1;
+
   void texture::set_active_texture (size_t num)
   {
-    gl.activeTexture (static_cast<GLenum>(GL_TEXTURE0 + num));
+    if (num != current_active_texture)
+    {
+        gl.activeTexture(GL_TEXTURE0 + num);
+        current_active_texture = num;
+    }
   }
 
   void texture::unload()

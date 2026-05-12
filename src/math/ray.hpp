@@ -5,30 +5,49 @@
 
 namespace math
 {
+  struct sphere;
+
+  struct hit_result
+  {
+    glm::vec3 position;
+    float t = 0;
+    bool hit = false;
+  };
+
   struct ray
   {
-    ray (glm::vec3 origin, glm::vec3 const& direction): _origin (std::move (origin)), _direction (glm::normalize(direction))
-    {}
+    ray (glm::vec3 origin, glm::vec3 const& direction);
 
-    ray (glm::mat4x4 const& transform, ray const& other): ray (
-        glm::vec3(
-            (transform * glm::vec4(other._origin.x, other._origin.y, other._origin.z, 1.0))),
-        glm::vec3((transform * glm::vec4(other._direction.x, other._direction.y, other._direction.z, 0.0)))
+    ray (glm::mat4x4 const& transform, ray const& other)
+      : ray (
+        glm::vec3(transform * glm::vec4(other._origin, 1.0f)),
+        glm::vec3((glm::mat3(transform) * other._direction))
             )
     {}
 
     std::optional<float> intersect_bounds
-      (glm::vec3 const& _min, glm::vec3 const& _max) const;
+      (glm::vec3 const& _min, glm::vec3 const& _max) const noexcept;
     std::optional<float> intersect_triangle
-      (glm::vec3 const& _v0, glm::vec3 const& _v1, glm::vec3 const& _v2) const;
+      (glm::vec3 const& _v0, glm::vec3 const& _v1, glm::vec3 const& _v2) const noexcept;
+
+    std::optional<float> intersect_box
+    (glm::vec3 const& position, glm::vec3 const& box_min, glm::vec3 const& box_max, glm::vec3 const& rotation) const noexcept;
+
+    hit_result intersects_sphere(sphere const& sphere) const;
 
     glm::vec3 position (float distance) const
     {
       return _origin + _direction * distance;
     }
 
+    glm::vec3 const origin() const
+    {
+      return _origin;
+    }
+
   private:
-     glm::vec3 _origin;
-     glm::vec3 _direction;
+    glm::vec3 const _origin;
+    glm::vec3 const _direction;
+    glm::vec3 _inverted_direction;
   };
 }

@@ -2,26 +2,27 @@
 
 #include "object_palette.hpp"
 
-#include <noggit/ui/FontAwesome.hpp>
-#include <noggit/ui/TexturingGUI.h>
-#include <noggit/ui/CurrentTexture.h>
-#include <noggit/ui/tools/AssetBrowser/Ui/AssetBrowser.hpp>
 #include <noggit/MapView.h>
+#include <noggit/project/ApplicationProject.h>
+#include <noggit/ui/FontAwesome.hpp>
+#include <noggit/ui/tools/AssetBrowser/Ui/AssetBrowser.hpp>
+#include <noggit/ui/tools/PreviewRenderer/PreviewRenderer.hpp>
+#include <noggit/World.h>
 
-#include <QtWidgets/QGridLayout>
-#include <QtWidgets/QPushButton>
-#include <QtWidgets/QListWidget>
-#include <QtWidgets/QListWidgetItem>
-#include <QtWidgets/QApplication>
+#include <QDockWidget>
+#include <QMimeData>
+#include <QtGui/QDrag>
+#include <QtGui/QDragEnterEvent>
 #include <QtGui/QDropEvent>
 #include <QtGui/QMouseEvent>
-#include <QtGui/QDragEnterEvent>
-#include <QtGui/QDrag>
-#include <QMimeData>
+#include <QtWidgets/QApplication>
+#include <QtWidgets/QGridLayout>
+#include <QtWidgets/QListWidget>
+#include <QtWidgets/QListWidgetItem>
+#include <QtWidgets/QPushButton>
 
-#include <unordered_set>
 #include <string>
-#include <algorithm>
+#include <unordered_set>
 
 
 namespace Noggit
@@ -36,8 +37,10 @@ namespace Noggit
       setFlow(QListWidget::LeftToRight);
       setWrapping(true);
       setSelectionMode(QAbstractItemView::SingleSelection);
+      setSelectionBehavior(QAbstractItemView::SelectItems);
       setAcceptDrops(false);
       setMovement(Movement::Static);
+      setResizeMode(QListView::Adjust);
     }
 
     void ObjectList::mousePressEvent(QMouseEvent* event)
@@ -86,7 +89,6 @@ namespace Noggit
       _object_paths = std::unordered_set<std::string>();
       _object_list = new ObjectList(this);
 
-
       layout->addWidget(_object_list, 0, 0);
 
       _preview_renderer = new Noggit::Ui::Tools::PreviewRenderer(_object_list->iconSize().width(),
@@ -99,21 +101,26 @@ namespace Noggit
       _preview_renderer->setModelOffscreen("world/wmo/azeroth/buildings/human_farm/farm.wmo");
       _preview_renderer->renderToPixmap();
 
-      connect(_object_list, &QListWidget::itemClicked, this, [=](QListWidgetItem* item)
-              {
-                _map_view->getObjectEditor()->copy(item->toolTip().toStdString());
-              }
+      QObject::connect(_object_list, &QListWidget::itemSelectionChanged, [this]()
+        {
+          QListWidgetItem* const item = _object_list->currentItem();
+          if (item)
+          {
+            emit selected(item->toolTip().toStdString());
+          }
+        }
       );
-
 
       QVBoxLayout* button_layout = new QVBoxLayout(this);
 
       _add_button = new QPushButton(this);
+      _add_button->setToolTip("Add from Asset Browser");
       _add_button->setIcon(FontAwesomeIcon(FontAwesome::plus));
       button_layout->addWidget(_add_button);
       connect(_add_button, &QAbstractButton::clicked, this, &ObjectPalette::addObjectFromAssetBrowser);
 
       _remove_button = new QPushButton(this);
+      _remove_button->setToolTip("Remove selected Object");
       _remove_button->setIcon(FontAwesomeIcon(FontAwesome::times));
       button_layout->addWidget(_remove_button);
       connect(_remove_button, &QAbstractButton::clicked, this, &ObjectPalette::removeSelectedTexture);
@@ -128,17 +135,17 @@ namespace Noggit
 
     void ObjectPalette::LoadSavedPalette()
     {
-        auto& saved_palette = _project->ObjectPalettes;
-        for (auto& palette : saved_palette)
+      unsigned int map_id = _map_view->getWorld()->getMapID();
+      for (auto const& palette : _project->ObjectPalettes)
+      {
+        if (palette.MapId == map_id)
         {
-            if (palette.MapId == _map_view->getWorld()->getMapID())
-            {
-                for (auto& filename : palette.Filepaths)
-                    addObjectByFilename(filename.c_str(), false);
-                break;
-            }
-
+          for (auto const& filename : palette.Filepaths)
+              addObjectByFilename(filename.c_str(), false);
+          break;
         }
+
+      }
     }
 
     void ObjectPalette::SavePalette()

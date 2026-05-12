@@ -1,10 +1,8 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #pragma once
-#include <noggit/TextureManager.h>
 #include <opengl/scoped.hpp>
 
-#include <memory>
 
 namespace BlizzardArchive
 {
@@ -45,7 +43,7 @@ struct WMOMaterial
       uint32_t unfogged : 1;
       uint32_t unculled : 1;
       uint32_t ext_light: 1; // darkened used for the intern face of windows
-      uint32_t sidn :  1;
+      uint32_t sidn :  1; // night glow
       uint32_t window :  1; // lighting related(flag checked in CMapObj::UpdateSceneMaterials)
       uint32_t clamp_s :  1;
       uint32_t clamp_t : 1;
@@ -88,7 +86,7 @@ struct SMOMVert
   std::int16_t t;
 };
 
-struct LiquidVertex {
+struct WmoLiquidVertex {
   union
   {
     SMOWVert water_vertex;
@@ -96,6 +94,11 @@ struct LiquidVertex {
   };
   float height;
 };
+
+namespace OpenGL::Scoped
+{
+  struct use_program;
+}
 
 class wmo_liquid
 {
