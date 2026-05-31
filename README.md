@@ -1,3 +1,6 @@
+# Releases #
+Prebuilt executable are availables in the discord: https://discord.gg/NqvM3xE5uS
+
 # LICENSE #
 This software is open source software licensed under GPL3, as found in
 the COPYING file.
