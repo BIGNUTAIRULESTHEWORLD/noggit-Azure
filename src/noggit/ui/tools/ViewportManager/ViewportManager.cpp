@@ -1,4 +1,5 @@
 #include "ViewportManager.hpp"
+#include <noggit/Log.h>
 #include <noggit/TextureManager.h>
 
 using namespace Noggit::Ui::Tools::ViewportManager;
@@ -16,9 +17,31 @@ Viewport::Viewport(QWidget* parent)
 
 }
 
+Noggit::NoggitRenderContext Noggit::Ui::Tools::ViewportManager::Viewport::getRenderContext() const
+{
+  return _context;
+}
+
 Viewport::~Viewport()
 {
   ViewportManager::unregisterViewport(this);
+}
+
+void Noggit::Ui::Tools::ViewportManager::ViewportManager::registerViewport(Viewport* viewport)
+{
+  ViewportManager::_viewports.push_back(viewport);
+}
+
+void Noggit::Ui::Tools::ViewportManager::ViewportManager::unregisterViewport(Viewport* viewport)
+{
+  for (auto it = ViewportManager::_viewports.begin(); it != ViewportManager::_viewports.end(); ++it)
+  {
+    if (viewport == *it)
+    {
+      ViewportManager::_viewports.erase(it);
+      break;
+    }
+  }
 }
 
 void ViewportManager::unloadOpenglData(Viewport* caller)
@@ -36,7 +59,24 @@ void ViewportManager::unloadAll()
 {
   for (auto viewport : ViewportManager::_viewports)
   {
-    viewport->unloadOpenglData();
+    try
+    {
+      viewport->unloadOpenglData();
+    }
+    catch (std::exception const& e)
+    {
+      LogError << "A viewport could not release its OpenGL resources during cleanup. Widget type: "
+        << viewport->metaObject()->className()
+        << ". Error: " << e.what()
+        << std::endl;
+    }
+    catch (...)
+    {
+      LogError << "A viewport could not release its OpenGL resources during cleanup. Widget type: "
+        << viewport->metaObject()->className()
+        << "."
+        << std::endl;
+    }
   }
 
   BLPRenderer::getInstance().unload();

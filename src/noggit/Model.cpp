@@ -1,32 +1,27 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <math/bounding_box.hpp>
-#include <noggit/AsyncLoader.h>
+#include <math/ray.hpp>
+#include <noggit/application/NoggitApplication.hpp>
 #include <noggit/Log.h>
 #include <noggit/Model.h>
-#include <noggit/ModelInstance.h>
+#include <noggit/Particle.h>
+#include <noggit/project/CurrentProject.hpp>
+#include <noggit/scoped_blp_texture_reference.hpp>
 #include <noggit/TextureManager.h> // TextureManager, Texture
-#include <noggit/World.h>
-#include <opengl/scoped.hpp>
-#include <opengl/shader.hpp>
-#include <external/tracy/Tracy.hpp>
-#include <noggit/application/NoggitApplication.hpp>
-#include <util/CurrentFunction.hpp>
 
-#include <algorithm>
 #include <cassert>
-#include <map>
-#include <string>
 #include <glm/gtx/euler_angles.hpp>
 #include <glm/gtx/quaternion.hpp>
-#include <math/trig.hpp>
+#include <map>
+#include <string>
 
 Model::Model(const std::string& filename, Noggit::NoggitRenderContext context)
   : AsyncObject(filename)
   , _context(context)
   , _renderer(this)
 {
-  memset(&header, 0, sizeof(ModelHeader));
+  // memset(&header, 0, sizeof(ModelHeader));
 }
 
 void Model::finishLoading()
@@ -35,15 +30,46 @@ void Model::finishLoading()
 
   if (f.isEof() || f.getSize() < sizeof(ModelHeader))
   {
-    LogError << "Error loading file \"" << _file_key.stringRepr() << "\". Aborting to load model." << std::endl;
-    finished = true;
-    return;
+    // LogError << "Error loading file \"" << _file_key.stringRepr() << "\". Aborting to load model." << std::endl;
+    // finished = true;
+    throw std::runtime_error("Error loading file \"" + _file_key.stringRepr() + "\". Aborting to load model.");
   }
+
+  ModelHeader header;
 
   memcpy(&header, f.getBuffer(), sizeof(ModelHeader));
 
+
+
+  uint32_t packed_version = 0;
+  std::memcpy(&packed_version, header.version, sizeof(packed_version));
+
+  bool valid_version = false;
+
+  // Noggit::Application::NoggitApplication::instance()->clientData()->version()// either should work
+  switch (Noggit::Project::CurrentProject::get()->projectVersion )
+  {
+  case Noggit::Project::ProjectVersion::WOTLK:
+    if (packed_version == m2_version_wrath)
+      valid_version = true;
+    break;
+  case Noggit::Project::ProjectVersion::SL:
+    if (packed_version == m2_version_legion_bfa_sl)
+      valid_version = true;
+    break;
+  default:
+    assert(false);
+  }
+
+  if (!valid_version)
+  [[unlikely]]
+  {
+    LogError << "Error loading file \"" << _file_key.stringRepr() << "\". Wrong M2 version " << std::to_string(packed_version) << std::endl;
+    throw std::runtime_error("Error loading file \"" + _file_key.stringRepr() + "\". Wrong M2 version " + std::to_string(packed_version));
+  }
+
   // blend mode override
-  if (header.Flags & 8)
+  if (header.Flags & m2_flag_use_texture_combiner_combos)
   {
     // go to the end of the header (where the blend override data is)    
     uint32_t const* blend_override_info = reinterpret_cast<uint32_t const*>(f.getBuffer() + sizeof(ModelHeader));
@@ -53,12 +79,21 @@ void Model::finishLoading()
     blend_override = M2Array<uint16_t>(f, ofs_blend_override, n_blend_override);
   }
 
-  animated = isAnimated(f);  // isAnimated will set animGeometry and animTextures
+  animated = isAnimated(f, header);  // isAnimated will set animGeometry and animTextures
 
   trans = 1.0f;
   _current_anim_seq = 0;
 
-  rad = header.bounding_box_radius;
+  bounding_box_min = header.bounding_box_min;
+  bounding_box_max = header.bounding_box_max;
+  bounding_box_radius = header.bounding_box_radius;
+
+  collision_box_min = header.collision_box_min;
+  collision_box_max = header.collision_box_max;
+  collision_box_radius = header.collision_box_radius;
+
+  Flags = header.Flags;
+
 
   if (header.nGlobalSequences)
   {
@@ -66,14 +101,22 @@ void Model::finishLoading()
   }
 
   //! \todo  This takes a biiiiiit long. Have a look at this.
-  initCommon(f);
+  initCommon(f, header);
 
   if (animated)
   {
-    initAnimated(f);
+    initAnimated(f, header);
+
+    mesh_bounds_ratio = calcMeshBoundsRatio();
   }
 
   f.close();
+
+  // add fake geometry for selection
+  if (_renderer.renderPasses().empty() || particles_only() /* || this->file_key().filepath() == "world/generic/passivedoodads/particleemitters/ashenvalewisps.m2"*/)
+  {
+    _fake_geometry.emplace(this);
+  }
 
   finished = true;
   _state_changed.notify_all();
@@ -92,8 +135,64 @@ void Model::waitForChildrenLoaded()
   }
 }
 
+[[nodiscard]]
+bool Model::is_hidden() const
+{
+  return _hidden;
+}
 
-bool Model::isAnimated(const BlizzardArchive::ClientFile& f)
+void Model::toggle_visibility()
+{
+  _hidden = !_hidden;
+}
+
+void Model::show()
+{
+  _hidden = false;
+}
+
+void Model::hide()
+{
+  _hidden = true;
+}
+
+[[nodiscard]]
+bool Model::use_fake_geometry() const
+{
+  return !!_fake_geometry;
+}
+
+[[nodiscard]]
+bool Model::animated_mesh() const
+{
+  return (animGeometry || animBones);
+}
+
+[[nodiscard]]
+bool Model::particles_only() const
+{ // some particle emitters like wisps in ashenvale have a few vertices but no collision, using that to detect
+  return !_particles.empty()
+    && (_renderer.renderPasses().empty() || _vertices.empty() || !nBoundingTriangles);
+}
+
+[[nodiscard]]
+bool Model::is_required_when_saving() const
+{
+  return true;
+}
+
+[[nodiscard]]
+Noggit::Rendering::ModelRender* Model::renderer()
+{
+  return &_renderer;
+}
+
+uint32_t Model::get_anim_lenght(int16_t anim_id)
+{
+  return _animation_length[anim_id];
+}
+
+bool Model::isAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& header)
 {
   // see if we have any animated bones
   ModelBoneDef const* bo = reinterpret_cast<ModelBoneDef const*>(f.getBuffer() + header.ofsBones);
@@ -176,35 +275,57 @@ bool Model::isAnimated(const BlizzardArchive::ClientFile& f)
 }
 
 
-glm::vec3 fixCoordSystem(glm::vec3 v)
+inline glm::vec3 fixCoordSystem(glm::vec3 v)
 {
   return glm::vec3(v.x, v.z, -v.y);
 }
 
 namespace
 {
-  glm::vec3 fixCoordSystem2(glm::vec3 v)
+  inline glm::vec3 fixCoordSystem2(glm::vec3 v)
   {
     return glm::vec3(v.x, v.z, v.y);
   }
 
-  glm::quat fixCoordSystemQuat(glm::quat v)
+  inline glm::quat fixCoordSystemQuat(glm::quat v)
   {
     return glm::quat(-v.x, -v.z, v.y, v.w);
   }
 }
 
 
-void Model::initCommon(const BlizzardArchive::ClientFile& f)
+void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header)
 {
   // vertices, normals, texcoords
   _vertices = M2Array<ModelVertex>(f, header.ofsVertices, header.nVertices);
 
+  vertices_bounds = { glm::vec3(std::numeric_limits<float>::max()),
+                      glm::vec3(std::numeric_limits<float>::lowest()) };
+
   for (auto& v : _vertices)
   {
+
+    if ((animGeometry || animBones))
+    {
+      // for animated models, calculate base vertex box of initial vertice positions to know the mesh size
+      vertices_bounds[0].x = std::min(vertices_bounds[0].x, v.position.x);
+      vertices_bounds[0].y = std::min(vertices_bounds[0].y, v.position.y);
+      vertices_bounds[0].z = std::min(vertices_bounds[0].z, v.position.z);
+
+      vertices_bounds[1].x = std::max(vertices_bounds[1].x, v.position.x);
+      vertices_bounds[1].y = std::max(vertices_bounds[1].y, v.position.y);
+      vertices_bounds[1].z = std::max(vertices_bounds[1].z, v.position.z);
+    }
+
     v.position = fixCoordSystem(v.position);
     v.normal = fixCoordSystem(v.normal);
   }
+
+  nBoundingTriangles = header.nBoundingTriangles;
+  // Optional, load collision
+  // collision_indices = M2Array<glm::uint16_t>(f, header.ofsBoundingTriangles, header.nBoundingTriangles);
+  // collision_vertices = M2Array<glm::vec3>(f, header.ofsBoundingVertices, header.nBoundingVertices);
+  // collision_normals = M2Array<glm::vec3>(f, header.ofsBoundingNormals, header.nBoundingNormals);
 
   // textures
   ModelTextureDef const* texdef = reinterpret_cast<ModelTextureDef const*>(f.getBuffer() + header.ofsTextures);
@@ -315,19 +436,13 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f)
     _renderer.initRenderPasses(view, texture_unit, model_geosets);
 
     g.close();
-
-    // add fake geometry for selection
-    if (_renderer.renderPasses().empty())
-    {
-      _fake_geometry.emplace(this);
-    }
   }  
 }
 
 
 FakeGeometry::FakeGeometry(Model* m)
 {
-  glm::vec3 min = m->header.bounding_box_min, max = m->header.bounding_box_max;
+  glm::vec3 min = m->bounding_box_min, max = m->bounding_box_max;
 
   vertices.emplace_back(min.x, max.y, min.z);
   vertices.emplace_back(min.x, max.y, max.z);
@@ -351,7 +466,7 @@ FakeGeometry::FakeGeometry(Model* m)
 }
 
 
-void Model::initAnimated(const BlizzardArchive::ClientFile& f)
+void Model::initAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& header)
 {
   std::vector<std::unique_ptr<BlizzardArchive::ClientFile>> animation_files;
 
@@ -440,7 +555,7 @@ void Model::initAnimated(const BlizzardArchive::ClientFile& f)
       _lights.emplace_back (f, lDefs[i], _global_sequences.data());
   }
 
-  animcalc = false;
+  anim_calculated = false;
 }
 
 void Model::calcBones(glm::mat4x4 const& model_view
@@ -449,12 +564,12 @@ void Model::calcBones(glm::mat4x4 const& model_view
                      , int animation_time
                      )
 {
-  for (size_t i = 0; i<header.nBones; ++i)
+  for (size_t i = 0; i< bones.size(); ++i)
   {
     bones[i].calc = false;
   }
 
-  for (size_t i = 0; i<header.nBones; ++i)
+  for (size_t i = 0; i< bones.size(); ++i)
   {
     bones[i].calcMatrix(model_view, bones.data(), _anim, time, animation_time);
   }
@@ -507,37 +622,11 @@ void Model::animate(glm::mat4x4 const& model_view, int anim_id, int anim_time)
 
 
     // transform vertices
-
-    /*
-    _current_vertices = _vertices;
-
-    for (auto& vertex : _current_vertices)
-    {
-      ::glm::vec3 v(0, 0, 0), n(0, 0, 0);
-
-      for (size_t b (0); b < 4; ++b)
-      {
-        if (vertex.weights[b] <= 0)
-          continue;
-
-        ::glm::vec3 tv = bones[vertex.bones[b]].mat * vertex.position;
-        ::glm::vec3 tn = bones[vertex.bones[b]].mrot * vertex.normal;
-
-        v += tv * (static_cast<float> (vertex.weights[b]) / 255.0f);
-        n += tn * (static_cast<float> (vertex.weights[b]) / 255.0f);
-      }
-
-      vertex.position = v;
-      vertex.normal = n.normalized();
-    }
-
-    OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const binder (_vertices_buffer);
-    gl.bufferData (GL_ARRAY_BUFFER, _current_vertices.size() * sizeof (ModelVertex), _current_vertices.data(), GL_STREAM_DRAW);
-
-     */
+    // Animations are done in GPU now
+    // getTransformVertices();
   }
 
-  for (size_t i=0; i<header.nLights; ++i) 
+  for (size_t i=0; i< _lights.size(); ++i)
   {
     if (_lights[i].parent >= 0) 
     {
@@ -565,6 +654,106 @@ void Model::animate(glm::mat4x4 const& model_view, int anim_id, int anim_time)
   {
     tex_anim.calc(_current_anim_seq, t, _anim_time);
   }
+}
+
+std::vector<ModelVertex> Model::getTransformVertices() const
+{
+  if (!animGeometry)
+    return {};
+
+  // Don't need to store them anymore, we only need them for operations like intersections
+  // _current_vertices = _vertices;
+  std::vector<ModelVertex> _current_vertices = _vertices;
+
+  for (auto& vertex : _current_vertices)
+  {
+    ::glm::vec3 v(0, 0, 0), n(0, 0, 0);
+
+    for (size_t b(0); b < 4; ++b)
+    {
+      if (vertex.weights[b] <= 0)
+        continue;
+
+      ::glm::vec3 tv = bones[vertex.bones[b]].mat * glm::vec4(vertex.position, 1.0f);
+      ::glm::vec3 tn = bones[vertex.bones[b]].mrot * glm::vec4(vertex.normal, 1.0f);
+
+      v += tv * (static_cast<float> (vertex.weights[b]) / 255.0f);
+      n += tn * (static_cast<float> (vertex.weights[b]) / 255.0f);
+    }
+
+    vertex.position = v;
+    vertex.normal = glm::normalize(n);
+  }
+  /*
+  OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const binder (_vertices_buffer);
+  gl.bufferData (GL_ARRAY_BUFFER, _current_vertices.size() * sizeof (ModelVertex), _current_vertices.data(), GL_STREAM_DRAW);
+
+   */
+  return _current_vertices;
+}
+
+std::optional<std::array<glm::vec3, 2>> Model::getCurrentSequenceBounds()
+{
+
+  for (auto const& animation : _animations_seq_per_id)
+  {
+    int anim_id = animation.first;
+    for (auto const& sub_animation : animation.second)
+    {
+      int sub_anim_id = sub_animation.first;
+
+      auto const& animation = sub_animation.second;
+
+      if (_current_anim_seq == animation.Index)
+      {
+
+        return std::array<glm::vec3, 2>{ animation.boxA, animation.boxB };
+      }
+    }
+  }
+
+  return std::nullopt;
+}
+
+std::array<glm::vec3, 2> Model::getAnimatedBoundingBox() const
+{
+  if (mesh_bounds_ratio >= 1.0f)
+    return { bounding_box_min, bounding_box_max };;
+
+  auto const transform_verts = getTransformVertices();
+
+  if (!animGeometry || transform_verts.empty())
+    return { bounding_box_min, bounding_box_max };
+
+  glm::vec3 min_bound(std::numeric_limits<float>::max());
+  glm::vec3 max_bound(std::numeric_limits<float>::lowest());
+
+  for (const auto& vertex : transform_verts) {
+    min_bound.x = std::min(min_bound.x, vertex.position.x);
+    min_bound.y = std::min(min_bound.y, vertex.position.y);
+    min_bound.z = std::min(min_bound.z, vertex.position.z);
+
+    max_bound.x = std::max(max_bound.x, vertex.position.x);
+    max_bound.y = std::max(max_bound.y, vertex.position.y);
+    max_bound.z = std::max(max_bound.z, vertex.position.z);
+  }
+  return { min_bound, max_bound };
+}
+
+float Model::calcMeshBoundsRatio() const
+{
+  if (!animated_mesh())
+    return 1.0f;
+
+  float global_bounds_volume = math::aabb(bounding_box_min, bounding_box_max).volume();
+
+  if (global_bounds_volume == 0.0f)
+    return 1.0f;
+
+  float vertex_box_volume = math::aabb(vertices_bounds[0], vertices_bounds[1]).volume();
+
+  // 0.0-1.0
+  return (vertex_box_volume / global_bounds_volume);
 }
 
 void TextureAnim::calc(int anim, int time, int animtime)
@@ -755,7 +944,13 @@ void Bone::calcMatrix(glm::mat4x4 const& model_view
 }
 
 
-std::vector<std::pair<float, std::tuple<int, int, int>>> Model::intersect (glm::mat4x4 const& model_view, math::ray const& ray, int animtime)
+std::vector<std::pair<float, std::tuple<int, int, int>>> Model::intersect (
+  glm::mat4x4 const& model_view
+  , math::ray const& ray
+  , int animtime
+  , bool calc_anims
+  , bool first_occurence
+  , bool only_opaque_tris)
 {
   std::vector<std::pair<float, std::tuple<int, int, int>>> results;
 
@@ -764,10 +959,10 @@ std::vector<std::pair<float, std::tuple<int, int, int>>> Model::intersect (glm::
     return results;
   }
 
-  if (animated && (!animcalc || _per_instance_animation))
+  if (animated && calc_anims && (!anim_calculated || _per_instance_animation))
   {
     animate (model_view, 0, animtime);
-    animcalc = true;
+    anim_calculated = true;
   }
 
   if (use_fake_geometry())
@@ -790,17 +985,38 @@ std::vector<std::pair<float, std::tuple<int, int, int>>> Model::intersect (glm::
     return results;
   }
 
+  auto const transformed_verts = getTransformVertices();
+  bool const has_transformed_verts = !transformed_verts.empty();
   for (auto const& pass : _renderer.renderPasses())
   {
+    // todo
+    if (only_opaque_tris && pass.blend_mode != 0)
+    {
+    }
+
+
     for (int i (pass.index_start); i < pass.index_start + pass.index_count; i += 3)
     {
-      if ( auto distance
-          = ray.intersect_triangle( _vertices[_indices[static_cast<std::size_t>(i + 0)]].position,
-                                    _vertices[_indices[static_cast<std::size_t>(i + 1)]].position,
-                                    _vertices[_indices[static_cast<std::size_t>(i + 2)]].position)
-          )
+      std::optional<float> distance;
+      if (!has_transformed_verts)
+      {
+        distance = ray.intersect_triangle(_vertices[_indices[static_cast<std::size_t>(i + 0)]].position,
+                                          _vertices[_indices[static_cast<std::size_t>(i + 1)]].position,
+                                          _vertices[_indices[static_cast<std::size_t>(i + 2)]].position);
+      }
+      else
+      {
+        distance = ray.intersect_triangle(transformed_verts[_indices[static_cast<std::size_t>(i + 0)]].position,
+                                          transformed_verts[_indices[static_cast<std::size_t>(i + 1)]].position,
+                                          transformed_verts[_indices[static_cast<std::size_t>(i + 2)]].position);
+      }
+
+      if (distance)
       {
         results.emplace_back (*distance, std::make_tuple(i, i + 1, 1 + 2));
+
+        if (first_occurence)
+          return results;
       }
     }
   }
@@ -811,12 +1027,12 @@ std::vector<std::pair<float, std::tuple<int, int, int>>> Model::intersect (glm::
 void Model::lightsOn(OpenGL::light lbase)
 {
   // setup lights
-  for (unsigned int i=0, l=lbase; i<header.nLights; ++i) _lights[i].setup(_anim_time, l++, _global_animtime);
+  for (unsigned int i=0, l=lbase; i< _lights.size(); ++i) _lights[i].setup(_anim_time, l++, _global_animtime);
 }
 
 void Model::lightsOff(OpenGL::light lbase)
 {
-  for (unsigned int i = 0, l = lbase; i<header.nLights; ++i) gl.disable(l++);
+  for (unsigned int i = 0, l = lbase; i< _lights.size(); ++i) gl.disable(l++);
 }
 
 

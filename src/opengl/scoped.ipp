@@ -1,5 +1,26 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
+#include <noggit/Log.h>
+#include <QtGui/QOpenGLContext>
+
+namespace
+{
+  bool can_release_gl_resource()
+  {
+    auto* current_context = gl.getCurrentContext();
+    return current_context
+      && current_context->isValid()
+      && QOpenGLContext::currentContext() == current_context;
+  }
+
+  void log_skipped_gl_resource_release(char const* resource_type)
+  {
+    LogError << "A " << resource_type
+      << " could not be released because no valid OpenGL context is current."
+      << std::endl;
+  }
+}
+
 namespace OpenGL
 {
   namespace Scoped
@@ -139,6 +160,18 @@ namespace OpenGL
     template<std::size_t count>
     void deferred_upload_buffers<count>::unload()
     {
+      if (!_buffer_generated)
+      {
+        return;
+      }
+
+      if (!can_release_gl_resource())
+      {
+        log_skipped_gl_resource_release("buffer");
+        _buffer_generated = false;
+        return;
+      }
+
       gl.deleteBuffers(count, _buffers);
       _buffer_generated = false;
     }
@@ -148,7 +181,14 @@ namespace OpenGL
     {
       if (_buffer_generated)
       {
-        gl.deleteBuffers (count, _buffers);
+        if (can_release_gl_resource())
+        {
+          gl.deleteBuffers (count, _buffers);
+        }
+        else
+        {
+          log_skipped_gl_resource_release("buffer");
+        }
       }
     }
 
@@ -186,6 +226,18 @@ namespace OpenGL
     template<std::size_t count>
     void deferred_upload_vertex_arrays<count>::unload()
     {
+      if (!_buffer_generated)
+      {
+        return;
+      }
+
+      if (!can_release_gl_resource())
+      {
+        log_skipped_gl_resource_release("vertex array");
+        _buffer_generated = false;
+        return;
+      }
+
       gl.deleteVertexArray(count, _vertex_arrays);
       _buffer_generated = false;
     }
@@ -195,7 +247,14 @@ namespace OpenGL
     {
       if (_buffer_generated)
       {
-        gl.deleteVertexArray (count, _vertex_arrays);
+        if (can_release_gl_resource())
+        {
+          gl.deleteVertexArray (count, _vertex_arrays);
+        }
+        else
+        {
+          log_skipped_gl_resource_release("vertex array");
+        }
       }
     }
 
@@ -222,6 +281,18 @@ namespace OpenGL
     template<std::size_t count>
     void deferred_upload_textures<count>::unload()
     {
+      if (!_texture_generated)
+      {
+        return;
+      }
+
+      if (!can_release_gl_resource())
+      {
+        log_skipped_gl_resource_release("texture");
+        _texture_generated = false;
+        return;
+      }
+
       gl.deleteTextures(count, _textures);
       _texture_generated = false;
     }
@@ -231,7 +302,14 @@ namespace OpenGL
     {
       if (_texture_generated)
       {
-        gl.deleteTextures(count, _textures);
+        if (can_release_gl_resource())
+        {
+          gl.deleteTextures(count, _textures);
+        }
+        else
+        {
+          log_skipped_gl_resource_release("texture");
+        }
       }
     }
 

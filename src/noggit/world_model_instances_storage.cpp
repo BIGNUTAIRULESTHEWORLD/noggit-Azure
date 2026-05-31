@@ -4,6 +4,7 @@
 #include <noggit/World.h>
 #include <noggit/ActionManager.hpp>
 #include <noggit/Action.hpp>
+#include <noggit/TileIndex.hpp>
 
 namespace Noggit
 {
@@ -13,14 +14,14 @@ namespace Noggit
 
   }
 
-  std::uint32_t world_model_instances_storage::add_model_instance(ModelInstance instance, bool from_reloading)
+  std::uint32_t world_model_instances_storage::add_model_instance(ModelInstance instance, bool from_reloading, bool action)
   {
     std::uint32_t uid = instance.uid;
     std::uint32_t uid_after;
 
     {
       std::lock_guard<std::mutex> const lock (_mutex);
-      uid_after = unsafe_add_model_instance_no_world_upd(std::move(instance));
+      uid_after = unsafe_add_model_instance_no_world_upd(std::move(instance), action);
     }
 
     if (from_reloading || uid_after != uid)
@@ -30,7 +31,7 @@ namespace Noggit
 
     return uid_after;
   }
-  std::uint32_t world_model_instances_storage::unsafe_add_model_instance_no_world_upd(ModelInstance instance)
+  std::uint32_t world_model_instances_storage::unsafe_add_model_instance_no_world_upd(ModelInstance instance, bool action)
   {
     std::uint32_t uid = instance.uid;
     auto existing_instance = unsafe_get_model_instance(uid);
@@ -46,7 +47,8 @@ namespace Noggit
     }
     else if(!unsafe_uid_is_used(uid))
     {
-      if (NOGGIT_CUR_ACTION)
+      // This causes a crash when undoing while loading a tile, those objects get registered to the action stack
+      if (action && NOGGIT_CUR_ACTION)
         NOGGIT_CUR_ACTION->registerObjectAdded(&instance);
       _m2s.emplace(uid, instance);
       _instance_count_per_uid[uid] = 1;
@@ -54,31 +56,40 @@ namespace Noggit
     }
 
     // the uid is already used for another model/wmo, use a new one
+    LogDebug << "UID " << uid << " is already in use (" << instance.model->file_key().stringRepr() << ")" << std::endl;
     _uid_duplicates_found = true;
     instance.uid = _world->mapIndex.newGUID();
 
-    return unsafe_add_model_instance_no_world_upd(std::move(instance));
+    return unsafe_add_model_instance_no_world_upd(std::move(instance), action);
   }
 
   
-  std::uint32_t world_model_instances_storage::add_wmo_instance(WMOInstance instance, bool from_reloading)
+  std::uint32_t world_model_instances_storage::add_wmo_instance(WMOInstance instance, bool from_reloading, bool action)
   {
     std::uint32_t uid = instance.uid;
     std::uint32_t uid_after;
 
     {
       std::lock_guard<std::mutex> const lock(_mutex);
-      uid_after = unsafe_add_wmo_instance_no_world_upd(std::move(instance));
+      uid_after = unsafe_add_wmo_instance_no_world_upd(std::move(instance), action);
     }
 
     if (from_reloading || uid_after != uid)
     {
-      _world->updateTilesWMO(&_wmos.at(uid_after), model_update::add);
+      WMOInstance* wmo_instance = &_wmos.at(uid_after);
+      _world->updateTilesWMO(wmo_instance, model_update::add);
+
+      // update WDL uid if it changed
+      [[unlikely]]
+      if (wmo_instance->lowResWmo.has_value())
+      {
+        wmo_instance->lowResInstance->uniqueID = uid_after;
+      }
     }
 
     return uid_after;
   }
-  std::uint32_t world_model_instances_storage::unsafe_add_wmo_instance_no_world_upd(WMOInstance instance)
+  std::uint32_t world_model_instances_storage::unsafe_add_wmo_instance_no_world_upd(WMOInstance instance, bool action)
   {
     std::uint32_t uid = instance.uid;
     auto existing_instance = unsafe_get_wmo_instance(uid);
@@ -95,7 +106,7 @@ namespace Noggit
     }
     else if (!unsafe_uid_is_used(uid))
     {
-      if (NOGGIT_CUR_ACTION)
+      if (action && NOGGIT_CUR_ACTION)
         NOGGIT_CUR_ACTION->registerObjectAdded(&instance);
       _wmos.emplace(uid, instance);
       _instance_count_per_uid[uid] = 1;
@@ -103,84 +114,62 @@ namespace Noggit
     }
 
     // the uid is already used for another model/wmo, use a new one
+    LogDebug << "UID " << uid << " is already in use (" << instance.wmo->file_key().stringRepr() << ")" << std::endl;
     _uid_duplicates_found = true;
     instance.uid = _world->mapIndex.newGUID();
 
-    return unsafe_add_wmo_instance_no_world_upd(std::move(instance));
+    return unsafe_add_wmo_instance_no_world_upd(std::move(instance), action);
   }
 
-  void world_model_instances_storage::delete_instances_from_tile(TileIndex const& tile)
+  void world_model_instances_storage::delete_instances_from_tile(TileIndex const& tile, bool action)
   {
-    std::unique_lock<std::mutex> const lock (_mutex);
+    // std::unique_lock<std::mutex> const lock (_mutex);
+    std::vector<selected_object_type> instances_to_remove;
 
-    for (auto it = _m2s.begin(); it != _m2s.end();)
+    for (auto it = _m2s.begin(); it != _m2s.end(); ++it)
     {
       if (TileIndex(it->second.pos) == tile)
       {
-        if (NOGGIT_CUR_ACTION)
-          NOGGIT_CUR_ACTION->registerObjectRemoved(&it->second);
-        _world->updateTilesModel(&it->second, model_update::remove);
-        _instance_count_per_uid.erase(it->first);
-        it = _m2s.erase(it);
-      }
-      else
-      {
-        it++;
+        instances_to_remove.push_back(&it->second);
       }
     }
-    for (auto it = _wmos.begin(); it != _wmos.end();)
+    for (auto it = _wmos.begin(); it != _wmos.end();++it)
     {
       if (TileIndex(it->second.pos) == tile)
       {
-        if (NOGGIT_CUR_ACTION)
-          NOGGIT_CUR_ACTION->registerObjectRemoved(&it->second);
-        _world->updateTilesWMO(&it->second, model_update::remove);
-        _instance_count_per_uid.erase(it->first);
-        it = _wmos.erase(it);
-      }
-      else
-      {
-        it++;
+        instances_to_remove.push_back(&it->second);
       }
     }
+    delete_instances(instances_to_remove, action);
   }
 
-  void world_model_instances_storage::delete_instances(std::vector<selection_type> const& instances)
+  void world_model_instances_storage::delete_instances(std::vector<selected_object_type> const& instances, bool action)
   {
-    std::unique_lock<std::mutex> const lock (_mutex);
-
-    for (auto& it : instances)
+    for (auto& obj : instances)
     {
-      if (it.index() != eEntry_Object)
-        continue;
-
-      auto obj = std::get<selected_object_type>(it);
-
-      if (NOGGIT_CUR_ACTION)
-        NOGGIT_CUR_ACTION->registerObjectRemoved(obj);
+      // done in delete_instance
+      /*
+      if (action && NOGGIT_CUR_ACTION)
+        NOGGIT_CUR_ACTION->registerObjectRemoved(obj);*/
 
       if (obj->which() == eMODEL)
       {
         auto instance = static_cast<ModelInstance*>(obj);
         
         _world->updateTilesModel(instance, model_update::remove);
-
-        _instance_count_per_uid.erase(instance->uid);
-        _m2s.erase(instance->uid);
+        delete_instance(instance->uid, action);
       }
       else if (obj->which() == eWMO)
       {
         auto instance = static_cast<WMOInstance*>(obj);
 
         _world->updateTilesWMO(instance, model_update::remove);
-
-        _instance_count_per_uid.erase(instance->uid);
-        _wmos.erase(instance->uid);
+        delete_instance(instance->uid, action);
       }
     }
   }
 
-  void world_model_instances_storage::delete_instance(std::uint32_t uid)
+  void world_model_instances_storage::delete_instance(std::uint32_t uid, bool action)
   {
     std::unique_lock<std::mutex> const lock (_mutex);
 
@@ -196,8 +185,7 @@ namespace Noggit
               selection_group.remove_member(obj->uid);
           }
       }
-
-      if (NOGGIT_CUR_ACTION)
+      if (action && NOGGIT_CUR_ACTION)
       {
         NOGGIT_CUR_ACTION->registerObjectRemoved(obj);
       }
@@ -220,7 +208,7 @@ namespace Noggit
 
     if (--_instance_count_per_uid.at(uid) == 0)
     {
-      _world->remove_from_selection(uid);
+      _world->remove_from_selection(uid, false, false);
 
       _instance_count_per_uid.erase(uid);
       _m2s.erase(uid);
@@ -330,7 +318,7 @@ namespace Noggit
     return _instance_count_per_uid.find(uid) != _instance_count_per_uid.end();
   }
 
-  void world_model_instances_storage::clear_duplicates()
+  void world_model_instances_storage::clear_duplicates(bool action)
   {
     std::unique_lock<std::mutex> const lock (_mutex);
 
@@ -347,7 +335,7 @@ namespace Noggit
           _world->updateTilesWMO(&rhs->second, model_update::remove);
 
           _instance_count_per_uid.erase(rhs->second.uid);
-          if (NOGGIT_CUR_ACTION)
+          if (action && NOGGIT_CUR_ACTION)
             NOGGIT_CUR_ACTION->registerObjectRemoved(&rhs->second);
           rhs = _wmos.erase(rhs);
           deleted_uids++;
@@ -371,7 +359,7 @@ namespace Noggit
 
           _instance_count_per_uid.erase(rhs->second.uid);
 
-          if (NOGGIT_CUR_ACTION)
+          if (action && NOGGIT_CUR_ACTION)
             NOGGIT_CUR_ACTION->registerObjectRemoved(&rhs->second);
           rhs = _m2s.erase(rhs);
           deleted_uids++;
@@ -384,6 +372,11 @@ namespace Noggit
     }
 
     Log << "Deleted " << deleted_uids << " duplicate Model/WMO" << std::endl;
+  }
+
+  bool world_model_instances_storage::uid_duplicates_found() const
+  {
+    return _uid_duplicates_found.load();
   }
 
   void world_model_instances_storage::upload()
@@ -412,5 +405,10 @@ namespace Noggit
     _buffers.unload();
 
     _transform_storage_uploaded = false;
+  }
+
+  unsigned int world_model_instances_storage::getTotalModelsCount() const
+  {
+    return _m2s.size() + _wmos.size();
   }
 }

@@ -2,14 +2,14 @@
 
 #include <noggit/ui/TexturePicker.h>
 
-#include <noggit/ui/FontAwesome.hpp>
-#include <noggit/ui/FontNoggit.hpp>
+#include <noggit/MapChunk.h>
+#include <noggit/MapTile.h>
 #include <noggit/Selection.h>
 #include <noggit/texture_set.hpp>
 #include <noggit/ui/CurrentTexture.h>
+#include <noggit/ui/FontAwesome.hpp>
 #include <noggit/ui/TexturingGUI.h>
-#include <noggit/World.h>
-#include <noggit/tool_enums.hpp>
+#include <noggit/ui/tools/UiCommon/expanderwidget.h>
 
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QPushButton>
@@ -29,6 +29,25 @@ namespace Noggit
     {
       setWindowTitle ("Texture Picker");
       setWindowFlags (Qt::Tool | Qt::WindowStaysOnTopHint);
+
+      auto* AlphamapsBox = new ExpanderWidget(this);
+      AlphamapsBox->setExpanderTitle("View Chunk Alphamaps");
+      AlphamapsBox->setExpanded(false);
+      auto AlphamapsBox_content = new QWidget(this);
+      AlphamapsBox_content->setLayoutDirection(Qt::LeftToRight);
+      auto Alphamaps_layout = new QGridLayout(AlphamapsBox_content);
+      AlphamapsBox->setLayoutDirection(Qt::LeftToRight);
+      AlphamapsBox->addPage(AlphamapsBox_content);
+      layout->addWidget(AlphamapsBox, 3, 0, 1, 4, Qt::AlignLeft);
+
+      connect(AlphamapsBox, &ExpanderWidget::expanderChanged, [&](bool flag)
+          {
+              // adjust window's size with the expander.
+              if (flag)
+                this->setFixedHeight(224 + 128 + 18);
+              else
+                  this->setFixedHeight(224);
+          });
 
       for (int i = 0; i < 4; i++)
       {
@@ -80,6 +99,14 @@ namespace Noggit
 
         layout->addWidget(click_label, 0, i);
         _labels.push_back(click_label);
+
+        QLabel* alphamap_label = new QLabel(this);
+        alphamap_label->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        alphamap_label->setMinimumSize(128, 128);
+        // alphamap_label->hide();
+
+        Alphamaps_layout->addWidget(alphamap_label, 0, i);
+        _alphamap_preview_labels.push_back(alphamap_label);
       }
 
       QPushButton* btn_left = new QPushButton (this);
@@ -87,12 +114,19 @@ namespace Noggit
       btn_left->setIcon(FontAwesomeIcon(FontAwesome::angledoubleleft));
       btn_right->setIcon(FontAwesomeIcon(FontAwesome::angledoubleright));
 
+      // QPushButton* btn_hide_alphamaps = new QPushButton(this);
+      // btn_hide_alphamaps->setIcon(Noggit::Ui::FontNoggitIcon(Noggit::Ui::FontNoggit::Icons::VISIBILITY_HIDDEN_MODELS));
+      // btn_hide_alphamaps->setText("Display Chunk Alphamaps");
+
       btn_left->setMinimumHeight(16);
       btn_right->setMinimumHeight(16);
+      // btn_hide_alphamaps->setMinimumHeight(16);
 
       auto btn_layout(new QGridLayout);
       btn_layout->addWidget (btn_left, 0, 0);
       btn_layout->addWidget (btn_right, 0, 1);
+
+      // layout->addWidget(btn_hide_alphamaps, 2, 0, 1, 4, Qt::AlignHCenter | Qt::AlignBottom);
 
       layout->addItem(btn_layout, 1, 0, 1, 4, Qt::AlignHCenter | Qt::AlignBottom);
 
@@ -199,9 +233,11 @@ namespace Noggit
       }
 
       _textures.clear();
-      size_t index = 0;
+      // uint8_t index = 0;
 
-      for (; index < _chunk->texture_set->num(); ++index)
+      std::array<int, 4> weights{0,0,0,0};
+
+      for (uint8_t index = 0; index < _chunk->texture_set->num(); ++index)
       {
         _labels[index]->unselect();
         _textures.push_back(_chunk->texture_set->texture(index));
@@ -210,11 +246,73 @@ namespace Noggit
 
         if (_main_texture_window->filename() == _labels[index]->filename())
             _labels[index]->select();
+
+        if (_display_alphamaps)
+            _alphamap_preview_labels[index]->show();
+
+        // alphamap_preview.fill(Qt::black);
+        QImage image(64, 64, QImage::Format_RGBA8888);
+        image.fill(Qt::black);
+        
+        _chunk->texture_set->apply_alpha_changes();
+        auto alphamaps = _chunk->texture_set->getAlphamaps();
+        
+        for (int k = 0; k < 64; ++k)
+        {
+            for (int l = 0; l < 64; ++l)
+            {
+                if (index == 0)
+                {
+                    // WoW calculates layer 0 as 255 - sum(Layer[1]...Layer[3])
+                    int layers_sum = 0;
+                    if (alphamaps->at(0))
+                        layers_sum += alphamaps->at(0)->getAlpha(64 * l + k);
+                    if (alphamaps->at(1))
+                        layers_sum += alphamaps->at(1)->getAlpha(64 * l + k);
+                    if (alphamaps->at(2))
+                        layers_sum += alphamaps->at(2)->getAlpha(64 * l + k);
+        
+                    int value = std::clamp((255 - layers_sum), 0, 255);
+                    image.setPixelColor(k, l, QColor(value, value, value, 255));
+                    weights.at(index) += value;
+
+                }
+                else // layer 1-3
+                {
+                    auto& alpha_layer = *alphamaps->at(index - 1);
+        
+                    int value = alpha_layer.getAlpha(64 * l + k);
+                    image.setPixelColor(k, l, QColor(value, value, value, 255));
+                    weights.at(index) += value;
+                }
+            }
+        }
+
+        // QPixmap alphamap_preview(64, 64);
+
+        QPixmap alphamap_preview = QPixmap::fromImage(image).scaled(128, 128);
+        // alphamap_preview.fromImage(image);
+        // _alphamap_preview_labels[index]->setPixmap(alphamap_preview);
+        _alphamap_preview_labels[index]->setPixmap(alphamap_preview);
       }
 
-      for (; index < 4U; ++index)
+      float sum = weights.at(0) + weights.at(1) + weights.at(2) + weights.at(3);
+      std::array<float, 4> alpha_weights = { 
+          weights.at(0) / sum * 100.f,
+          weights.at(1) / sum * 100.f,
+          weights.at(2) / sum * 100.f,
+          weights.at(3) / sum * 100.f };
+
+      for (uint8_t index = 0; index < _chunk->texture_set->num(); ++index)
+      {
+          std::string weight_tooltip = "Weight: " + std::to_string(alpha_weights.at(index));
+        _alphamap_preview_labels[index]->setToolTip(QString::fromStdString(weight_tooltip));
+      }
+
+      for (uint8_t index = _chunk->texture_set->num(); index < 4U; ++index)
       {
         _labels[index]->hide();
+        _alphamap_preview_labels[index]->hide();
       }
     }
   }

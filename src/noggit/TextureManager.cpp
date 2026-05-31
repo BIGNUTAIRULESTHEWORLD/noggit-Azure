@@ -2,10 +2,13 @@
 #include <noggit/TextureManager.h>
 #include <noggit/Log.h> // LogDebug
 #include <noggit/application/NoggitApplication.hpp>
+#include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
 #include <ClientFile.hpp>
 
-#include <QtCore/QString>
-#include <QtGui/QPixmap>
+#include <QtGui/QOffscreenSurface>
+#include <QtGui/QOpenGLContext>
+#include <QtGui/QOpenGLFramebufferObjectFormat>
+#include <QtGui/QSurfaceFormat>
 
 #include <algorithm>
 #include <glm/vec2.hpp>
@@ -269,9 +272,81 @@ void blp_texture::upload()
 void blp_texture::unload()
 {
   _uploaded = false;
+  finished = false;
+  if (hasHeightMap() && heightMap)
+  {
+      heightMap->unload();
+  }
+  _compression_format.reset();
+  _texture_array = 0;
+  _array_index = -1;
+  _data.clear();
+  _compressed_data.clear();
 
   // load data back from file. pretty sad. maybe keep it after loading?
   finishLoading();
+}
+
+bool blp_texture::is_uploaded() const
+{
+  return _uploaded;
+}
+
+GLuint blp_texture::texture_array() const
+{
+  return _texture_array;
+}
+
+int blp_texture::array_index() const
+{
+  return _array_index;
+}
+
+bool blp_texture::is_specular() const
+{
+  return _is_specular;
+}
+
+unsigned blp_texture::mip_level() const
+{
+  return static_cast<unsigned>(!_compression_format ? _data.size() : _compressed_data.size());
+}
+
+std::map<int, std::vector<uint32_t>>& blp_texture::data()
+{
+  return _data;
+}
+
+std::map<int, std::vector<uint8_t>>& blp_texture::compressed_data()
+{
+  return _compressed_data;
+}
+
+std::optional<GLint> const& blp_texture::compression_format() const
+{
+  return _compression_format;
+}
+
+Noggit::NoggitRenderContext blp_texture::getContext() const
+{
+  return _context;
+}
+
+[[nodiscard]]
+async_priority blp_texture::loading_priority() const
+{
+  return async_priority::high;
+}
+
+// Mists HeightMapping
+bool blp_texture::hasHeightMap() const
+{
+  return _has_heightmap;
+}
+
+blp_texture* blp_texture::getHeightMap()
+{
+  return heightMap.get();
 }
 
 void blp_texture::loadFromUncompressedData(BLPHeader const* lHeader, char const* lData)
@@ -388,6 +463,16 @@ void blp_texture::loadFromCompressedData(BLPHeader const* lHeader, char const* l
   }
 }
 
+int blp_texture::width() const
+{
+  return _width;
+}
+
+int blp_texture::height() const
+{
+  return _height;
+}
+
 blp_texture::blp_texture(BlizzardArchive::Listfile::FileKey const& file_key, Noggit::NoggitRenderContext context)
   : AsyncObject(file_key)
   , _context(context)
@@ -402,10 +487,10 @@ void blp_texture::finishLoading()
     LogError << "file not found: '" <<  _file_key.stringRepr() << "'" << std::endl;
   }
 
-  std::string spec_filename;
-  bool has_specular = false;
+  std::string spec_filename = "", height_filename = "";
+  bool has_specular = false, has_height = false;
 
-  if (_file_key.filepath().starts_with("tileset/"))
+  if (_file_key.filepath().starts_with("tileset/") )
   {
     _is_tileset = true;
 
@@ -415,6 +500,21 @@ void blp_texture::finishLoading()
     if (has_specular)
     {
       _is_specular = true;
+    }
+
+    bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
+
+    // Only load _h in map view when modern features are enabled
+    if(_context == Noggit::NoggitRenderContext::MAP_VIEW && modern_features)
+    {
+        height_filename = _file_key.filepath().substr(0, _file_key.filepath().find_last_of(".")) + "_h.blp";
+        has_height = Noggit::Application::NoggitApplication::instance()->clientData()->exists(height_filename);
+        if (has_height)
+        {
+            _has_heightmap = true;
+            heightMap = std::make_unique<blp_texture>(height_filename,_context);
+            heightMap->finishLoading();
+        }
     }
   }
 
@@ -442,9 +542,30 @@ void blp_texture::finishLoading()
   }
   else
   {
-    finished = true;
-    throw std::logic_error ("unimplemented BLP colorEncoding");
+      BlizzardArchive::ClientFile fallback("textures/shanecube.blp", Noggit::Application::NoggitApplication::instance()->clientData());
 
+      char const* lData_f = fallback.getPointer();
+      BLPHeader const* lHeader_f = reinterpret_cast<BLPHeader const*>(lData_f);
+      _width = lHeader_f->resx;
+      _height = lHeader_f->resy;
+
+      if (lHeader_f->attr_0_compression == 1)
+      {
+          loadFromUncompressedData(lHeader_f, lData_f);
+      }
+      else if (lHeader_f->attr_0_compression == 2)
+      {
+          loadFromCompressedData(lHeader_f, lData_f);
+      }
+      else
+      {
+          finished = true;
+          throw std::logic_error("Unsupported BLP compression");
+      }
+
+      fallback.close();
+
+      LogError << "Unsupported BLP compression: " << _file_key.filepath() << std::endl;
   }
 
   f.close();
@@ -454,8 +575,13 @@ void blp_texture::finishLoading()
 
 namespace Noggit
 {
+    BLPRenderer& BLPRenderer::getInstance()
+    {
+        static BLPRenderer  instance;
+        return instance;
+    }
 
-  QPixmap* BLPRenderer::render_blp_to_pixmap ( std::string const& blp_filename
+    QPixmap* BLPRenderer::render_blp_to_pixmap ( std::string const& blp_filename
                                                , int width
                                                , int height
                                                )
@@ -533,6 +659,14 @@ namespace Noggit
     _context = std::make_unique<QOpenGLContext>();
     _fmt = std::make_unique<QOpenGLFramebufferObjectFormat>();
     _surface = std::make_unique<QOffscreenSurface>();
+
+    _context->setFormat(QSurfaceFormat::defaultFormat());
+    _surface->setFormat(QSurfaceFormat::defaultFormat());
+
+    if (auto* share_context = QOpenGLContext::globalShareContext())
+    {
+      _context->setShareContext(share_context);
+    }
 
     _context->create();
 
@@ -634,8 +768,24 @@ namespace Noggit
 
   void BLPRenderer::unload()
   {
+    if (!_uploaded)
+    {
+      return;
+    }
+
+    if (!_context || !_surface)
+    {
+      return;
+    }
+
     OpenGL::context::save_current_context const context_save (::gl);
-    _context->makeCurrent(_surface.get());
+
+    if (!_context->makeCurrent(_surface.get()))
+    {
+      LogError << "BLP preview cleanup was skipped because the offscreen OpenGL context could not be made current." << std::endl;
+      return;
+    }
+
     OpenGL::context::scoped_setter const context_set (::gl, _context.get());
 
     _cache.clear();
@@ -649,34 +799,4 @@ namespace Noggit
     _uploaded = false;
   }
 
-}
-
-scoped_blp_texture_reference::scoped_blp_texture_reference (std::string const& filename, Noggit::NoggitRenderContext context)
-  : _blp_texture(TextureManager::_.emplace(filename, context))
-  , _context(context)
-{}
-
-scoped_blp_texture_reference::scoped_blp_texture_reference (scoped_blp_texture_reference const& other)
-  : _blp_texture(other._blp_texture ? TextureManager::_.emplace(other._blp_texture->file_key().filepath(), other._context) : nullptr)
-  , _context(other._context)
-{}
-
-void scoped_blp_texture_reference::Deleter::operator() (blp_texture* texture) const
-{
-  TextureManager::_.erase(texture->file_key().filepath(), texture->getContext());
-}
-
-blp_texture* scoped_blp_texture_reference::operator->() const
-{
-  return _blp_texture.get();
-}
-
-blp_texture* scoped_blp_texture_reference::get() const
-{
-  return _blp_texture.get();
-}
-
-bool scoped_blp_texture_reference::operator== (scoped_blp_texture_reference const& other) const
-{
-  return std::tie(_blp_texture) == std::tie(other._blp_texture);
 }

@@ -2,7 +2,13 @@
 
 
 #include "ChunkClipboard.hpp"
+#include <noggit/Alphamap.hpp>
+#include <noggit/ChunkWater.hpp>
+#include <noggit/MapChunk.h>
+#include <noggit/MapTile.h>
+#include <noggit/texture_set.hpp>
 #include <noggit/World.h>
+#include <noggit/liquid_layer.hpp>
 #include <noggit/World.inl>
 
 #include <cassert>
@@ -19,7 +25,6 @@ ChunkClipboard::ChunkClipboard(World* world, QObject* parent)
 
 void ChunkClipboard::selectRange(glm::vec3 const& cursor_pos, float radius, ChunkSelectionMode mode)
 {
-
   switch (mode)
   {
     case ChunkSelectionMode::SELECT:
@@ -165,16 +170,31 @@ void ChunkClipboard::copySelected(glm::vec3 const& pos, ChunkCopyFlags flags)
       auto texture_set = chunk->getTextureSet();
 
       cache.n_textures = texture_set->num();
-      cache.alphamaps = *texture_set->getAlphamaps();
-      cache.tmp_edit_values = *texture_set->getTempAlphamaps();
-      std::memcpy(&cache.layers_info, texture_set->getMCLYEntries(), sizeof(ENTRY_MCLY) * 4);
+      // cache.alphamaps = *texture_set->getAlphamaps();
+      // cache.tmp_edit_values = *texture_set->getTempAlphamaps();
+      const auto& sourceAlphamaps = *texture_set->getAlphamaps();
+      for (size_t i = 0; i < MAX_ALPHAMAPS; ++i)
+      {
+          if (sourceAlphamaps[i])
+              cache.alphamaps[i] = std::make_unique<Alphamap>(*sourceAlphamaps[i]);
+          else
+              cache.alphamaps[i].reset();
+      }
+
+      const auto& source_temp_alphas = texture_set->getTempAlphamaps();
+      if (source_temp_alphas)
+          cache.tmp_edit_values = std::make_unique<tmp_edit_alpha_values>(*source_temp_alphas);
+      else
+          cache.tmp_edit_values.reset();
+
+      std::memcpy(&cache.layers_info, texture_set->getMCLYEntries(), sizeof(layer_info) * 4);
 
       for (int i = 0; i < cache.n_textures; ++i)
       {
         cache.textures.push_back(texture_set->filename(i));
       }
 
-      chunk_cache.textures = cache;
+      chunk_cache.textures = std::move(cache);
     }
 
 
@@ -189,4 +209,21 @@ void ChunkClipboard::clearSelection()
 void ChunkClipboard::pasteSelection(glm::vec3 const& pos, ChunkPasteFlags flags)
 {
 
+}
+
+[[nodiscard]]
+ChunkCopyFlags Noggit::Ui::Tools::ChunkManipulator::ChunkClipboard::copyParams() const
+{
+  return _copy_flags;
+}
+
+void Noggit::Ui::Tools::ChunkManipulator::ChunkClipboard::setCopyParams(ChunkCopyFlags flags)
+{
+  _copy_flags = flags;
+}
+
+[[nodiscard]]
+std::set<SelectedChunkIndex> const& Noggit::Ui::Tools::ChunkManipulator::ChunkClipboard::selectedChunks() const
+{
+  return _selected_chunks;
 }

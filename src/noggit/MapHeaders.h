@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include <glm/vec3.hpp>
 #include <cstdint>
+#include <array>
 
 union mcnk_flags
 {
@@ -59,6 +61,8 @@ inline constexpr float UNITSIZE = (CHUNKSIZE / 8.0f);
 inline constexpr float MINICHUNKSIZE = (CHUNKSIZE / 4.0f);
 inline constexpr float TEXDETAILSIZE = (CHUNKSIZE / 64.0f);
 inline constexpr float ZEROPOINT = (32.0f * (TILESIZE));
+
+static constexpr double TILE_RADIUS = 754.24723326565069269423398624517; //sqrt(2 * (533.33333)^2)
 inline constexpr double MAPCHUNK_RADIUS = 47.140452079103168293389624140323; //sqrt((533.33333/16)^2 + (533.33333/16)^2)
 
 struct MHDR
@@ -74,7 +78,7 @@ struct MHDR
   /*020h*/  uint32_t modf;  //WMO Positioning Information
   /*024h*/  uint32_t mfbo;  // tbc, wotlk; only when flags&1
   /*028h*/  uint32_t mh2o;  // wotlk
-  /*02Ch*/  uint32_t mtfx;  // wotlk
+  /*02Ch*/  uint32_t mtxf;  // wotlk
   /*030h*/  uint32_t pad4;
   /*034h*/  uint32_t pad5;
   /*038h*/  uint32_t pad6;
@@ -112,18 +116,18 @@ struct ENTRY_MODF
   uint32_t  uniqueID;
   float  pos[3];
   float  rot[3];
-  float  extents[2][3];
+  std::array<glm::vec3, 2>  extents;
   //uint16_t  flags;
   uint16_t  flags;
   uint16_t  doodadSet;
   uint16_t  nameSet;
-  uint16_t  unknown;
+  uint16_t  scale;
 };
 
 struct MapChunkHeader {
-  uint32_t flags = 0;
-  uint32_t ix;
-  uint32_t iy;
+  mcnk_flags flags;
+  uint32_t ix = 0;
+  uint32_t iy = 0;
   uint32_t nLayers = 0;
   uint32_t nDoodadRefs = 0;
   uint32_t ofsHeight = 0;
@@ -143,20 +147,12 @@ struct MapChunkHeader {
   uint32_t nSndEmitters = 0;
   uint32_t ofsLiquid = 0;
   uint32_t sizeLiquid = 0;
-  float  zpos;
-  float  xpos;
-  float  ypos;
+  float  zpos = 0.0f;
+  float  xpos = 0.0f;
+  float  ypos = 0.0f;
   uint32_t ofsMCCV = 0;
   uint32_t unused1 = 0;
   uint32_t unused2 = 0;
-};
-
-struct MCCV
-{
-  uint32_t  textureID = 0;
-  uint32_t  flags = 0;
-  uint32_t  ofsAlpha = 0;
-  uint32_t  effectID = 0;
 };
 
 struct MCLYFlags
@@ -175,10 +171,18 @@ struct MCLYFlags
 
 struct ENTRY_MCLY
 {
-  uint32_t  textureID = 0;
-  uint32_t  flags = 0;
-  uint32_t  ofsAlpha = 0;
-  uint32_t  effectID = 0xFFFF; // default value, see https://wowdev.wiki/ADT/v18#MCLY_sub-chunk
+  uint32_t textureID = 0;
+  uint32_t flags = 0;
+  uint32_t ofsAlpha = 0;
+  uint32_t effectID = 0xFFFFFFFF; // default value, see https://wowdev.wiki/ADT/v18#MCLY_sub-chunk
+};
+
+// sound emitters
+struct ENTRY_MCSE
+{
+    uint32_t soundId; // foreign_keyⁱ<uint32_t, &SoundEntriesAdvancedRec::m_ID>
+    float  pos[3];
+    float  size[3];
 };
 
 #include <string.h> // memcpy()
@@ -187,13 +191,55 @@ struct ENTRY_MCLY
 struct MH2O_Header{
   uint32_t ofsInformation;
   uint32_t nLayers;
-  uint32_t ofsRenderMask;
+  uint32_t ofsAttributes;
 
   MH2O_Header()
     : ofsInformation(0)
     , nLayers(0)
-    , ofsRenderMask(0)
+    , ofsAttributes(0)
   {}
+};
+
+// enum for type column of liquidtype.dbc
+enum liquid_basic_types
+{
+    liquid_basic_types_water = 0,
+    liquid_basic_types_ocean = 1,
+    liquid_basic_types_magma = 2,
+    liquid_basic_types_slime = 3,
+
+    liquid_basic_types_MASK = 3,
+};
+
+// just liquidtype.dbc
+enum liquid_types
+{
+    LIQUID_WATER = 1,
+    LIQUID_OCEAN = 2,
+    LIQUID_MAGMA = 3,
+    LIQUID_SLIME = 4,
+    // slow
+    // fast
+    LIQUID_WMO_Water = 13,
+    LIQUID_WMO_Ocean = 14,
+    LIQUID_Green_Lava = 15,
+    LIQUID_WMO_Water_Interior = 17,
+    LIQUID_WMO_Magma = 19,
+    LIQUID_WMO_Slime = 20,
+
+    LIQUID_END_BASIC_LIQUIDS = LIQUID_WMO_Slime,
+
+    LIQUID_FIRST_NONBASIC_LIQUID_TYPE = 21,
+
+    LIQUID_NAXX_SLIME = LIQUID_FIRST_NONBASIC_LIQUID_TYPE,
+};
+
+enum mclq_liquid_types
+{
+  mclq_liquid_ocean = 1,
+  mclq_liquid_slime = 3,
+  mclq_liquid_river = 4,
+  mclq_liquid_magma = 6,
 };
 
 struct MH2O_Information{
@@ -231,11 +277,10 @@ struct mh2o_uv
   std::uint16_t y;
 };
 
-struct MH2O_Render
+struct MH2O_Attributes
 {
-  // seems to be usable as visibility information (as per https://wowdev.wiki/ADT/v18#MH2O_chunk_.28WotLK.2B.29)
   std::uint64_t fishable = 0xFFFFFFFFFFFFFFFF;
-  std::uint64_t fatigue = 0;
+  std::uint64_t fatigue = 0; // should be set to max ?
 };
 
 struct water_vert
@@ -299,4 +344,16 @@ struct MPHD
   uint32_t flags;
   uint32_t something;
   uint32_t unused[6];
+};
+
+struct mtxf_entry
+{
+    uint32_t use_cubemap : 1; // do_not_load_specular_or_height_texture_but_use_cubemap
+    /*
+    uint32_t : 3;
+    uint32_t texture_scale : 4; // MOP+ Texture scale here is not an actual "scale". 
+                                // Default value is 0 (no extra scaling applied). The values are computed as 1 << SMTextureFlags.texture_scale.
+    uint32_t : 24;
+    */
+    uint32_t unused : 31;
 };

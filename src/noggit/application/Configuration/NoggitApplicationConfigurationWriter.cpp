@@ -1,4 +1,6 @@
 #include <noggit/application/Configuration/NoggitApplicationConfigurationWriter.hpp>
+#include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
+#include <QFile>
 #include <QJsonObject>
 #include <QJsonDocument>
 
@@ -6,15 +8,16 @@ namespace Noggit::Application {
 
     void NoggitApplicationConfigurationWriter::PersistDefaultConfigurationState(QFile& outputFile)
     {
-        auto noggitApplicationConfiguration = NoggitApplicationConfiguration();
+        NoggitApplicationConfiguration noggitApplicationConfiguration;
         noggitApplicationConfiguration.ApplicationProjectPath = std::string("projects");
         noggitApplicationConfiguration.ApplicationThemePath = std::string("themes");
         noggitApplicationConfiguration.ApplicationDatabaseDefinitionsPath = std::string("definitions");
+        noggitApplicationConfiguration.ApplicationNoggitDefinitionsPath = std::string("noggit-definitions");
         noggitApplicationConfiguration.ApplicationListFilePath = std::string("listfile.csv");
 
         noggitApplicationConfiguration.GraphicsConfiguration = NoggitApplicationGraphicsConfiguration();
         noggitApplicationConfiguration.GraphicsConfiguration.SwapChainDepth = QSurfaceFormat::TripleBuffer;
-        noggitApplicationConfiguration.GraphicsConfiguration.DepthBufferSize = 16;
+        noggitApplicationConfiguration.GraphicsConfiguration.DepthBufferSize = 24;
         noggitApplicationConfiguration.GraphicsConfiguration.SwapChainInternal = 0;
         noggitApplicationConfiguration.GraphicsConfiguration.SamplesCount = 0;
 
@@ -56,6 +59,7 @@ namespace Noggit::Application {
         rootConfiguration.insert("ApplicationProjectPath", configuration.ApplicationProjectPath.c_str());
         rootConfiguration.insert("ApplicationThemePath", configuration.ApplicationThemePath.c_str());
         rootConfiguration.insert("ApplicationDatabaseDefinitionsPath", configuration.ApplicationDatabaseDefinitionsPath.c_str());
+        rootConfiguration.insert("ApplicationNoggitDefinitionsPath", configuration.ApplicationNoggitDefinitionsPath.c_str());
         rootConfiguration.insert("ApplicationListFilePath", configuration.ApplicationListFilePath.c_str());
         rootConfiguration.insert("GraphicsConfiguration", graphicsConfiguration);
         rootConfiguration.insert("LoggingConfiguration", loggingConfiguration);

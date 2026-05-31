@@ -4,17 +4,13 @@
 #include <noggit/AsyncLoader.h>
 #include <noggit/AsyncObject.h>
 #include <noggit/ContextObject.hpp>
-#include <noggit/Log.h>
+#include <noggit/Model.h>
 
-#include <ClientData.hpp>
 #include <Listfile.hpp>
-#include <thread>
 
 #include <functional>
-#include <map>
 #include <string>
 #include <unordered_map>
-#include <QOpenGLContext>
 
 struct pair_hash
 {
@@ -70,7 +66,7 @@ namespace Noggit
                      }()
                    );
 
-      AsyncLoader::instance().queue_for_load(static_cast<AsyncObject*>(obj));
+      AsyncLoader::instance->queue_for_load(static_cast<AsyncObject*>(obj));
 
       return obj; 
     }
@@ -95,7 +91,7 @@ namespace Noggit
         // always make sure an async object can be deleted before deleting it
         if (!obj->finishedLoading())
         {
-          AsyncLoader::instance().ensure_deletable(obj);
+          AsyncLoader::instance->ensure_deletable(obj);
         }
 
         {

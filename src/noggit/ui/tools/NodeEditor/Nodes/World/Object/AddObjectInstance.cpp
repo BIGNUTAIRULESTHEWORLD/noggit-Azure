@@ -2,11 +2,16 @@
 
 #include "AddObjectInstance.hpp"
 
+#include <noggit/Action.hpp>
+#include <noggit/ActionManager.hpp>
+#include <noggit/object_paste_params.hpp>
+#include <noggit/ui/ObjectEditor.h>
 #include <noggit/ui/tools/NodeEditor/Nodes/BaseNode.inl>
 #include <noggit/ui/tools/NodeEditor/Nodes/DataTypes/GenericData.hpp>
-#include <noggit/ui/ObjectEditor.h>
-#include <noggit/ActionManager.hpp>
-#include <noggit/Action.hpp>
+#include <noggit/ui/tools/NodeEditor/Nodes/Scene/NodesContext.hpp>
+#include <noggit/World.h>
+
+#include <external/NodeEditor/include/nodes/Node>
 
 #include <typeinfo>
 
@@ -58,11 +63,11 @@ void AddObjectInstanceNode::compute()
   if (QString(path.c_str()).endsWith(".m2", Qt::CaseInsensitive))
   {
     Noggit::object_paste_params paste_params;
-    obj = world->addM2AndGetInstance(path, {pos.x, pos.y, pos.z}, scale, {math::degrees(dir.x)._, math::degrees(dir.y)._, math::degrees(dir.z)._ }, &paste_params);
+    obj = world->addM2AndGetInstance(path, {pos.x, pos.y, pos.z}, scale, {math::degrees(dir.x)._, math::degrees(dir.y)._, math::degrees(dir.z)._ }, &paste_params, false, false);
   }
   else if (QString(path.c_str()).endsWith(".wmo", Qt::CaseInsensitive))
   {
-    obj = world->addWMOAndGetInstance(path, {pos.x, pos.y, pos.z}, {math::degrees(dir.x)._, math::degrees(dir.y)._, math::degrees(dir.z)._ });
+    obj = world->addWMOAndGetInstance(path, {pos.x, pos.y, pos.z}, {math::degrees(dir.x)._, math::degrees(dir.y)._, math::degrees(dir.z)._ }, scale, false);
   }
   else
   {

@@ -6,6 +6,7 @@
 #define eWMOBatch_HasMOCV 0x2u
 #define eWMOBatch_Unlit 0x4u
 #define eWMOBatch_Unfogged 0x8u
+#define eWMOBatch_SIDN 0x20u
 
 layout (std140) uniform lighting
 {
@@ -22,6 +23,7 @@ layout (std140) uniform lighting
 uniform vec3 camera;
 uniform sampler2DArray texture_samplers[15];
 uniform vec3 ambient_color;
+uniform float sidn_intensity;
 
 in vec3 f_position;
 in vec3 f_normal;
@@ -36,6 +38,7 @@ flat in uint tex_array1;
 flat in uint tex0;
 flat in uint tex1;
 flat in uint alpha_test_mode;
+flat in uint sidn_color;
 
 out vec4 out_color;
 
@@ -105,6 +108,15 @@ vec4 get_tex_color(vec2 tex_coord, uint tex_sampler, int array_index)
   return vec4(0);
 }
 
+vec3 unpack_rgb(uint value)
+{
+    return vec3(
+        float((value >> 16u) & 0xFFu),
+        float((value >> 8u) & 0xFFu),
+        float((value >> 0u) & 0xFFu)
+    ) / 255.0;
+}
+
 vec3 apply_lighting(vec3 material)
 {
   vec3 ambient_term;
@@ -113,8 +125,7 @@ vec3 apply_lighting(vec3 material)
 
   if(bool(flags & eWMOBatch_Unlit))
   {
-    ambient_term = vec3(0.0);
-    diffuse_term = vec3(0.0);
+    return material.rgb;
   }
   else if(bool(flags & eWMOBatch_ExteriorLit))
   {
@@ -194,9 +205,19 @@ void main()
     vec3 layer2 = mix(tex.rgb, tex_2.rgb, tex_2.a);
     out_color = vec4(apply_lighting(mix(layer2, tex.rgb, vertex_color.a)), 1.);
   }
+  else if (shader == 21 || shader == 23)
+  {
+    out_color = vec4(apply_lighting(tex_2.rgb), 1.);
+  }
   else // default shader, used for shader 0,1,2,4 (Diffuse, Specular, Metal, Opaque)
   {
     out_color = vec4(apply_lighting(tex.rgb), 1.);
+  }
+
+  if (bool(flags & eWMOBatch_SIDN))
+  {
+    vec3 sidn_rgb = unpack_rgb(sidn_color);
+    out_color.rgb = clamp(out_color.rgb + sidn_rgb * sidn_intensity, 0.0, 1.0);
   }
 
   if(fog)

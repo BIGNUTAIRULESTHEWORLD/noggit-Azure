@@ -1,15 +1,23 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/ui/FlattenTool.hpp>
-
+#include <noggit/ui/FontNoggit.hpp>
+#include <noggit/ui/tools/UiCommon/ExtendedSlider.hpp>
 #include <noggit/World.h>
-#include <util/qt/overload.hpp>
-#include <QtCore/QSettings>
 
+#include <util/qt/overload.hpp>
+
+#include <QtCore/QSettings>
+#include <QtWidgets/QButtonGroup>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QDial>
+#include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QGridLayout>
+#include <QtWidgets/QGroupBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QRadioButton>
+#include <QtWidgets/QSlider>
 
 namespace Noggit
 {
@@ -23,8 +31,57 @@ namespace Noggit
       , _flatten_mode(true, true)
     {
       setMinimumWidth(250);
-      setMaximumWidth(250);
+      // setMaximumWidth(250);
       auto layout (new QVBoxLayout (this));
+
+      // flatten keybind
+      auto keybinds_row1_layout = new QHBoxLayout(this);
+      keybinds_row1_layout->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+      keybinds_row1_layout->setContentsMargins(0, 0, 0, 0);
+      keybinds_row1_layout->setSpacing(2);
+
+      auto label_row1_icon1 = new QLabel(this);
+      label_row1_icon1->setPixmap(QIcon(FontNoggitIcon(FontNoggit::shift)).pixmap(20, 20));
+      keybinds_row1_layout->addWidget(label_row1_icon1);
+
+      keybinds_row1_layout->addWidget(new QLabel("+"));
+
+      auto label_row1_icon2 = new QLabel(this);
+      label_row1_icon2->setPixmap(QIcon(FontNoggitIcon(FontNoggit::lmb)).pixmap(20, 20));
+      keybinds_row1_layout->addWidget(label_row1_icon2);
+
+      keybinds_row1_layout->addWidget(new QLabel("Flatten Terrain"));
+
+      // layout->addLayout(keybinds_row1_layout, Qt::AlignLeft | Qt::AlignTop);
+      // 
+      QWidget* containerWidget = new QWidget;
+      containerWidget->setLayout(keybinds_row1_layout);
+      containerWidget->setFixedHeight(25);
+      layout->addWidget(containerWidget);
+
+      // blur keybind
+      auto keybinds_row2_layout = new QHBoxLayout(this);
+      keybinds_row2_layout->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+      keybinds_row2_layout->setContentsMargins(0, 0, 0, 0);
+      keybinds_row2_layout->setSpacing(2);
+
+      auto label_row2_icon1 = new QLabel(this);
+      label_row2_icon1->setPixmap(QIcon(FontNoggitIcon(FontNoggit::ctrl)).pixmap(20, 20));
+      keybinds_row2_layout->addWidget(label_row2_icon1);
+
+      keybinds_row2_layout->addWidget(new QLabel("+"));
+
+      auto label_row2_icon2 = new QLabel(this);
+      label_row2_icon2->setPixmap(QIcon(FontNoggitIcon(FontNoggit::lmb)).pixmap(20, 20));
+      keybinds_row2_layout->addWidget(label_row2_icon2);
+
+      keybinds_row2_layout->addWidget(new QLabel("Blur Terrain"));
+
+      layout->addLayout(keybinds_row1_layout, Qt::AlignLeft | Qt::AlignTop);
+      QWidget* containerWidget2 = new QWidget;
+      containerWidget2->setLayout(keybinds_row2_layout);
+      containerWidget2->setFixedHeight(25);
+      layout->addWidget(containerWidget2);
 
       _type_button_box = new QButtonGroup (this);
       QRadioButton* radio_flat = new QRadioButton ("Flat");
@@ -342,6 +399,46 @@ namespace Noggit
       }
       _orientation_dial->setSliderPosition(_orientation - 90.0f);
       _orientation_info->setText(QString::number(_orientation_dial->value()));
+    }
+
+    float flatten_blur_tool::brushRadius() const
+    {
+      return _radius_slider->value();
+    }
+
+    float flatten_blur_tool::angle() const
+    {
+      return _angle;
+    }
+
+    float flatten_blur_tool::orientation() const
+    {
+      return _orientation;
+    }
+
+    bool flatten_blur_tool::angled_mode() const
+    {
+      return _angle_group->isChecked();
+    }
+
+    bool flatten_blur_tool::use_ref_pos() const
+    {
+      return _lock_group->isChecked();
+    }
+
+    glm::vec3 flatten_blur_tool::ref_pos() const
+    {
+      return _lock_pos;
+    }
+
+    Noggit::Ui::Tools::UiCommon::ExtendedSlider* flatten_blur_tool::getRadiusSlider()
+    {
+      return _radius_slider;
+    }
+
+    Noggit::Ui::Tools::UiCommon::ExtendedSlider* flatten_blur_tool::getSpeedSlider()
+    {
+      return _speed_slider;
     }
 
     void flatten_blur_tool::changeAngle(float change)

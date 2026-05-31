@@ -1,13 +1,25 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
-#include <noggit/AsyncLoader.h>
-#include <noggit/errorHandling.h>
+#include <string>
 #include <Exception.hpp>
+#include <noggit/AsyncLoader.h>
+#include <noggit/AsyncObject.h>
+#include <noggit/errorHandling.h>
+#include <noggit/Log.h>
+#include <util/exception_to_string.hpp>
 
 #include <QtCore/QSettings>
 
 #include <algorithm>
 #include <list>
+
+AsyncLoader* AsyncLoader::instance;
+
+void AsyncLoader::setup(int threads)
+{
+  // make sure there's always at least one thread otherwise nothing can load
+  instance = new AsyncLoader(std::max(1, threads));
+}
 
 bool AsyncLoader::is_loading()
 {
@@ -81,17 +93,18 @@ void AsyncLoader::process()
         _state_changed.notify_all();
       }
     }
-    catch (BlizzardArchive::Exceptions::FileReadFailedError const&)
+    catch (BlizzardArchive::Exceptions::FileReadFailedError const& e)
     {
       std::lock_guard<std::mutex> const lock(_guard);
-
+    
       object->error_on_loading();
-
+      // LogError << e.what() << std::endl;
+    
       if (object->is_required_when_saving())
       {
         _important_object_failed_loading = true;
       }
-
+    
       _currently_loading.remove(object);
     }
     catch (...)
@@ -99,6 +112,8 @@ void AsyncLoader::process()
       std::lock_guard<std::mutex> const lock(_guard);
 
       object->error_on_loading();
+      std::string const reason{ util::exception_to_string(std::current_exception()) };
+      LogError << "Caught unknown error: " << reason <<  std::endl;
 
       if (object->is_required_when_saving())
       {
@@ -144,6 +159,10 @@ void AsyncLoader::ensure_deletable (AsyncObject* object)
 AsyncLoader::AsyncLoader(int numThreads)
   : _stop (false)
 {
+  // use half of the available threads
+  // unsigned int maxThreads = std::thread::hardware_concurrency() / 2; 
+  // numThreads = maxThreads > numThreads ? maxThreads : numThreads;
+
   for (int i = 0; i < numThreads; ++i)
   {
     _threads.emplace_back (&AsyncLoader::process, this);
@@ -152,11 +171,24 @@ AsyncLoader::AsyncLoader(int numThreads)
 
 AsyncLoader::~AsyncLoader()
 {
-  _stop = true;
+  {
+    std::unique_lock<std::mutex> lock(_guard);
+    _stop = true;
+  }
   _state_changed.notify_all();
 
   for (auto& thread : _threads)
   {
     thread.join();
   }
+}
+
+bool AsyncLoader::important_object_failed_loading() const
+{
+  return _important_object_failed_loading;
+}
+
+void AsyncLoader::reset_object_fail()
+{
+  _important_object_failed_loading = false;
 }

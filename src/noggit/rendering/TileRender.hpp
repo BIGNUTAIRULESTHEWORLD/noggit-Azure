@@ -5,8 +5,12 @@
 
 #include <noggit/rendering/BaseRender.hpp>
 #include <opengl/scoped.hpp>
-#include <opengl/shader.hpp>
 #include <array>
+
+namespace OpenGL::Scoped
+{
+  struct use_program;
+}
 
 class MapTile;
 class MapChunk;
@@ -28,35 +32,47 @@ namespace Noggit::Rendering
     void upload() override;
     void unload() override;
 
-    void draw (OpenGL::Scoped::use_program& mcnk_shader
-        , const glm::vec3& camera
-        , bool show_unpaintable_chunks
-        , bool draw_paintability_overlay
-        , bool is_selected
+    void draw(OpenGL::Scoped::use_program& mcnk_shader
+      , const glm::vec3& camera
+      , bool show_unpaintable_chunks
+      , bool draw_paintability_overlay
+      , bool is_selected
+      , bool skip_upload_alphamap = false
     );
 
     void doTileOcclusionQuery(OpenGL::Scoped::use_program& occlusion_shader);
     bool getTileOcclusionQueryResult(glm::vec3 const& camera);
-    void discardTileOcclusionQuery() { _tile_occlusion_query_in_use = false; }
-    void notifyTileRendererOnSelectedTextureChange() { _requires_paintability_recalc = true; };
+    void discardTileOcclusionQuery();
+    void notifyTileRendererOnSelectedTextureChange();;
+    void setChunkGroundEffectColor(unsigned int chunkid, glm::vec3 color);
 
     void initChunkData(MapChunk* chunk);
 
-    [[nodiscard]]
-    unsigned objectsFrustumCullTest() const { return _objects_frustum_cull_test; };
-    void setObjectsFrustumCullTest(unsigned state) { _objects_frustum_cull_test = state; };
+    void setChunkDetaildoodadsExclusionData(MapChunk* chunk);
+    void setChunkGroundEffectActiveData(MapChunk* chunk);
+    void setActiveRenderGEffectTexture(std::string active_texture);
 
     [[nodiscard]]
-    bool isOccluded() const { return _tile_occluded; } ;
-    void setOccluded(bool state) { _tile_occluded = state; };
+    unsigned objectsFrustumCullTest() const;;
+    void setObjectsFrustumCullTest(unsigned state);;
 
     [[nodiscard]]
-    bool isFrustumCulled() const{ return _tile_frustum_culled; };
-    void setFrustumCulled(bool state) {_tile_frustum_culled = state; };
+    bool isOccluded() const; ;
+    void setOccluded(bool state);;
 
     [[nodiscard]]
-    bool isOverridingOcclusionCulling() const { return _tile_occlusion_cull_override; };
-    void setOverrideOcclusionCulling(bool state) { _tile_frustum_culled = state; };
+    bool isFrustumCulled() const;;
+    void setFrustumCulled(bool state);;
+
+    [[nodiscard]]
+    bool isOverridingOcclusionCulling() const;;
+    void setOverrideOcclusionCulling(bool state);;
+
+    [[nodiscard]]
+    bool isUploaded() const;;
+    [[nodiscard]]
+    bool alphamapUploadedLastFrame() const;;
+    int numUploadedChunkAlphamaps() const;;
 
   private:
 
@@ -70,7 +86,14 @@ namespace Noggit::Rendering
     bool _split_drawcall = false;
     bool _requires_sampler_reset = false;
     bool _requires_paintability_recalc = true;
-    bool _texture_not_loaded = false;
+    bool _requires_ground_effect_color_recalc = true;
+    bool _texture_not_loaded = true;
+    bool _require_geffect_active_texture_update = true;
+
+    bool _uploaded_alphamap_last_frame = false;
+    int _num_uploaded_chunk_alphamaps = 0; // last frame
+
+    std::string _geffect_active_texture = "";
 
     // culling
     unsigned _objects_frustum_cull_test = 0;

@@ -67,7 +67,7 @@ enum class editing_mode
   paint = 2,
   holes = 3,
   areaid = 4,
-  flags = 5,
+  impass = 5,
   water = 6,
   mccv = 7,
   object = 8,
@@ -75,11 +75,13 @@ enum class editing_mode
   stamp = 10,
   light = 11,
   scripting = 12,
-  chunk = 13
+  chunk = 13,
+  area_trigger = 14,
 };
 
 enum water_opacity
 {
+  auto_opacity,
   river_opacity,
   ocean_opacity,
   custom_opacity,

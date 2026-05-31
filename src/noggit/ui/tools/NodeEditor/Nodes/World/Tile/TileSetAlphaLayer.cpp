@@ -4,7 +4,10 @@
 
 #include <noggit/ui/tools/NodeEditor/Nodes/BaseNode.inl>
 #include <noggit/ui/tools/NodeEditor/Nodes/DataTypes/GenericData.hpp>
+#include <noggit/ui/tools/NodeEditor/Nodes/Scene/NodesContext.hpp>
 #include <noggit/tool_enums.hpp>
+
+#include <external/NodeEditor/include/nodes/Node>
 
 using namespace Noggit::Ui::Tools::NodeEditor::Nodes;
 
@@ -56,7 +59,7 @@ void TileSetAlphaLayerNode::compute()
     image_to_process = &scaled;
   }
 
-  tile->setAlphaImage(*image_to_process, layer);
+  tile->setAlphaImage(*image_to_process, layer, true);
 
   _out_ports[0].out_value = std::make_shared<LogicData>(true);
   _node->onDataUpdated(0);

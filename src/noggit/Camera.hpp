@@ -1,8 +1,10 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #pragma once
-#include <glm/mat4x4.hpp>
 #include "math/trig.hpp"
+
+#include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
 
 namespace Noggit
 {
@@ -24,6 +26,7 @@ namespace Noggit
     void add_to_pitch (math::degrees);
 
     math::radians fov() const;
+    math::degrees fov(math::degrees);
 
     glm::vec3 look_at() const;
     glm::vec3 direction() const;

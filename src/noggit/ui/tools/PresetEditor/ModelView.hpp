@@ -1,29 +1,27 @@
-#ifndef NOGGIT_MODELVIEW_HPP
-#define NOGGIT_MODELVIEW_HPP
+#ifndef NOGGIT_BROWSER_MODELVIEW_HPP
+#define NOGGIT_BROWSER_MODELVIEW_HPP
 
-#include <noggit/ui/tools/AssetBrowser/ModelView.hpp>
-#include <external/qtimgui/QtImGui.h>
+#include <noggit/ui/tools/AssetBrowser/BrowserModelView.hpp>
 #include <external/qtimgui/imgui/imgui.h>
 #include <external/imguizmo/ImGuizmo.h>
 #include <noggit/ui/tools/ViewportGizmo/ViewportGizmo.hpp>
-#include <noggit/World.h>
 #include <noggit/Camera.hpp>
 
-
+class World;
 
 namespace Noggit
 {
   namespace Ui::Tools::PresetEditor
   {
-    class ModelViewer : public Ui::Tools::AssetBrowser::ModelViewer
+    class ModelViewer : public Noggit::Ui::Tools::AssetBrowser::ModelViewer
     {
     public:
         explicit ModelViewer(QWidget* parent = nullptr);
 
         void loadWorldUnderlay(std::string const& internal_name, int map_id);
-        World* getWorld() { return _world.get(); };
-        Noggit::Camera* getCamera() { return &_camera; };
-        Noggit::Camera* getWorldCamera() { return &_world_camera; };
+        World* getWorld();;
+        Noggit::Camera* getCamera();;
+        Noggit::Camera* getWorldCamera();;
 
     private:
         std::unique_ptr<World> _world;
@@ -45,11 +43,7 @@ namespace Noggit
         ImGuizmo::MODE _gizmo_mode = ImGuizmo::MODE::WORLD;
         ImGuizmo::OPERATION _gizmo_operation = ImGuizmo::OPERATION::TRANSLATE;
         Noggit::BoolToggleProperty _gizmo_on = {true};
-
-
     };
-
-
   }
 }
 

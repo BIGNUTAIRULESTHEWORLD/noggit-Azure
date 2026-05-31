@@ -2,6 +2,7 @@
 #include <noggit/scripting/scripting_tool.hpp>
 #include <noggit/scripting/script_global.hpp>
 #include <noggit/MapView.h>
+#include <noggit/object_paste_params.hpp>
 #include <noggit/World.h>
 
 #include <noggit/scripting/script_context.hpp>
@@ -31,7 +32,7 @@ namespace Noggit {
         p.minScale = scale;
         p.maxScale = scale;
         global->get_view()->_world.get()->
-          addM2(filename,pos,scale,math::degrees::vec3(rotation), &p);
+          addM2(filename,pos,scale,math::degrees::vec3(rotation), &p, false);
       });
 
       state->set_function("vec",[](float x, float y, float z){
@@ -41,12 +42,21 @@ namespace Noggit {
       state->set_function("add_wmo",[global](
           std::string const& filename
         , glm::vec3 const& pos
+        , float scale
         , glm::vec3 const& rotation)
       {
+        // note: we set both min/max random scale and the normal scale parameter,
+        // because noggit picks one based on random scale settings in the object tool
+        object_paste_params p;
+        p.minScale = scale;
+        p.maxScale = scale;
         global->get_view()->_world.get()->addWMO(
             filename
           , pos
-          , math::degrees::vec3(rotation));
+          , scale
+          , math::degrees::vec3(rotation)
+          , &p
+          , false);
       });
 
       state->set_function("get_map_id",[global]()

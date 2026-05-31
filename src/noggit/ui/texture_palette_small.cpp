@@ -35,8 +35,10 @@ namespace Noggit
       setFlow(QListWidget::LeftToRight);
       setWrapping(false);
       setSelectionMode(QAbstractItemView::SingleSelection);
+      setSelectionBehavior(QAbstractItemView::SelectItems);
       setAcceptDrops(false);
       setMovement(Movement::Static);
+      setResizeMode(QListView::Adjust);
     }
 
     void PaletteList::mousePressEvent(QMouseEvent* event)
@@ -91,17 +93,20 @@ namespace Noggit
 
       layout->addWidget(_texture_list, 0, 0);
 
-      connect(_texture_list, &QListWidget::itemClicked
-        , this
-        , [=](QListWidgetItem* item)
+      QObject::connect(_texture_list, &QListWidget::itemSelectionChanged, [this]()
         {
-          emit selected("tileset/" + item->toolTip().toStdString());
+          QListWidgetItem* const item = _texture_list->currentItem();
+          if (item)
+          {
+            emit selected("tileset/" + item->toolTip().toStdString());
+          }
         }
       );
 
       QVBoxLayout* button_layout = new QVBoxLayout(this);
 
       _add_button = new QPushButton(this);
+      _add_button->setToolTip("Add Selected Texture");
       _add_button->setIcon(FontAwesomeIcon(FontAwesome::plus));
       button_layout->addWidget(_add_button);
       connect(_add_button, &QAbstractButton::clicked, this, &texture_palette_small::addTexture);

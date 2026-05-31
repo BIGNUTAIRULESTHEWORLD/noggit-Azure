@@ -5,15 +5,10 @@
 #include <noggit/AsyncObject.h>
 #include <noggit/ContextObject.hpp>
 #include <noggit/AsyncObjectMultimap.hpp>
-#include <opengl/texture.hpp>
-#include <opengl/context.hpp>
-#include <opengl/context.inl>
 #include <opengl/scoped.hpp>
 #include <opengl/shader.hpp>
 
-#include <QtGui/QOffscreenSurface>
-#include <QtGui/QOpenGLFramebufferObjectFormat>
-#include <QtOpenGL/QGLPixelBuffer>
+#include <QtGui/QPixmap>
 #include <optional>
 #include <map>
 #include <unordered_map>
@@ -22,6 +17,21 @@
 #include <array>
 #include <tuple>
 
+class QOffscreenSurface;
+class QOpenGLFramebufferObjectFormat;
+
+struct texture_heightmapping_data
+{
+    texture_heightmapping_data(uint32_t scale = 0, float heightscale = 0, float heightoffset = 1.0f)
+    {
+        uvScale = scale;
+        heightScale = heightscale;
+        heightOffset = heightoffset;
+    }
+    uint32_t uvScale = 0;
+    float heightScale = 0.0f;
+    float heightOffset = 1.0f;
+};
 
 struct tuple_hash
 {
@@ -39,7 +49,6 @@ struct tuple_hash
 
 struct BLPHeader;
 
-struct scoped_blp_texture_reference;
 struct blp_texture : public AsyncObject
 {
   blp_texture (BlizzardArchive::Listfile::FileKey const& filename, Noggit::NoggitRenderContext context);
@@ -49,31 +58,31 @@ struct blp_texture : public AsyncObject
   void loadFromUncompressedData(BLPHeader const* lHeader, char const* lData);
   void loadFromCompressedData(BLPHeader const* lHeader, char const* lData);
 
-  int width() const { return _width; }
-  int height() const { return _height; }
+  int width() const;
+  int height() const;
 
   void bind();
   void upload();
   void uploadToArray(unsigned layer);
   void unload();
-  bool is_uploaded() { return _uploaded; };
-  GLuint texture_array() { return _texture_array; };
-  int array_index() { return _array_index; };
-  bool is_specular() { return _is_specular; };
-  unsigned mip_level() { return static_cast<unsigned>(!_compression_format ? _data.size() : _compressed_data.size()); };
+  bool is_uploaded() const;;
+  GLuint texture_array() const;;
+  int array_index() const;;
+  bool is_specular() const;;
+  unsigned mip_level() const;;
 
-  std::map<int, std::vector<uint32_t>>& data() { return _data;};
-  std::map<int, std::vector<uint8_t>>& compressed_data() { return _compressed_data; };
-  std::optional<GLint> const& compression_format() { return _compression_format; };
+  std::map<int, std::vector<uint32_t>>& data();;
+  std::map<int, std::vector<uint8_t>>& compressed_data();;
+  std::optional<GLint> const& compression_format() const;;
 
-  Noggit::NoggitRenderContext getContext() { return _context; };
+  Noggit::NoggitRenderContext getContext() const;;
 
   [[nodiscard]]
-  async_priority loading_priority() const override
-  {
-    return async_priority::high;
-  }
+  async_priority loading_priority() const override;
+  // Mists HeightMapping
+  bool hasHeightMap() const;;
 
+  blp_texture* getHeightMap();;
 private:
   bool _uploaded = false;
 
@@ -84,6 +93,7 @@ private:
 
   bool _is_specular = false;
   bool _is_tileset = false;
+  bool _has_heightmap = false;
 
 private:
   std::map<int, std::vector<uint32_t>> _data;
@@ -91,6 +101,8 @@ private:
   std::optional<GLint> _compression_format;
   int _array_index = -1;
   GLuint _texture_array = 0;
+
+  std::unique_ptr<blp_texture> heightMap;
 };
 
 struct TexArrayParams
@@ -110,32 +122,8 @@ public:
 private:
   friend struct scoped_blp_texture_reference;
   static Noggit::AsyncObjectMultimap<blp_texture> _;
-  static std::array<std::unordered_map<std::tuple<GLint, int, int, int>, TexArrayParams, tuple_hash>, 7> _tex_arrays;
+  static std::array<std::unordered_map<std::tuple<GLint, int, int, int>, TexArrayParams, tuple_hash>, Noggit::NoggitRenderContext::count> _tex_arrays;
 
-};
-
-struct scoped_blp_texture_reference
-{
-  scoped_blp_texture_reference() = delete;
-  scoped_blp_texture_reference (std::string const& filename, Noggit::NoggitRenderContext context);
-  scoped_blp_texture_reference (scoped_blp_texture_reference const& other);
-  scoped_blp_texture_reference (scoped_blp_texture_reference&&) = default;
-  scoped_blp_texture_reference& operator= (scoped_blp_texture_reference const&) = delete;
-  scoped_blp_texture_reference& operator= (scoped_blp_texture_reference&&) = default;
-  ~scoped_blp_texture_reference() = default;
-
-  blp_texture* operator->() const;
-  blp_texture* get() const;
-
-  bool operator== (scoped_blp_texture_reference const& other) const;
-
-private:
-  struct Deleter
-  {
-    void operator() (blp_texture*) const;
-  };
-  std::unique_ptr<blp_texture, Deleter> _blp_texture;
-  Noggit::NoggitRenderContext _context;
 };
 
 namespace Noggit
@@ -162,11 +150,7 @@ namespace Noggit
     bool _uploaded = false;
 
   public:
-    static BLPRenderer& getInstance()
-    {
-      static BLPRenderer  instance;
-      return instance;
-    }
+    static BLPRenderer& getInstance();
 
     QPixmap* render_blp_to_pixmap ( std::string const& blp_filename, int width = -1, int height = -1);
     void unload();

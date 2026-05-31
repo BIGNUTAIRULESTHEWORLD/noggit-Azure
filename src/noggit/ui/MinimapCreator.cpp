@@ -1,31 +1,36 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
-#include "MinimapCreator.hpp"
 #include "FontAwesome.hpp"
+#include "MinimapCreator.hpp"
 
-#include <noggit/MapView.h>
-#include <noggit/World.h>
+#include <noggit/application/NoggitApplication.hpp>
+#include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
 #include <noggit/Log.h>
+#include <noggit/MapView.h>
+#include <noggit/Model.h>
 #include <noggit/project/CurrentProject.hpp>
+#include <noggit/World.h>
 
-#include <util/qt/overload.hpp>
+#include <qt-color-widgets/color_selector.hpp>
 
+#include <QByteArray>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QFile>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
-#include <QCheckBox>
-#include <QButtonGroup>
-#include <QPushButton>
-#include <QTabWidget>
-#include <QScrollArea>
-#include <QWheelEvent>
-#include <QApplication>
-#include <QComboBox>
-#include <QJsonObject>
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QByteArray>
+#include <QJsonObject>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
 #include <QPalette>
+#include <QPushButton>
+#include <QSlider>
+#include <QTabWidget>
 
 namespace Noggit
 {
@@ -37,7 +42,7 @@ namespace Noggit
         QWidget* parent ) : QWidget(parent)
     {
       setMinimumWidth(250);
-      setMaximumWidth(250);
+      // setMaximumWidth(250);
       auto layout = new QVBoxLayout(this);
       layout->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
 
@@ -65,10 +70,23 @@ namespace Noggit
       auto cur_adt_btn = new QPushButton("Current ADT", generate_widget);
       auto sel_adts_btn = new QPushButton("Selected ADTs", generate_widget);
       auto all_adts_btn = new QPushButton("Map", generate_widget);
+      auto maptexture_btn = new QPushButton("Map Textures", generate_widget);
+      maptexture_btn->setVisible(false);
+      auto maptexture_n_btn = new QPushButton("Map Textures (Normals)", generate_widget);
+      maptexture_n_btn->setVisible(false);
 
       generate_layout->addRow (cur_adt_btn);
       generate_layout->addRow (sel_adts_btn);
       generate_layout->addRow (all_adts_btn);
+
+      bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
+      if (modern_features)
+      {
+          generate_layout->addRow (maptexture_btn);
+          maptexture_btn->setVisible(true);
+          generate_layout->addRow(maptexture_n_btn);
+          maptexture_n_btn->setVisible(true);
+      }
 
       // Render settings box
       auto render_settings_box = new QGroupBox("Render options", generate_widget);
@@ -88,9 +106,10 @@ namespace Noggit
       render_settings_box_layout->addRow (resolution);
 
       auto file_format = new QComboBox(this);
-      file_format->addItem(".blp");
+      file_format->addItem(".blp (DXT1)");
+      file_format->addItem(".blp (DXT5)");
       file_format->addItem(".png");
-      file_format->setCurrentText(".blp");
+      file_format->setCurrentText(".blp (DXT1)");
 
       render_settings_box_layout->addRow (file_format);
 
@@ -827,17 +846,27 @@ namespace Noggit
       // Buttons
       connect(cur_adt_btn, &QPushButton::clicked, [=]() {
         _render_settings.export_mode = MinimapGenMode::CURRENT_ADT;
-        mapView->initMinimapSave();
+        emit onSave();
       });
 
       connect(sel_adts_btn, &QPushButton::clicked, [=]() {
         _render_settings.export_mode = MinimapGenMode::SELECTED_ADTS;
-        mapView->initMinimapSave();
+        emit onSave();
       });
 
       connect(all_adts_btn, &QPushButton::clicked, [=]() {
         _render_settings.export_mode = MinimapGenMode::MAP;
-        mapView->initMinimapSave();
+        emit onSave();
+      });
+
+      connect(maptexture_btn, &QPushButton::clicked, [=]() {
+        _render_settings.export_mode = MinimapGenMode::LOD_MAPTEXTURES;
+        emit onSave();
+      });
+
+      connect(maptexture_n_btn, &QPushButton::clicked, [=]() {
+        _render_settings.export_mode = MinimapGenMode::LOD_MAPTEXTURES_N;
+        emit onSave();
       });
 
     }
@@ -845,6 +874,22 @@ namespace Noggit
     void MinimapCreator::changeRadius(float change)
     {
       _radius_spin->setValue (_radius + change);
+    }
+
+    float MinimapCreator::brushRadius() const
+    {
+      return _radius;
+    }
+
+    //std::array<bool, 4096>* getSelectedTiles() { return &_render_settings.selected_tiles; };
+    std::vector<char>* MinimapCreator::getSelectedTiles()
+    {
+      return &_render_settings.selected_tiles;
+    }
+
+    MinimapRenderSettings* MinimapCreator::getMinimapRenderSettings()
+    {
+      return &_render_settings;
     }
 
     QSize MinimapCreator::sizeHint() const
@@ -1182,7 +1227,27 @@ namespace Noggit
 
     }
 
-     MinimapWMOModelFilterEntry::MinimapWMOModelFilterEntry(QWidget* parent) : QWidget(parent)
+    QString MinimapM2ModelFilterEntry::getFileName() const
+    {
+      return _filename->text();
+    }
+
+    void MinimapM2ModelFilterEntry::setFileName(const std::string& filename)
+    {
+      _filename->setText(QString(filename.c_str()));
+    }
+
+    void MinimapM2ModelFilterEntry::setSizeCategory(float size_cat)
+    {
+      _size_category_spin->setValue(size_cat);
+    }
+
+    float MinimapM2ModelFilterEntry::getSizeCategory() const
+    {
+      return static_cast<float>(_size_category_spin->value());
+    }
+
+    MinimapWMOModelFilterEntry::MinimapWMOModelFilterEntry(QWidget* parent) : QWidget(parent)
     {
       setAttribute(Qt::WA_TranslucentBackground);
       auto layout = new QHBoxLayout(this);
@@ -1191,6 +1256,16 @@ namespace Noggit
       layout->setContentsMargins(5, 2, 5, 2);
       _filename->setEnabled(false);
     }
+
+    QString MinimapWMOModelFilterEntry::getFileName() const
+     {
+       return _filename->text();
+     }
+
+    void MinimapWMOModelFilterEntry::setFileName(const std::string& filename)
+     {
+       _filename->setText(QString(filename.c_str()));
+     }
 
     MinimapInstanceFilterEntry::MinimapInstanceFilterEntry(QWidget* parent) : QWidget(parent)
     {
@@ -1201,5 +1276,15 @@ namespace Noggit
       layout->setContentsMargins(5, 2, 5, 2);
     }
 
+    uint32_t MinimapInstanceFilterEntry::getUid() const
+    {
+      return _uid;
+    }
+
+    void MinimapInstanceFilterEntry::setUid(uint32_t uid)
+    {
+      _uid = uid;
+      _uid_label->setText(QString::fromStdString(std::to_string(uid)));
+    }
   }
 }

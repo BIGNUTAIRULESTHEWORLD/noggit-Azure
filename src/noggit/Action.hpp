@@ -6,40 +6,40 @@
 #include <vector>
 #include <array>
 #include <string>
-#include <set>
-#include <algorithm>
 #include <external/tsl/robin_map.h>
-#include <optional>
-#include <noggit/TextureManager.h>
+#include <noggit/area_trigger.hpp>
 #include <noggit/texture_set.hpp>
-#include <noggit/SceneObject.hpp>
 #include <noggit/liquid_layer.hpp>
-#include <noggit/ChunkWater.hpp>
 #include <QObject>
-#include <ClientData.hpp>
+
+#include <functional>
+#include <unordered_set>
 
 class MapView;
 class MapChunk;
+class SceneObject;
 
 namespace Noggit
 {
-
     enum ActionFlags
     {
-        eNO_FLAG               = 0,
-        eCHUNKS_TERRAIN      = 0x1,
-        eCHUNKS_AREAID       = 0x2,
-        eCHUNKS_HOLES        = 0x4,
-        eCHUNKS_VERTEX_COLOR = 0x8,
-        eCHUNKS_WATER        = 0x10,
-        eCHUNKS_TEXTURE      = 0x20,
-        eOBJECTS_REMOVED     = 0x40,
-        eOBJECTS_ADDED       = 0x80,
-        eOBJECTS_TRANSFORMED = 0x100,
-        eCHUNKS_FLAGS        = 0x200,
-        eVERTEX_SELECTION    = 0x400,
-        eCHUNK_SHADOWS       = 0x800,
-        eDO_NOT_WRITE_HISTORY= 0x1000
+        eNO_FLAG                  = 0,
+        eCHUNKS_TERRAIN           = 0x1,
+        eCHUNKS_AREAID            = 0x2,
+        eCHUNKS_HOLES             = 0x4,
+        eCHUNKS_VERTEX_COLOR      = 0x8,
+        eCHUNKS_WATER             = 0x10,
+        eCHUNKS_TEXTURE           = 0x20,
+        eOBJECTS_REMOVED          = 0x40,
+        eOBJECTS_ADDED            = 0x80,
+        eOBJECTS_TRANSFORMED      = 0x100,
+        eCHUNKS_FLAGS             = 0x200,
+        eVERTEX_SELECTION         = 0x400,
+        eCHUNK_SHADOWS            = 0x800,
+        eDO_NOT_WRITE_HISTORY     = 0x1000,
+        eCHUNK_DOODADS_EXCLUSION  = 0x2000, // ground effects exclusion mapping
+        eCHUNKS_LAYERINFO         = 0x4000, // ground effect id and texture flags
+        eAREA_TRIGGER_TRANSFORMED = 0x8000,
     };
 
     enum ActionModalityControllers
@@ -53,7 +53,10 @@ namespace Noggit
         eRMB         = 0x20,
         eMMB         = 0x40,
         eSCROLL      = 0x80,
-        eNUM         = 0x100
+        eNUM         = 0x100,
+        eSCALE       = 0x200,
+        eROTATE      = 0x400,
+        eTRANSLATE   = 0x800
     };
 
     enum class ActionObjectTypes
@@ -66,9 +69,9 @@ namespace Noggit
     {
       size_t n_textures;
       std::vector<std::string> textures;
-      std::array<std::optional<Alphamap>, 3> alphamaps;
-      std::optional<tmp_edit_alpha_values> tmp_edit_values;
-      ENTRY_MCLY layers_info[4];
+      std::array<std::unique_ptr<Alphamap>, MAX_ALPHAMAPS> alphamaps;
+      std::unique_ptr<tmp_edit_alpha_values> tmp_edit_values;
+      layer_info layers_info[4];
     };
 
     struct ObjectInstanceCache
@@ -110,12 +113,12 @@ namespace Noggit
         float getDelta() const;
         void setBlockCursor(bool state);
         bool getBlockCursor() const;
-        void setPostCallback(auto(MapView::*method)()->void);
-        bool getTag() { return _tag; };
-        void setTag(bool tag) { _tag = tag; };
+        void setPostCallback(std::function<void()> function);
+        bool getTag();
+        void setTag(bool tag);
 
-        bool checkAdressTag(std::uintptr_t address) { return std::find(_address_tag.begin(), _address_tag.end(), address) != _address_tag.end(); };
-        void tagAdress(std::uintptr_t address) { _address_tag.push_back(address); }
+        bool checkAdressTag(std::uintptr_t address);
+        void tagAdress(std::uintptr_t address);
 
         float* getChunkTerrainOriginalData(MapChunk* chunk);
 
@@ -132,7 +135,10 @@ namespace Noggit
         void registerChunkLiquidChange(MapChunk* chunk);
         void registerVertexSelectionChange();
         void registerChunkShadowChange(MapChunk* chunk);
+        void registerChunkLayerInfoChange(MapChunk* chunk);
+        void registerChunkDetailDoodadExclusionChange(MapChunk* chunk);
         void registerAllChunkChanges(MapChunk* chunk);
+        void registerAreaTriggerTransformed(area_trigger* trigger);
 
 
     private:
@@ -158,10 +164,16 @@ namespace Noggit
         std::vector<std::pair<MapChunk*, int>> _chunk_holes_post;
         std::vector<std::pair<MapChunk*, int>> _chunk_area_id_pre;
         std::vector<std::pair<MapChunk*, int>> _chunk_area_id_post;
+        std::vector<std::pair<MapChunk*, std::array<layer_info, 4>>> _chunk_layerinfos_pre;
+        std::vector<std::pair<MapChunk*, std::array<layer_info, 4>>> _chunk_layerinfos_post;
+        std::vector<std::pair<MapChunk*, std::array<std::uint8_t, 8>>> _chunk_detaildoodad_exclusion_pre;
+        std::vector<std::pair<MapChunk*, std::array<std::uint8_t, 8>>> _chunk_detaildoodad_exclusion_post;
         std::vector<std::pair<MapChunk*, mcnk_flags>> _chunk_flags_pre;
         std::vector<std::pair<MapChunk*, mcnk_flags>> _chunk_flags_post;
         std::vector<std::pair<MapChunk*, std::vector<liquid_layer>>> _chunk_liquid_pre;
         std::vector<std::pair<MapChunk*, std::vector<liquid_layer>>> _chunk_liquid_post;
+        std::vector<std::pair<uint32_t, area_trigger>> _transformed_area_trigger_pre;
+        std::vector<std::pair<uint32_t, area_trigger>> _transformed_area_trigger_post;
 
         VertexSelectionCache _vertex_selection_pre;
         VertexSelectionCache _vertex_selection_post;
@@ -173,7 +185,7 @@ namespace Noggit
 
         tsl::robin_map<unsigned, std::vector<unsigned>> _object_operations;
 
-        auto(MapView::*_post)()->void = nullptr;
+        std::function<void()> _post;
 
     };
 }

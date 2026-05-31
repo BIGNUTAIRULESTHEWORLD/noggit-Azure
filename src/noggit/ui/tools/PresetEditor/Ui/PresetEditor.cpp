@@ -1,8 +1,23 @@
 #include "PresetEditor.hpp"
-#include <noggit/ui/FramelessWindow.hpp>
-#include <noggit/ui/FontNoggit.hpp>
-#include <noggit/DBC.h>
+
+#include <ui_PresetEditor.h>
+#include <ui_PresetEditorOverlay.h>
+
 #include <noggit/application/Utils.hpp>
+#include <noggit/project/ApplicationProject.h>
+#include <noggit/Log.h>
+#include <noggit/ui/FontNoggit.hpp>
+#include <noggit/ui/tools/PreviewRenderer/PreviewRenderer.hpp>
+#include <noggit/World.h>
+#include <noggit/database/ClientDatabase.h>
+
+#include <blizzard-database-library/include/BlizzardDatabase.h>
+
+#include <QFileSystemModel>
+#include <QSortFilterProxyModel>
+
+#include <exception>
+#include <string>
 
 using namespace Noggit::Ui::Tools::PresetEditor::Ui;
 using namespace Noggit::Ui;
@@ -65,8 +80,23 @@ PresetEditorWidget::PresetEditorWidget(std::shared_ptr<Project::NoggitProject> p
   _preview_renderer->setVisible(false);
 
   // just to initialize context, ugly-ish
-  _preview_renderer->setModelOffscreen("world/wmo/azeroth/buildings/human_farm/farm.wmo");
-  _preview_renderer->renderToPixmap();
+  auto const preview_model = std::string("world/wmo/azeroth/buildings/human_farm/farm.wmo");
+
+  try
+  {
+    _preview_renderer->setModelOffscreen(preview_model);
+    _preview_renderer->renderToPixmap();
+  }
+  catch (std::exception const& e)
+  {
+    LogError << "The preset editor could not render its startup preview for "
+      << preview_model << ": " << e.what() << std::endl;
+  }
+  catch (...)
+  {
+    LogError << "The preset editor could not render its startup preview for "
+      << preview_model << " because of an unknown error." << std::endl;
+  }
 
   setupConnectsCommon();
 
@@ -75,7 +105,8 @@ PresetEditorWidget::PresetEditorWidget(std::shared_ptr<Project::NoggitProject> p
   ui->worldSelector->setItemData(0, QVariant(-1));
 
   const auto& table = std::string("Map");
-  auto mapTable = _project->ClientDatabase->LoadTable(table, readFileAsIMemStream);
+
+  auto mapTable = ClientDatabase::getTable(table);
 
   int count = 1;
   auto iterator = mapTable.Records();
@@ -98,7 +129,6 @@ PresetEditorWidget::PresetEditorWidget(std::shared_ptr<Project::NoggitProject> p
 
       count++;
   }
-  _project->ClientDatabase->UnloadTable("map");
 
 
   // Handle minimap widget
@@ -232,5 +262,17 @@ void PresetEditorWidget::setupConnectsCommon()
 
 PresetEditorWidget::~PresetEditorWidget()
 {
+  if (ui && ui->viewport)
+  {
+    ui->viewport->unloadOpenglData();
+  }
 
+  if (_preview_renderer)
+  {
+    _preview_renderer->unloadOpenglData();
+    delete _preview_renderer;
+    _preview_renderer = nullptr;
+  }
+
+  delete ui;
 }

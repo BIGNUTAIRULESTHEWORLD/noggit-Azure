@@ -2,31 +2,32 @@
 
 #pragma once
 
-#include <noggit/DBC.h>
-#include <noggit/ui/tools/MapCreationWizard/Ui/MapCreationWizard.hpp>
-
 #include <QtWidgets/QWidget>
-#include <QtWidgets/QTreeWidget>
-#include <QtWidgets/QDoubleSpinBox>
-#include <QtWidgets/QSlider>
-#include <QtWidgets/QCheckBox.h>
-#include <QtWidgets/QComboBox.h>
-#include <QtWidgets/QLabel>
-#include <QtWidgets/QListWidget>
-#include <QtWidgets/QListView>
-#include <QtWidgets/QTableView>
-#include <QtWidgets/QPushButton>
-#include <QMediaPlayer>
 
-#include <functional>
 #include <string>
+
+class QCheckBox;
+class QComboBox;
+class QDoubleSpinBox;
+class QLabel;
+class QLineEdit;
+class QPushButton;
+class QSlider;
+class QSpinBox;
+class QTreeWidget;
+class QTreeWidgetItem;
+
+namespace Noggit::Ui::Tools::MapCreationWizard::Ui
+{
+  class LocaleDBCEntry;
+}
 
 namespace Noggit
 {
   namespace Ui
   {
 
-    static std::map <int, std::string> area_flags_names = {
+    static const std::unordered_map <int, std::string> area_flags_names = {
         {0 , "Emit Breath Particles"},
         {1 , "Breath Particles Override Parent"},
         {2 , "On Map Dungeon"},
@@ -60,7 +61,7 @@ namespace Noggit
         {28, "Flying not allowed"}, // in 3.3.5
         {29, "Only Evaluate Ghost Bind Once"},
         {30, "Is Subzone"},
-        // {31, "Don't Evaluate Graveyard From Client"}
+        // {31, "Don't Evaluate Graveyard From Client"} // not used in 3.3.5
     };
 
     class AreaEditor : public QWidget
@@ -120,6 +121,8 @@ namespace Noggit
       void selected (int area_id);
 
     private:
+
+      QLineEdit* _area_tree_filter;
       QTreeWidget* _area_tree;
 
       QSlider* _radius_slider;

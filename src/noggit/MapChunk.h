@@ -1,23 +1,20 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #pragma once
+#include <noggit/ContextObject.hpp>
 #include <noggit/map_enums.hpp>
-#include <noggit/MapTile.h> // MapTile
-#include <noggit/ModelInstance.h>
+#include <noggit/MapHeaders.h>
+#include <noggit/Misc.h>
 #include <noggit/Selection.h>
 #include <noggit/TextureManager.h>
-#include <noggit/WMOInstance.h>
-#include <noggit/texture_set.hpp>
 #include <noggit/tool_enums.hpp>
-#include <noggit/ContextObject.hpp>
-#include <opengl/scoped.hpp>
-#include <opengl/texture.hpp>
-#include <noggit/Misc.h>
-#include <optional>
+
+#include <QImage>
+
+#include <array>
 #include <map>
 #include <memory>
-#include <array>
-#include <QImage>
+#include <unordered_set>
 
 namespace BlizzardArchive
 {
@@ -27,11 +24,22 @@ namespace BlizzardArchive
 namespace math
 {
   class frustum;
+  struct ray;
   struct vector_4d;
 }
+
+namespace util
+{
+  class sExtendableArray;
+}
+
 class Brush;
 class ChunkWater;
-class sExtendableArray;
+class MapTile;
+class ModelInstance;
+class TextureSet;
+class WMOInstance;
+
 class QPixmap;
 
 using StripType = uint16_t;
@@ -39,14 +47,16 @@ static const int mapbufsize = 9 * 9 + 8 * 8; // chunk size
 
 enum ChunkUpdateFlags
 {
-  VERTEX   = 0x1,
-  SHADOW   = 0x2,
-  MCCV     = 0x4,
-  ALPHAMAP = 0x8,
-  NORMALS  = 0x10,
-  HOLES    = 0x20,
-  AREA_ID  = 0x40,
-  FLAGS    = 0x80
+  VERTEX        = 0x1,
+  SHADOW        = 0x2,
+  MCCV          = 0x4,
+  ALPHAMAP      = 0x8,
+  NORMALS       = 0x10,
+  HOLES         = 0x20,
+  AREA_ID       = 0x40,
+  FLAGS         = 0x80, // both chunk and texture layers flags
+  GROUND_EFFECT = 0x100,
+  DETAILDOODADS_EXCLUSION = 0x200
 };
 
 class MapChunk
@@ -66,14 +76,15 @@ public:
   MapChunk(MapTile* mt, BlizzardArchive::ClientFile* f, bool bigAlpha, tile_mode mode, Noggit::NoggitRenderContext context
            , bool init_empty = false, int chunk_idx = 0, bool load_textures = true);
 
-  auto getHoleMask(void) const -> unsigned { return static_cast<unsigned>(holes); }
+  auto getHoleMask(void) const -> unsigned;
   MapTile *mt;
   glm::vec3 vmin, vmax, vcenter;
   int px, py;
 
-  MapChunkHeader header;
+  // MapChunkHeader header;
+  // uint32_t nLayers = 0;
 
-  float xbase, ybase, zbase;
+  float xbase, ybase, zbase; // global coords. height = ybase
 
   mcnk_flags header_flags;
   bool use_big_alphamap;
@@ -85,9 +96,11 @@ public:
 
   unsigned int areaID;
 
+  std::vector<ENTRY_MCSE> sound_emitters;
+
   glm::vec3 mVertices[mapbufsize];
   glm::vec3 mNormals[mapbufsize];
-  glm::vec3 mccv[mapbufsize];
+  glm::vec3 mccv[mapbufsize]; // blizzard stores alpha, but deosn't seem to be used
 
   uint8_t _shadow_map[64 * 64];
 
@@ -106,7 +119,7 @@ private:
 
 public:
 
-  TextureSet* getTextureSet() { return texture_set.get(); };
+    TextureSet* getTextureSet() const;
 
   void draw ( math::frustum const& frustum
             , OpenGL::Scoped::use_program& mcnk_shader
@@ -124,14 +137,15 @@ public:
             );
   //! \todo only this function should be public, all others should be called from it
 
-  bool intersect (math::ray const&, selection_result*);
+  bool intersect (math::ray const&, selection_result*, bool first_result = false);
   bool ChangeMCCV(glm::vec3 const& pos, glm::vec4 const& color, float change, float radius, bool editMode);
   bool stampMCCV(glm::vec3 const& pos, glm::vec4 const& color, float change, float radius, bool editMode, QImage* img, bool paint, bool use_image_colors);
   glm::vec3 pickMCCV(glm::vec3 const& pos);
 
-  ChunkWater* liquid_chunk() const;
+  ChunkWater const* liquid_chunk() const;
+  ChunkWater* liquid_chunk();
 
-  bool hasColors() const { return hasMCCV; };
+  bool hasColors() const;;
 
   void updateVerticesData();
   void recalcExtents();
@@ -139,11 +153,13 @@ public:
   void updateNormalsData();
   glm::vec3 getNeighborVertex(int i, unsigned dir);
 
+  glm::uvec2 getUnitIndextAt(glm::vec3 pos);
+
   //! \todo implement Action stack for these
   bool changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius);
   bool flattenTerrain(glm::vec3 const& pos, float remain, float radius, int BrushType, flatten_mode const& mode, const glm::vec3& origin, math::degrees angle, math::degrees orientation);
   bool blurTerrain ( glm::vec3 const& pos, float remain, float radius, int BrushType, flatten_mode const& mode
-                   , std::function<std::optional<float> (float, float)> height
+                   /*, std::function<std::optional<float>(float, float)> height*/
                    );
 
   bool changeTerrainProcessVertex(glm::vec3 const& pos, glm::vec3 const& vertex, float& dt, float radiusOuter, float radiusInner, int brushType);
@@ -163,9 +179,11 @@ public:
   bool switchTexture(scoped_blp_texture_reference const& oldTexture, scoped_blp_texture_reference newTexture);
   void eraseTextures();
   void eraseTexture(scoped_blp_texture_reference const& tex);
-  void change_texture_flag(scoped_blp_texture_reference const& tex, std::size_t flag, bool add);
+  void change_texture_flags(scoped_blp_texture_reference const& tex, std::size_t flags);
 
   void clear_shadows();
+
+  void paintDetailDoodadsExclusion(glm::vec3 const& pos, float radius, bool exclusion);
 
   bool isHole(int i, int j);
   void setHole(glm::vec3 const& pos, float radius, bool big, bool add);
@@ -178,28 +196,30 @@ public:
   bool GetVertex(float x, float z, glm::vec3 *V);
   void getVertexInternal(float x, float z, glm::vec3 * v);
   float getHeight(int x, int z);
-  float getMinHeight() { return vmin.y; };
-  float getMaxHeight() { return vmax.y; };
-  glm::vec3 getCenter() { return vcenter; };
+  float getMinHeight() const;;
+  float getMaxHeight() const;;
+  glm::vec3 getCenter() const;;
 
   void clearHeight();
 
   //! \todo this is ugly create a build struct or sth
-  void save(sExtendableArray &lADTFile
+  void save(util::sExtendableArray &lADTFile
             , int &lCurrentPosition
             , int &lMCIN_Position
             , std::map<std::string, int> &lTextures
             , std::vector<WMOInstance*> &lObjectInstances
-            , std::vector<ModelInstance*>& lModelInstances);
+            , std::vector<ModelInstance*>& lModelInstances
+            , bool use_mclq_liquids
+            );
 
   // fix the gaps with the chunk to the left
   bool fixGapLeft(const MapChunk* chunk);
   // fix the gaps with the chunk above
   bool fixGapAbove(const MapChunk* chunk);
 
-  glm::vec3* getHeightmap() { return &mVertices[0]; };
-  glm::vec3 const* getNormals() const { return &mNormals[0]; }
-  glm::vec3* getVertexColors() { return &mccv[0]; };
+  glm::vec3* getHeightmap();;
+  glm::vec3 const* getNormals() const;
+  glm::vec3* getVertexColors();;
 
   void update_vertex_colors();
 
@@ -207,10 +227,11 @@ public:
   QImage getAlphamapImage(unsigned layer);
   QImage getVertexColorImage();
   void setHeightmapImage(QImage const& image, float multiplier, int mode);
-  void setAlphamapImage(QImage const& image, unsigned layer);
+  void setAlphamapImage(QImage const& image, unsigned int layer);
   void setVertexColorImage(QImage const& image);
+  void initMCCV();
 
   void registerChunkUpdate(unsigned flags);
-  void endChunkUpdates() { _chunk_update_flags = 0; }
-  unsigned getUpdateFlags() { return _chunk_update_flags; }
+  void endChunkUpdates();
+  unsigned getUpdateFlags() const;
 };

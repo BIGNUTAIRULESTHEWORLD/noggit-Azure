@@ -1,23 +1,14 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
+#include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
 #include <noggit/application/NoggitApplication.hpp>
-#include <noggit/Log.h>
 #include <noggit/errorHandling.h>
-#include <opengl/context.hpp>
-#include <util/exception_to_string.hpp>
-#include <external/framelesshelper/framelesswindowsmanager.h>
-#include <string>
-#include <string_view>
-#include <QtCore/QSettings>
-#include <QtCore/QDir>
-#include <qcommandlineparser.h>
+#include <noggit/ui/windows/projectSelection/NoggitProjectSelectionWindow.hpp>
+
 #include <qcommandlineoption.h>
+#include <qcommandlineparser.h>
+#include <QStyleFactory>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QFileDialog>
-#include <QtWidgets/QMessageBox>
-#include <QSplashScreen>
-#include <QStyleFactory>
-#include <codecvt>
-#include <string>
 
 QCommandLineParser* ProcessCommandLine()
 {
@@ -39,7 +30,9 @@ int main(int argc, char *argv[])
   std::set_terminate(Noggit::Application::NoggitApplication::terminationHandler);
 
   QApplication::setStyle(QStyleFactory::create("Fusion"));
+  QCoreApplication::setAttribute(Qt::AA_UseDesktopOpenGL);
   QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+  QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
   QApplication q_application (argc, argv);
   q_application.setApplicationName ("Noggit");
   q_application.setOrganizationName ("Noggit");
@@ -52,10 +45,15 @@ int main(int argc, char *argv[])
   Command.push_back(parser->isSet("force-changelog"));
 
   auto noggit = Noggit::Application::NoggitApplication::instance();
-  noggit->initalize(argc, argv, Command);
+  bool initialized = noggit->initalize(argc, argv, Command);
+
+  if (!initialized) [[unlikely]]
+  {
+    return EXIT_FAILURE;
+  }
 
   auto project_selection = new Noggit::Ui::Windows::NoggitProjectSelectionWindow(noggit);
-  project_selection->show();
+  // project_selection->show();
 
   return q_application.exec();
 }

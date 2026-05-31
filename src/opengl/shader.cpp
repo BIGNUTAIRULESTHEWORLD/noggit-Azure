@@ -5,9 +5,11 @@
 #include <opengl/shader.hpp>
 #include <opengl/texture.hpp>
 #include <noggit/Misc.h>
-#include <glm/vec3.hpp>
+
+#include <glm/gtc/type_ptr.hpp>
 
 #include <QFile>
+#include <QOpenGLContext>
 #include <QTextStream>
 
 #include <stdexcept>
@@ -120,7 +122,15 @@ namespace OpenGL
   {
     if (_handle)
     {
-      gl.deleteProgram (*_handle);
+      auto* current_context = gl.getCurrentContext();
+      if (current_context && current_context->isValid() && QOpenGLContext::currentContext() == current_context)
+      {
+        gl.deleteProgram (*_handle);
+      }
+      else
+      {
+        LogError << "A shader program could not be released because no valid OpenGL context is current." << std::endl;
+      }
     }
   }
 
@@ -277,6 +287,14 @@ namespace OpenGL
         return;
 
       gl.uniform3fv (loc, static_cast<GLsizei>(value.size()), glm::value_ptr(value[0]));
+    }
+    void use_program::uniform(std::string const& name, std::array<glm::vec3, 8> const& value)
+    {
+      GLuint loc = uniform_location(name);
+      if (loc < 0)
+        return;
+
+      gl.uniform3fv(loc, static_cast<GLsizei>(8), glm::value_ptr(value[0]));
     }
     void use_program::uniform(std::string const& name, std::vector<glm::vec4> const& value)
     {

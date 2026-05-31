@@ -4,6 +4,12 @@
 
 #include <noggit/ui/tools/NodeEditor/Nodes/BaseNode.inl>
 #include <noggit/ui/tools/NodeEditor/Nodes/DataTypes/GenericData.hpp>
+#include <noggit/ui/tools/NodeEditor/Nodes/Scene/NodesContext.hpp>
+#include <noggit/World.h>
+
+#include <external/NodeEditor/include/nodes/Node>
+
+#include <QComboBox>
 
 using namespace Noggit::Ui::Tools::NodeEditor::Nodes;
 
@@ -35,15 +41,15 @@ void ScaleSelectedObjectInstancesNode::compute()
   switch (_operation->currentIndex())
   {
     case 0: // Set
-      world->scale_selected_models(delta, World::m2_scaling_type::set);
+      world->scale_selected_models(delta, World::object_scaling_type::set);
       break;
 
     case 1: // Add
-      world->scale_selected_models(delta, World::m2_scaling_type::add);
+      world->scale_selected_models(delta, World::object_scaling_type::add);
       break;
 
     case 2: // Multiply
-      world->scale_selected_models(delta, World::m2_scaling_type::mult);
+      world->scale_selected_models(delta, World::object_scaling_type::mult);
       break;
   }
 

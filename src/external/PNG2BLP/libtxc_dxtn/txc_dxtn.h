@@ -1,6 +1,6 @@
 /*
  * libtxc_dxtn
- * Version:  0.1
+ * Version:  1.0
  *
  * Copyright (C) 2004  Roland Scheidegger   All Rights Reserved.
  *
@@ -22,8 +22,11 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <stdint.h>
+#ifndef _TXC_DXTN_H
+#define _TXC_DXTN_H
 
+#include <stdint.h>
+// #include <GL/gl.h>
 typedef uint8_t GLchan;
 typedef int32_t GLint;
 typedef uint8_t GLubyte;
@@ -34,6 +37,7 @@ typedef uint32_t GLuint;
 typedef uint16_t GLushort;
 typedef int16_t GLshort;
 
+typedef GLubyte GLchan;
 #define UBYTE_TO_CHAN(b)  (b)
 #define CHAN_MAX 255
 #define RCOMP 0
@@ -49,14 +53,16 @@ typedef int16_t GLshort;
 #define GL_COMPRESSED_RGBA_S3TC_DXT5_EXT 3
 
 void fetch_2d_texel_rgb_dxt1(GLint srcRowStride, const GLubyte *pixdata,
-                             GLint i, GLint j, GLvoid *texel);
+			     GLint i, GLint j, GLvoid *texel);
 void fetch_2d_texel_rgba_dxt1(GLint srcRowStride, const GLubyte *pixdata,
-                              GLint i, GLint j, GLvoid *texel);
+			     GLint i, GLint j, GLvoid *texel);
 void fetch_2d_texel_rgba_dxt3(GLint srcRowStride, const GLubyte *pixdata,
-                              GLint i, GLint j, GLvoid *texel);
+			     GLint i, GLint j, GLvoid *texel);
 void fetch_2d_texel_rgba_dxt5(GLint srcRowStride, const GLubyte *pixdata,
-                              GLint i, GLint j, GLvoid *texel);
+			     GLint i, GLint j, GLvoid *texel);
 
 void tx_compress_dxtn(GLint srccomps, GLint width, GLint height,
-                      const GLubyte *srcPixData, GLenum destformat,
-                      GLubyte *dest, GLint dstRowStride);
+		      const GLubyte *srcPixData, GLenum destformat,
+		      GLubyte *dest, GLint dstRowStride);
+
+#endif /* _TXC_DXTN_H */

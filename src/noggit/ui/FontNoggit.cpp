@@ -1,14 +1,10 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <QtCore/QString>
-#include <QtGui/QIconEngine>
 #include <QtGui/QFontDatabase>
 #include <QtGui/QPainter>
-#include <QtWidgets/QMessageBox>
 
 #include <noggit/ui/FontNoggit.hpp>
-#include <noggit/ui/FontNoggit.hpp>
-#include <noggit/Log.h>
 
 namespace Noggit
 {
@@ -37,17 +33,14 @@ namespace Noggit
 
           temp_btn->ensurePolished();
 
-          QColor color;
           if (state == QIcon::On)
           {
-              color = temp_btn->palette().color(QPalette::WindowText);
+              painter->setPen(temp_btn->palette().color(QPalette::WindowText));
           }
           else if (state == QIcon::Off)
           {
-              color = temp_btn->palette().color(QPalette::Disabled, QPalette::WindowText);
+              painter->setPen(temp_btn->palette().color(QPalette::Disabled, QPalette::WindowText));
           }
-
-          painter->setPen(color);
 
 
           delete temp_btn;

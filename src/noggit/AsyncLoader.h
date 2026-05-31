@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include <noggit/AsyncObject.h>
+#include <noggit/async_priority.hpp>
 
 #include <array>
 #include <atomic>
@@ -11,14 +11,22 @@
 #include <memory>
 #include <thread>
 
+class AsyncObject;
+
 class AsyncLoader
 {
 public:
-  static AsyncLoader& instance()
-  {
-    static AsyncLoader async_loader(2);
-    return async_loader;
-  }
+  // static AsyncLoader& instance()
+  // {
+  //   static AsyncLoader async_loader(3);
+  //   return async_loader;
+  // }
+
+  // use regular pointer because unique_ptr was causing
+  // a significant performance hit
+  static AsyncLoader* instance;
+
+  static void setup(int threads);
 
   //! Ownership is _not_ transferred. Call ensure_deletable to ensure 
   //! that a previously enqueued object can be destroyed.
@@ -31,8 +39,8 @@ public:
   AsyncLoader(int numThreads);
   ~AsyncLoader();
 
-  bool important_object_failed_loading() const { return _important_object_failed_loading; }
-  void reset_object_fail() { _important_object_failed_loading = false; }
+  bool important_object_failed_loading() const;
+  void reset_object_fail();
 
 private:
   void process();

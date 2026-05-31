@@ -2,9 +2,13 @@
 
 #include "ChunkGetAlphaLayer.hpp"
 
+#include <noggit/texture_set.hpp>
+#include <noggit/tool_enums.hpp>
 #include <noggit/ui/tools/NodeEditor/Nodes/BaseNode.inl>
 #include <noggit/ui/tools/NodeEditor/Nodes/DataTypes/GenericData.hpp>
-#include <noggit/tool_enums.hpp>
+#include <noggit/ui/tools/NodeEditor/Nodes/Scene/NodesContext.hpp>
+
+#include <external/NodeEditor/include/nodes/Node>
 
 using namespace Noggit::Ui::Tools::NodeEditor::Nodes;
 
@@ -59,7 +63,7 @@ void ChunkGetAlphaLayerNode::compute()
   texture_set->apply_alpha_changes();
   auto alphamaps = texture_set->getAlphamaps();
 
-  auto alpha_layer = alphamaps->at(layer - 1).value();
+  Alphamap& alpha_layer = *alphamaps->at(layer - 1);
 
   QImage image(64, 64, QImage::Format_RGBA8888);
 

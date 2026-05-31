@@ -1,44 +1,42 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #pragma once
-#include <math/ray.hpp>
 
-#include <noggit/ModelInstance.h> // ModelInstance
-#include <noggit/ModelManager.h>
 #include <noggit/AsyncObjectMultimap.hpp>
-#include <noggit/TextureManager.h>
-#include <noggit/tool_enums.hpp>
-#include <noggit/wmo_liquid.hpp>
 #include <noggit/ContextObject.hpp>
+#include <noggit/ModelManager.h>
 #include <noggit/rendering/WMOGroupRender.hpp>
 #include <noggit/rendering/WMORender.hpp>
-#include <noggit/rendering/Primitives.hpp>
-#include <ClientFile.hpp>
-#include <optional>
+#include <noggit/tool_enums.hpp>
+#include <noggit/wmo_liquid.hpp>
 
+#include <cstdint>
 #include <map>
-#include <set>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
-#include <cstdint>
 
+struct scoped_blp_texture_reference;
 class WMO;
+class wmo_doodad_instance;
 class WMOGroup;
 class WMOInstance;
 class WMOManager;
-class wmo_liquid;
 class Model;
 
-namespace Noggit::Rendering
+namespace math
 {
-  class WMOGroupRender;
-  class WMORender;
+  struct ray;
 }
 
+namespace BlizzardArchive
+{
+  class ClientFile;
+}
 
 struct wmo_batch
 {
-  int8_t unused[12];
+  int16_t unused[6];
 
   uint32_t index_start;
   uint16_t index_count;
@@ -74,12 +72,12 @@ struct wmo_triangle_material_info
     wmo_mopy_flags flags;
     uint8_t texture;
 
-    bool isTransFace() { return flags.flag_0x01 && (flags.detail || flags.render); }
-    bool isColor() { return !flags.collision; }
-    bool isRenderFace() { return flags.render && !flags.detail; }
-    bool isCollidable() { return flags.collision || isRenderFace(); }
+    bool isTransFace() const;
+    bool isColor() const;
+    bool isRenderFace() const;
+    bool isCollidable() const;
 
-    bool isCollision() { return texture == 0xff; }
+    bool isCollision() const;
 };
 
 enum wmo_mobn_flags
@@ -115,7 +113,7 @@ union wmo_group_flags
     uint32_t flag_0x20 : 1;
     uint32_t exterior_lit : 1; // 0x40
     uint32_t unreacheable : 1; // 0x80
-    uint32_t flag_0x100: 1;
+    uint32_t show_exterior_sky: 1;
     uint32_t has_light : 1; // 0x200
     uint32_t flag_0x400 : 1;
     uint32_t has_doodads : 1; // 0x800
@@ -182,7 +180,7 @@ public:
 
   void setupFog (bool draw_fog, std::function<void (bool)> setup_fog);
 
-  void intersect (math::ray const&, std::vector<float>* results) const;
+  void intersect (math::ray const&, std::vector<float>* results, bool first_occurence) const;
 
   // todo: portal culling
   [[nodiscard]]
@@ -194,7 +192,7 @@ public:
                  ) const;
 
   [[nodiscard]]
-  std::vector<uint16_t> doodad_ref() const { return _doodad_ref; }
+  std::vector<uint16_t> doodad_ref() const;
 
   glm::vec3 BoundingBoxMin;
   glm::vec3 BoundingBoxMax;
@@ -205,13 +203,13 @@ public:
   std::string name;
 
   [[nodiscard]]
-  bool has_skybox() const { return header.flags.skybox; }
+  bool has_skybox() const;
 
   [[nodiscard]]
-  bool is_indoor() const { return header.flags.indoor; }
+  bool is_indoor() const;
 
   [[nodiscard]]
-  Noggit::Rendering::WMOGroupRender* renderer() { return &_renderer; };
+  Noggit::Rendering::WMOGroupRender* renderer();;
   ::glm::vec3 center;
 
 private:
@@ -308,9 +306,10 @@ class WMO : public AsyncObject
 
 public:
   explicit WMO(BlizzardArchive::Listfile::FileKey const& file_key, Noggit::NoggitRenderContext context );
+  ~WMO();
 
   [[nodiscard]]
-  std::vector<float> intersect (math::ray const&, bool do_exterior = true) const;
+  std::vector<float> intersect (math::ray const&, bool do_exterior = true, bool do_interior = true, bool first_occurence = false) const;
 
   void finishLoading() override;
 
@@ -321,7 +320,7 @@ public:
 
   std::vector<WMOGroup> groups;
   std::vector<WMOMaterial> materials;
-  glm::vec3 extents[2];
+  glm::vec3 extents[2]; // local extents, not axis aligned
   std::vector<scoped_blp_texture_reference> textures;
   std::vector<std::string> models;
   std::vector<wmo_doodad_instance> modelis;
@@ -343,21 +342,18 @@ public:
   Noggit::NoggitRenderContext _context;
 
   [[nodiscard]]
-  bool is_hidden() const { return _hidden; }
+  bool is_hidden() const;
 
-  void toggle_visibility() { _hidden = !_hidden; }
-  void show() { _hidden = false ; }
-  void hide() { _hidden = true; }
+  void toggle_visibility();
+  void show();
+  void hide();
 
-
-  [[nodiscard]]
-  bool is_required_when_saving()  const override
-  {
-    return true;
-  }
 
   [[nodiscard]]
-  Noggit::Rendering::WMORender* renderer() { return &_renderer; }
+  bool is_required_when_saving() const override;
+
+  [[nodiscard]]
+  Noggit::Rendering::WMORender* renderer();
 
 private:
   bool _hidden = false;

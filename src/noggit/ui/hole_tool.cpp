@@ -1,9 +1,11 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #include "hole_tool.hpp"
-#include <cmath>
 
-#include <QtWidgets/QVBoxLayout>
+#include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QFormLayout>
+#include <QtWidgets/QSlider>
+
+#include <cmath>
 
 namespace Noggit
 {
@@ -12,6 +14,9 @@ namespace Noggit
     hole_tool::hole_tool(QWidget* parent) : QWidget(parent)
     {
       auto layout = new QFormLayout(this);
+
+      setMinimumWidth(250);
+      // setMaximumWidth(250);
 
       _radius_spin = new QDoubleSpinBox (this);
       _radius_spin->setRange (0.0f, 1000.0f);
@@ -25,9 +30,6 @@ namespace Noggit
       _radius_slider->setSliderPosition (_radius);
 
       layout->addRow (_radius_slider);
-
-      setMinimumWidth(250);
-      setMaximumWidth(250);
 
       connect ( _radius_spin, qOverload<double> (&QDoubleSpinBox::valueChanged)
           , [&] (double v)
@@ -51,6 +53,11 @@ namespace Noggit
     void hole_tool::changeRadius(float change)
     {
       _radius_spin->setValue (_radius + change);
+    }
+
+    float hole_tool::brushRadius() const
+    {
+      return _radius;
     }
 
     void hole_tool::setRadius(float radius)

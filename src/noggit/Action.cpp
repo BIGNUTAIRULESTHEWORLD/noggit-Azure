@@ -1,16 +1,20 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include "Action.hpp"
+#include <noggit/ChunkWater.hpp>
+#include <noggit/ContextObject.hpp>
 #include <noggit/MapChunk.h>
 #include <noggit/MapView.h>
+#include <noggit/SceneObject.hpp>
 #include <noggit/texture_set.hpp>
-#include <noggit/ContextObject.hpp>
-#include <noggit/Log.h>
+#include <noggit/World.h>
+
 #include <cstring>
 
 
 Noggit::Action::Action(MapView* map_view)
 : QObject()
+, _flags{0}
 , _map_view(map_view)
 {
 }
@@ -72,9 +76,15 @@ void Noggit::Action::undo(bool redo)
     for (auto& pair : redo ? _chunk_texture_post : _chunk_texture_pre)
     {
       auto texture_set = pair.first->getTextureSet();
-      *texture_set->getAlphamaps() = pair.second.alphamaps;
-      *texture_set->getTempAlphamaps() = pair.second.tmp_edit_values;
-      std::memcpy(texture_set->getMCLYEntries(), &pair.second.layers_info, sizeof(ENTRY_MCLY) * 4);
+
+      texture_set->setAlphamaps(pair.second.alphamaps);
+
+      if (pair.second.tmp_edit_values)
+        texture_set->getTempAlphamaps() = std::make_unique<tmp_edit_alpha_values>(*pair.second.tmp_edit_values);
+      else
+        texture_set->getTempAlphamaps().reset();
+
+      std::memcpy(texture_set->getMCLYEntries(), &pair.second.layers_info, sizeof(layer_info) * 4);
       texture_set->setNTextures(pair.second.n_textures);
 
       auto textures = texture_set->getTextures();
@@ -88,6 +98,7 @@ void Noggit::Action::undo(bool redo)
 
       texture_set->markDirty();
       texture_set->apply_alpha_changes();
+      pair.first->registerChunkUpdate(ChunkUpdateFlags::FLAGS); // for texture anim flags
     }
   }
   if (_flags & ActionFlags::eCHUNKS_VERTEX_COLOR)
@@ -197,7 +208,45 @@ void Noggit::Action::undo(bool redo)
     for (auto& pair : redo ? _chunk_shadow_map_post : _chunk_shadow_map_pre)
     {
       std::memcpy(&pair.first->_shadow_map, pair.second.data(), 64 * 64 * sizeof(uint8_t));
-      pair.first->update_shadows();
+      pair.first->registerChunkUpdate(ChunkUpdateFlags::SHADOW);
+      // pair.first->update_shadows();
+    }
+  }
+  if (_flags & ActionFlags::eCHUNK_DOODADS_EXCLUSION)
+  {
+      for (auto& pair : redo ? _chunk_detaildoodad_exclusion_post : _chunk_detaildoodad_exclusion_pre)
+      {
+          std::memcpy(&pair.first->texture_set->_doodadStencil, pair.second.data(), 8 * sizeof(std::uint8_t));
+
+          pair.first->registerChunkUpdate(ChunkUpdateFlags::DETAILDOODADS_EXCLUSION);
+      }
+  }
+  if (_flags & ActionFlags::eCHUNKS_LAYERINFO)
+  {
+      for (auto& pair : redo ? _chunk_layerinfos_post : _chunk_layerinfos_pre)
+      {
+          auto texture_set = pair.first->getTextureSet();
+          std::memcpy(texture_set->getMCLYEntries(), &pair.second, sizeof(layer_info) * 4);
+
+          // TODO, enable this if texture flags get moved to this action flag.
+          // pair.first->registerChunkUpdate(ChunkUpdateFlags::FLAGS); // for texture anim flags. 
+
+          pair.first->registerChunkUpdate(ChunkUpdateFlags::GROUND_EFFECT);
+      }
+  }
+  if (_flags & ActionFlags::eAREA_TRIGGER_TRANSFORMED)
+  {
+    for (auto& pair : redo ? _transformed_area_trigger_post : _transformed_area_trigger_pre)
+    {
+      for (auto&& record : gAreaTriggerDB)
+      {
+        area_trigger trigger{ record };
+        if (trigger.id == pair.first)
+        {
+          trigger = pair.second;
+          trigger.write_to_dbc();
+        }
+      }
     }
   }
 
@@ -217,10 +266,10 @@ unsigned Noggit::Action::handleObjectAdded(unsigned uid, bool redo)
       unsigned old_uid = pair.first;
       SceneObject* obj;
       if (pair.second.type == ActionObjectTypes::WMO)
-        obj = _map_view->getWorld()->addWMOAndGetInstance(pair.second.file_key, pair.second.pos, pair.second.dir);
+        obj = _map_view->getWorld()->addWMOAndGetInstance(pair.second.file_key, pair.second.pos, pair.second.dir, pair.second.scale, false);
       else
         obj = _map_view->getWorld()->addM2AndGetInstance(pair.second.file_key, pair.second.pos,
-                                                         pair.second.scale,  pair.second.dir, nullptr);
+                                                         pair.second.scale,  pair.second.dir, nullptr, false, false);
 
       obj->instance_model()->wait_until_loaded();
       obj->instance_model()->waitForChildrenLoaded();
@@ -258,7 +307,7 @@ unsigned Noggit::Action::handleObjectAdded(unsigned uid, bool redo)
     }
     else
     {
-      _map_view->getWorld()->deleteInstance(pair.first);
+      _map_view->getWorld()->deleteInstance(pair.first, false);
     }
 
     return new_uid;
@@ -281,10 +330,10 @@ unsigned Noggit::Action::handleObjectRemoved(unsigned uid, bool redo)
       unsigned old_uid = pair.first;
       SceneObject* obj;
       if (pair.second.type == ActionObjectTypes::WMO)
-        obj = _map_view->getWorld()->addWMOAndGetInstance(pair.second.file_key, pair.second.pos, pair.second.dir);
+        obj = _map_view->getWorld()->addWMOAndGetInstance(pair.second.file_key, pair.second.pos, pair.second.dir, pair.second.scale, false);
       else
         obj = _map_view->getWorld()->addM2AndGetInstance(pair.second.file_key, pair.second.pos,
-                                                         pair.second.scale,  pair.second.dir, nullptr);
+                                                         pair.second.scale,  pair.second.dir, nullptr, false, false);
 
       obj->instance_model()->wait_until_loaded();
       obj->instance_model()->waitForChildrenLoaded();
@@ -322,7 +371,7 @@ unsigned Noggit::Action::handleObjectRemoved(unsigned uid, bool redo)
     }
     else
     {
-        _map_view->getWorld()->deleteInstance(pair.first);
+        _map_view->getWorld()->deleteInstance(pair.first, false);
     }
 
     return new_uid;
@@ -384,9 +433,22 @@ void Noggit::Action::finish()
       auto texture_set = pre.first->getTextureSet();
 
       cache.n_textures = texture_set->num();
-      cache.alphamaps = *texture_set->getAlphamaps();
-      cache.tmp_edit_values = *texture_set->getTempAlphamaps();
-      std::memcpy(&cache.layers_info, texture_set->getMCLYEntries(), sizeof(ENTRY_MCLY) * 4);
+
+      const auto& sourceAlphamaps = *texture_set->getAlphamaps();
+      for (size_t i = 0; i < MAX_ALPHAMAPS; ++i) {
+        if (sourceAlphamaps[i])
+          cache.alphamaps[i] = std::make_unique<Alphamap>(*sourceAlphamaps[i]);
+        else
+          cache.alphamaps[i].reset();
+      }
+
+      const auto& source_temp_alphas = texture_set->getTempAlphamaps();
+      if (source_temp_alphas)
+          cache.tmp_edit_values = std::make_unique<tmp_edit_alpha_values>(*source_temp_alphas);
+      else
+          cache.tmp_edit_values.reset();
+
+      std::memcpy(&cache.layers_info, texture_set->getMCLYEntries(), sizeof(layer_info) * 4);
 
       for (int j = 0; j < cache.n_textures; ++j)
       {
@@ -500,9 +562,29 @@ void Noggit::Action::finish()
       std::memcpy(post.second.data(), &post.first->_shadow_map, 64 * 64 * sizeof(std::uint8_t));
     }
   }
+  if (_flags & ActionFlags::eAREA_TRIGGER_TRANSFORMED)
+  {
+    _transformed_area_trigger_post.resize(_transformed_area_trigger_pre.size());
+
+    for (int i = 0; i < _transformed_area_trigger_pre.size(); ++i)
+    {
+      auto& post = _transformed_area_trigger_post.at(i);
+      auto& pre = _transformed_area_trigger_pre.at(i);
+      post.first = pre.first;
+
+      for (auto&& record : gAreaTriggerDB)
+      {
+        area_trigger trigger{ record };
+        if (trigger.id == pre.first)
+        {
+          post.second = trigger;
+        }
+      }
+    }
+  }
 
   if (_post)
-    (_map_view->*_post)();
+      _post();
 }
 
 float* Noggit::Action::getChunkTerrainOriginalData(MapChunk* chunk)
@@ -536,9 +618,29 @@ bool Noggit::Action::getBlockCursor() const
 
 }
 
-void Noggit::Action::setPostCallback(auto(MapView::*method)()->void)
+void Noggit::Action::setPostCallback(std::function<void()> function)
 {
-  _post = method;
+  _post = function;
+}
+
+ bool Noggit::Action::getTag()
+{
+  return _tag;
+}
+
+ void Noggit::Action::setTag(bool tag)
+{
+  _tag = tag;
+}
+
+ bool Noggit::Action::checkAdressTag(std::uintptr_t address)
+{
+  return std::find(_address_tag.begin(), _address_tag.end(), address) != _address_tag.end();
+}
+
+ void Noggit::Action::tagAdress(std::uintptr_t address)
+{
+  _address_tag.push_back(address);
 }
 
 
@@ -576,16 +678,33 @@ void Noggit::Action::registerChunkTextureChange(MapChunk* chunk)
   auto texture_set = chunk->getTextureSet();
 
   cache.n_textures = texture_set->num();
-  cache.alphamaps = *texture_set->getAlphamaps();
-  cache.tmp_edit_values = *texture_set->getTempAlphamaps();
-  std::memcpy(&cache.layers_info, texture_set->getMCLYEntries(), sizeof(ENTRY_MCLY) * 4);
+  // cache.alphamaps = *texture_set->getAlphamaps();
+  // cache.tmp_edit_values = *texture_set->getTempAlphamaps();
+  const auto& sourceAlphamaps = *texture_set->getAlphamaps();
+  for (size_t i = 0; i < MAX_ALPHAMAPS; ++i) 
+  {
+      if (sourceAlphamaps[i])
+          cache.alphamaps[i] = std::make_unique<Alphamap>(*sourceAlphamaps[i]);
+      else
+          cache.alphamaps[i].reset();
+  }
+
+  const auto& source_temp_alphas = texture_set->getTempAlphamaps();
+  if (source_temp_alphas)
+      cache.tmp_edit_values = std::make_unique<tmp_edit_alpha_values>(*source_temp_alphas);
+  else
+      cache.tmp_edit_values.reset();
+
+  std::memcpy(&cache.layers_info, texture_set->getMCLYEntries(), sizeof(layer_info) * 4);
 
   for (int i = 0; i < cache.n_textures; ++i)
   {
     cache.textures.push_back(texture_set->filename(i));
   }
+  // _chunk_texture_pre.emplace_back(std::make_pair(chunk, std::move( cache)));
 
-  _chunk_texture_pre.emplace_back(std::make_pair(chunk, std::move(cache)));
+  auto cache_pair = std::make_pair(chunk, std::move(cache));
+  _chunk_texture_pre.emplace_back(std::move(cache_pair));
 }
 
 void Noggit::Action::registerChunkVertexColorChange(MapChunk* chunk)
@@ -742,6 +861,36 @@ void Noggit::Action::registerChunkShadowChange(MapChunk *chunk)
   _chunk_shadow_map_pre.emplace_back(std::make_pair(chunk, std::move(data)));
 }
 
+void Noggit::Action::registerChunkLayerInfoChange(MapChunk* chunk)
+{
+    _flags |= ActionFlags::eCHUNKS_LAYERINFO;
+
+    for (auto& pair : _chunk_layerinfos_pre)
+    {
+        if (pair.first == chunk)
+            return;
+    }
+    std::array<layer_info, 4> layer_infos{};
+    std::memcpy(&layer_infos, chunk->texture_set->getMCLYEntries(), sizeof(layer_info) * 4);
+
+    _chunk_layerinfos_pre.emplace_back(chunk, std::move(layer_infos));
+}
+
+void Noggit::Action::registerChunkDetailDoodadExclusionChange(MapChunk* chunk)
+{
+    _flags |= ActionFlags::eCHUNK_DOODADS_EXCLUSION;
+
+    for (auto& pair : _chunk_detaildoodad_exclusion_pre)
+    {
+        if (pair.first == chunk)
+            return;
+    }
+    std::array<std::uint8_t, 8> data{};
+    std::memcpy(&data, chunk->texture_set->getDoodadStencilBase(), sizeof(std::uint8_t) * 8);
+
+    _chunk_detaildoodad_exclusion_pre.emplace_back(std::make_pair(chunk, data));
+}
+
 void Noggit::Action::registerAllChunkChanges(MapChunk* chunk)
 {
   registerChunkTerrainChange(chunk);
@@ -753,6 +902,20 @@ void Noggit::Action::registerAllChunkChanges(MapChunk* chunk)
   registerChunkLiquidChange(chunk);
   registerVertexSelectionChange();
   registerChunkShadowChange(chunk);
+  registerChunkLayerInfoChange(chunk);
+  registerChunkDetailDoodadExclusionChange(chunk);
+}
+
+void Noggit::Action::registerAreaTriggerTransformed(area_trigger* trigger)
+{
+  _flags |= ActionFlags::eAREA_TRIGGER_TRANSFORMED;
+  for (auto& pair : _transformed_area_trigger_pre)
+  {
+    if (pair.first == trigger->id)
+      return;
+  }
+
+  _transformed_area_trigger_pre.emplace_back(trigger->id, *trigger);
 }
 
 Noggit::Action::~Action()

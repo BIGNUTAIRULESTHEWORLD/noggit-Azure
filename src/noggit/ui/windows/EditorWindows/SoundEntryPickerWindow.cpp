@@ -1,29 +1,21 @@
 #include "SoundEntryPickerWindow.h"
+#include <noggit/DBC.h>
+#include <noggit/ui/FontAwesome.hpp>
 #include <noggit/ui/windows/SoundPlayer/SoundEntryPlayer.h>
 // #include <noggit/ui/ZoneIDBrowser.h>
 
-#include <noggit/DBC.h>
-#include <noggit/Log.h>
-#include <noggit/Misc.h>
-#include <ClientFile.hpp>
-#include <noggit/application/NoggitApplication.hpp>
-
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QFormLayout>
-#include <QtWidgets/qpushbutton.h>
 #include <QtWidgets/qgroupbox.h>
-#include <QtWidgets/qcheckbox.h>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QCheckBox.h>
+#include <QtWidgets/QComboBox.h>
 #include <QtWidgets/qlineedit.h>
-#include <QtWidgets/QTableView>
-#include <QStandardItemModel>
-#include <QTableWidgetItem>
-#include <QSound>
-#include <qtemporaryfile>
-#include <QMediaPlayer>
+#include <QSpinBox>
 #include <QListWidget>
 #include <QToolButton>
 
-#include <iostream>
 #include <sstream>
 #include <string>
 
@@ -62,7 +54,7 @@ namespace Noggit
             _picker_listview = new QListWidget(this);
             _picker_listview->setFixedSize(280, 460);
             _picker_listview->setSelectionMode(QListWidget::SingleSelection);
-            // _picker_listview->setSelectionBehavior(QAbstractItemView::SelectionBehavior::SelectRows);
+            _picker_listview->setSelectionBehavior(QAbstractItemView::SelectionBehavior::SelectItems);
             list_layout->addWidget(_picker_listview);
 
             if (sound_type_filter == -1)
@@ -187,31 +179,36 @@ namespace Noggit
                 }
 
                 });
-
-            connect(_tree_searchbar, &QLineEdit::textChanged, [=](QString obj) {
-                if (obj.isEmpty())
-                {
-                    // unhide all
+            
+            connect(_tree_searchbar, &QLineEdit::textChanged, [=](const QString& text)
+            {
+              if (text.isEmpty())
+              {
+                // Unhide all items when search text is empty
+                for (int i = 0; i < _picker_listview->count(); ++i) {
+                  _picker_listview->item(i)->setHidden(false);
                 }
+              }
+              else
+              {
+                for (int i = 0; i < _picker_listview->count(); ++i) {
+                  QListWidgetItem* item = _picker_listview->item(i);
 
-                // hide all items
-                for (int i = 0; i < _picker_listview->count(); i++)
-                {
-                    auto item = _picker_listview->item(i);
-                    item->setHidden(true);
+                  bool match = item->text().contains(text, Qt::CaseInsensitive);
+                  item->setHidden(!match);
                 }
-                // unhide matching items
-                auto matching_items = _picker_listview->findItems(obj, Qt::MatchContains);
+              }
+            });
 
-                for (auto item : matching_items)
+            QObject::connect(_picker_listview, &QListWidget::itemSelectionChanged, [this]()
+              {
+                QListWidgetItem* const item = _picker_listview->currentItem();
+                if (item)
                 {
-                    item->setHidden(false);
+                  select_entry(item->data(Qt::UserRole).toInt());
                 }
-                });
-
-            connect(_picker_listview, &QListWidget::itemClicked, this, [=](QListWidgetItem* item) {
-                select_entry(item->data(1).toInt());
-                });
+              }
+            );
 
             connect(select_entry_btn, &QPushButton::clicked, [=]() {
                 // auto selection = _picker_listview->selectedItems();
@@ -219,20 +216,20 @@ namespace Noggit
                 if (selected_item == nullptr)
                     return;
 
-            button->setProperty("id", selected_item->data(1).toInt());
-            button->setText(selected_item->text());
-            this->close();
-                });
+                button->setProperty("id", selected_item->data(Qt::UserRole).toInt());
+                button->setText(selected_item->text());
+                this->close();
+            });
 
             connect(select_entry_none_btn, &QPushButton::clicked, [=]() {
                 button->setText("-NONE-");
                 button->setProperty("id", 0);
                 this->close();
-                });
+            });
 
             connect(save_music_entry_btn, &QPushButton::clicked, [=]() {
                 save_entry(_entry_id);
-                });
+            });
 
             connect(add_file_button, &QPushButton::clicked, [=]() {
 
@@ -265,7 +262,7 @@ namespace Noggit
 
                 // add new tree item
                 auto item = new QListWidgetItem();
-                item->setData(1, new_id);
+                item->setData(Qt::UserRole, new_id);
                 std::stringstream ss;
 
                 _picker_listview->addItem(item);
@@ -286,7 +283,7 @@ namespace Noggit
                     continue;
 
                 auto item = new QListWidgetItem();
-                item->setData(1, i->getInt(SoundEntriesDB::ID));
+                item->setData(Qt::UserRole, i->getInt(SoundEntriesDB::ID));
 
                 std::stringstream ss;
                 ss << i->getInt(SoundEntriesDB::ID) << "-" << i->getString(SoundEntriesDB::Name);
@@ -301,8 +298,6 @@ namespace Noggit
 
         void SoundEntryPickerWindow::select_entry(int id)
         {
-            _entry_id = id;
-
             if (id != 0)
             {
                 // _picker_listview->setCurrentRow(0);
@@ -315,119 +310,134 @@ namespace Noggit
                 return;
             }
 
-            _entry_id_lbl->setText(QString(std::to_string(id).c_str()));
-
-            DBCFile::Record record = gSoundEntriesDB.getByID(id);
-
-            _name_ledit->setText(record.getString(SoundEntriesDB::Name));
-
-            int sound_type_id = record.getInt(SoundEntriesDB::SoundType);
-
-            int row_id = 0;
-            for (auto sound_type : sound_types_names)
+            try
             {
-                if (sound_type.first == sound_type_id)
+                DBCFile::Record record = gSoundEntriesDB.getByID(id);
+
+                _entry_id = id;
+                _entry_id_lbl->setText(QString(std::to_string(id).c_str()));
+
+                _name_ledit->setText(record.getString(SoundEntriesDB::Name));
+
+                int sound_type_id = record.getInt(SoundEntriesDB::SoundType);
+
+                int row_id = 0;
+                for (auto sound_type : sound_types_names)
                 {
-                    _sound_type_cbbox->setCurrentIndex(row_id);
-                    break;
+                    if (sound_type.first == sound_type_id)
+                    {
+                        _sound_type_cbbox->setCurrentIndex(row_id);
+                        break;
+                    }
+
+                    row_id++;
                 }
 
-                row_id++;
+                _eax_type_cbbox->setCurrentIndex(record.getInt(SoundEntriesDB::EAXDef));
+                _min_distance_spinbox->setValue(record.getFloat(SoundEntriesDB::minDistance));
+                _max_distance_spinbox->setValue(record.getFloat(SoundEntriesDB::distanceCutoff));
+                _volume_slider->setValue(record.getFloat(SoundEntriesDB::Volume) * 100);
+
+                int flags = record.getInt(SoundEntriesDB::Flags);
+
+                _flag6_checkbox->setChecked((flags & (1 << (6 - 1))) ? true : false);
+                _flag10_checkbox->setChecked((flags & (1 << (10 - 1))) ? true : false);
+                _flag11_checkbox->setChecked((flags & (1 << (11 - 1))) ? true : false);
+                _flag12 = (flags & (1 << (12 - 1))) ? true : false;
+
+                _directory_ledit->setText(record.getString(SoundEntriesDB::FilePath));
+
+                _files_listview->clear();
+                for (int i = 0; i < 10; i++)
+                {
+                    std::string filename = record.getString(SoundEntriesDB::Filenames + i);
+                    // auto freq = record.getInt(SoundEntriesDB::Freq + i);
+
+                    if (filename.empty())
+                        continue;
+
+                    _filenames_ledits[i] = new QLineEdit(); // set parent in the widget class
+                    _filenames_ledits[i]->setText(filename.c_str());
+                    auto file_widget = new SoundFileWListWidgetItem(_filenames_ledits[i], _directory_ledit->text().toStdString());
+
+                    auto item = new QListWidgetItem(_files_listview);
+                    _files_listview->setItemWidget(item, file_widget);
+                    item->setSizeHint(QSize(_files_listview->width(), _files_listview->height() / 10) );
+
+                    _files_listview->addItem(item);
+                }
+                update_files_count();
+
+                _sound_advanced_id = record.getInt(SoundEntriesDB::soundEntriesAdvancedID);
             }
-
-            _eax_type_cbbox->setCurrentIndex(record.getInt(SoundEntriesDB::EAXDef));
-            _min_distance_spinbox->setValue(record.getFloat(SoundEntriesDB::minDistance));
-            _max_distance_spinbox->setValue(record.getFloat(SoundEntriesDB::distanceCutoff));
-            _volume_slider->setValue(record.getFloat(SoundEntriesDB::Volume) * 100);
-
-            int flags = record.getInt(SoundEntriesDB::Flags);
-
-            _flag6_checkbox->setChecked((flags & (1 << (6 - 1))) ? true : false);
-            _flag10_checkbox->setChecked((flags & (1 << (10 - 1))) ? true : false);
-            _flag11_checkbox->setChecked((flags & (1 << (11 - 1))) ? true : false);
-            _flag12 = (flags & (1 << (12 - 1))) ? true : false;
-
-            _directory_ledit->setText(record.getString(SoundEntriesDB::FilePath));
-
-            _files_listview->clear();
-            for (int i = 0; i < 10; i++)
+            catch (SoundEntriesDB::NotFound)
             {
-                std::string filename = record.getString(SoundEntriesDB::Filenames + i);
-                // auto freq = record.getInt(SoundEntriesDB::Freq + i);
 
-                if (filename.empty())
-                    continue;
-
-                _filenames_ledits[i] = new QLineEdit(); // set parent in the widget class
-                _filenames_ledits[i]->setText(filename.c_str());
-                auto file_widget = new SoundFileWListWidgetItem(_filenames_ledits[i], _directory_ledit->text().toStdString());
-
-                auto item = new QListWidgetItem(_files_listview);
-                _files_listview->setItemWidget(item, file_widget);
-                item->setSizeHint(QSize(_files_listview->width(), _files_listview->height() / 10) );
-
-                _files_listview->addItem(item);
             }
-            update_files_count();
-
-            _sound_advanced_id = record.getInt(SoundEntriesDB::soundEntriesAdvancedID);
         }
 
         void SoundEntryPickerWindow::save_entry(int entry_id)
         {
-            DBCFile::Record record = gSoundEntriesDB.getByID(entry_id); 
-
-
-            record.write(SoundEntriesDB::ID, entry_id);
-
-            int sound_type_id = 0;
-            int row_id = 0;
-            for (auto sound_type : sound_types_names)
+            try
             {
-                if (row_id == _sound_type_cbbox->currentIndex())
+                DBCFile::Record record = gSoundEntriesDB.getByID(entry_id); 
+
+                record.write(SoundEntriesDB::ID, entry_id);
+
+                int sound_type_id = 0;
+                int row_id = 0;
+                for (auto sound_type : sound_types_names)
                 {
-                    sound_type_id = sound_type.first;
-                    break;
+                    if (row_id == _sound_type_cbbox->currentIndex())
+                    {
+                        sound_type_id = sound_type.first;
+                        break;
+                    }
+                    row_id++;
                 }
-                row_id++;
+                record.write(SoundEntriesDB::SoundType, sound_type_id);
+
+                record.writeString(SoundEntriesDB::Name, _name_ledit->text().toStdString());
+
+                // _files_listview->count()
+                int i = 0;
+                for (;i < _files_listview->count(); i++)
+                {
+                    record.writeString(SoundEntriesDB::Filenames + i, _filenames_ledits[i]->text().toStdString());
+                    record.write(SoundEntriesDB::Freq + i, 1); // TODO. but in 99.9% 1 is fine
+                }
+                for (;i < 10; i++) // clean up unset entries
+                {
+                    record.writeString(SoundEntriesDB::Filenames + i, "");
+                    record.write(SoundEntriesDB::Freq + i, 0);
+                }
+
+                record.writeString(SoundEntriesDB::FilePath, _directory_ledit->text().toStdString());
+                record.write(SoundEntriesDB::Volume, _volume_slider->value() / 100.0f); // should be a float
+
+                int flags = 0;
+                if (_flag6_checkbox->isChecked())
+                    flags  |= (1ULL << (5));
+                if (_flag10_checkbox->isChecked())
+                    flags |= (1ULL << (9));
+                if (_flag11_checkbox->isChecked())
+                    flags |= (1ULL << (10));
+                if (_flag12)
+                    flags |= (1ULL << (11));
+                record.write(SoundEntriesDB::Flags, flags);
+
+                record.write(SoundEntriesDB::minDistance, static_cast<float>(_min_distance_spinbox->value()));
+                record.write(SoundEntriesDB::distanceCutoff, static_cast<float>(_max_distance_spinbox->value()));
+                record.write(SoundEntriesDB::EAXDef, _eax_type_cbbox->currentIndex());
+                record.write(SoundEntriesDB::soundEntriesAdvancedID, _sound_advanced_id);
+
+                gSoundEntriesDB.save();
             }
-            record.write(SoundEntriesDB::SoundType, sound_type_id);
-
-            record.writeString(SoundEntriesDB::Name, _name_ledit->text().toStdString());
-
-            // _files_listview->count()
-            int i = 0;
-            for (;i < _files_listview->count(); i++)
+            catch (SoundEntriesDB::NotFound)
             {
-                record.writeString(SoundEntriesDB::Filenames + i, _filenames_ledits[i]->text().toStdString());
-                record.write(SoundEntriesDB::Freq + i, 1); // TODO. but in 99.9% 1 is fine
-            }
-            for (;i < 10; i++) // clean up unset entries
-            {
-                record.writeString(SoundEntriesDB::Filenames + i, "");
-                record.write(SoundEntriesDB::Freq + i, 0);
+
             }
 
-            record.writeString(SoundEntriesDB::FilePath, _directory_ledit->text().toStdString());
-            record.write(SoundEntriesDB::Volume, _volume_slider->value() / 100.0f); // should be a float
-
-            int flags = 0;
-            if (_flag6_checkbox->isChecked())
-                flags  |= (1ULL << (5));
-            if (_flag10_checkbox->isChecked())
-                flags |= (1ULL << (9));
-            if (_flag11_checkbox->isChecked())
-                flags |= (1ULL << (10));
-            if (_flag12)
-                flags |= (1ULL << (11));
-            record.write(SoundEntriesDB::Flags, flags);
-
-            record.write(SoundEntriesDB::minDistance, static_cast<float>(_min_distance_spinbox->value()));
-            record.write(SoundEntriesDB::distanceCutoff, static_cast<float>(_max_distance_spinbox->value()));
-            record.write(SoundEntriesDB::EAXDef, _eax_type_cbbox->currentIndex());
-            record.write(SoundEntriesDB::soundEntriesAdvancedID, _sound_advanced_id);
-
-            gSoundEntriesDB.save();
         }
 
         void SoundEntryPickerWindow::update_files_count()

@@ -1,13 +1,64 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
-#include <noggit/ui/tools/ViewToolbar/Ui/ViewToolbar.hpp>
-#include <noggit/ui/tools/ActionHistoryNavigator/ActionHistoryNavigator.hpp>
+#include <noggit/BoolToggleProperty.hpp>
+#include <noggit/MapView.h>
 #include <noggit/ui/FontAwesome.hpp>
+#include <noggit/ui/tools/ActionHistoryNavigator/ActionHistoryNavigator.hpp>
+#include <noggit/ui/tools/ViewToolbar/Ui/ViewToolbar.hpp>
+#include <noggit/World.h>
+
+#include <QCheckBox>
+#include <QDialog>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QPushButton>
 #include <QSlider>
 #include <QtCore/QSettings>
 
 using namespace Noggit::Ui;
 using namespace Noggit::Ui::Tools::ViewToolbar::Ui;
+
+class SliderAction : public QWidgetAction
+{
+public:
+  template <typename T>
+  SliderAction(const QString& title, int min, int max, int value, const QString& prec,
+    std::function<T(T v)> func)
+    : QWidgetAction(NULL)
+  {
+    static_assert (std::is_arithmetic<T>::value, "<T>SliderAction - T must be numeric");
+
+    QWidget* _widget = new QWidget(NULL);
+    QHBoxLayout* _layout = new QHBoxLayout();
+    _layout->setSpacing(3);
+    _layout->setMargin(0);
+    QLabel* _label = new QLabel(title);
+    QLabel* _display = new QLabel(QString::number(func(static_cast<T>(value)), 'f', 2) + tr(" %1").arg(prec));
+
+    _slider = new QSlider(NULL);
+    _slider->setOrientation(Qt::Horizontal);
+    _slider->setMinimum(min);
+    _slider->setMaximum(max);
+    _slider->setValue(value);
+
+    connect(_slider, &QSlider::valueChanged, [_display, prec, func](int value)
+      {
+        _display->setText(QString::number(func(static_cast<T>(value)), 'f', 2) + tr(" %1").arg(prec));
+      });
+
+    _layout->addWidget(_label);
+    _layout->addWidget(_slider);
+    _layout->addWidget(_display);
+    _widget->setLayout(_layout);
+
+    setDefaultWidget(_widget);
+  }
+
+  QSlider* slider() { return _slider; }
+
+private:
+  QSlider* _slider;
+};
 
 ViewToolbar::ViewToolbar(MapView* mapView)
   : _tool_group(this)
@@ -113,7 +164,7 @@ ViewToolbar::ViewToolbar(MapView *mapView, ViewToolbar *tb)
 
     add_tool_icon(mapView, &mapView->_draw_model_animations, tr("Animations"), FontNoggit::VISIBILITY_ANIMATION, tb);
     add_tool_icon(mapView, &mapView->_draw_fog, tr("Fog"), FontNoggit::VISIBILITY_FOG, tb);
-    add_tool_icon(mapView, &mapView->_draw_mfbo, tr("Flight bounds"), FontNoggit::VISIBILITY_FLIGHT_BOUNDS, tb);
+    add_tool_icon(mapView, &mapView->_draw_mfbo, tr("Flight bounds\nCurrently doesn't work !"), FontNoggit::VISIBILITY_FLIGHT_BOUNDS, tb);
     // add_tool_icon(mapView, &mapView->_draw_lights_zones, tr("Light zones"), FontNoggit::VISIBILITY_LIGHT, tb);
     addSeparator();
 
@@ -132,9 +183,9 @@ ViewToolbar::ViewToolbar(MapView *mapView, ViewToolbar *tb)
 
     // normal view mode icon, and make them only 1 at a time out of the 3 view modes? 
     // add_tool_icon(mapView, &mapView->_game_mode_camera, tr("Normal view"), FontNoggit::VIEW_AXIS, tb);
-    add_tool_icon(mapView, &mapView->_game_mode_camera, tr("Game view"), FontNoggit::VIEW_MODE_GAME, tb);
+    // add_tool_icon(mapView, &mapView->_game_mode_camera, tr("Game view"), FontNoggit::VIEW_MODE_GAME, tb);
     // add_tool_icon(mapView, &mapView->_game_mode_camera, tr("Tile view"), FontNoggit::VIEW_MODE_2D, tb);
-    addSeparator();
+    // addSeparator();
 
     add_tool_icon(mapView, &mapView->_show_minimap_window, tr("Show Minimap"),FontNoggit::TOOL_MINIMAP_EDITOR, tb);
     add_tool_icon(mapView, &mapView->_show_detail_info_window, tr("Details info"), FontNoggit::INFO, tb);
@@ -155,14 +206,19 @@ ViewToolbar::ViewToolbar(MapView *mapView, ViewToolbar *tb)
     addWidget(undo_stack_btn);
 
 
-    auto undo_stack_popup = new QWidget(this);
+    auto undo_stack_popup = new QDialog(this);
     undo_stack_popup->setMinimumWidth(160);
     undo_stack_popup->setMinimumHeight(300);
+    undo_stack_popup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
     auto layout = new QVBoxLayout(undo_stack_popup);
+    layout->setContentsMargins(0, 0, 0, 0);
     auto action_navigator = new Noggit::Ui::Tools::ActionHistoryNavigator(undo_stack_popup);
+    action_navigator->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     action_navigator->setMinimumWidth(160);
     action_navigator->setMinimumHeight(300);
-    layout->addWidget(undo_stack_popup);
+    // layout->addWidget(undo_stack_popup);
+    layout->addWidget(action_navigator);
 
     undo_stack_popup->updateGeometry();
     undo_stack_popup->adjustSize();
@@ -208,15 +264,15 @@ ViewToolbar::ViewToolbar(MapView* mapView, editing_mode mode)
             IconAction* _icon = new IconAction(FontNoggitIcon{ FontNoggit::TOOL_FLATTEN_BLUR });
 
             CheckBoxAction* _raise = new CheckBoxAction(tr("Raise"), true);
-            connect(_raise->checkbox(), &QCheckBox::stateChanged, [mapView](int state)
+            connect(_raise->checkbox(), &QCheckBox::stateChanged, [this, mapView](int state)
                 {
-                    mapView->getFlattenTool()->_flatten_mode.raise = state;
+                    emit updateStateRaise(state != 0);
                 });
 
             CheckBoxAction* _lower = new CheckBoxAction(tr("Lower"), true);
-            connect(_lower->checkbox(), &QCheckBox::stateChanged, [mapView](int state)
+            connect(_lower->checkbox(), &QCheckBox::stateChanged, [this, mapView](int state)
                 {
-                    mapView->getFlattenTool()->_flatten_mode.lower = state;
+                    emit updateStateLower(state != 0);
                 });
 
 
@@ -374,6 +430,11 @@ void ViewToolbar::setCurrentMode(MapView* mapView, editing_mode mode)
     }
 }
 
+editing_mode ViewToolbar::getCurrentMode() const
+{
+  return current_mode;
+}
+
 void ViewToolbar::add_tool_icon(MapView* mapView,
                                 Noggit::BoolToggleProperty* view_state,
                                 const QString& name,
@@ -399,14 +460,15 @@ void ViewToolbar::add_tool_icon(MapView* mapView,
     });
 
     connect (view_state, &Noggit::BoolToggleProperty::changed, [action, view_state, mapView] () {
+      
+      /* it has been removed from the bar
         if (action->text() == "Game view" && view_state->get())
         {
             // hack, manually update camera when switch to game_view
             mapView->setCameraDirty();
             auto ground_pos = mapView->getWorld()->get_ground_height(mapView->getCamera()->position);
             mapView->getCamera()->position.y = ground_pos.y + 2;
-        }
-
+        }*/
 
         action->setChecked(view_state->get());
     });
@@ -430,10 +492,8 @@ bool ViewToolbar::showUnpaintableChunk()
     return static_cast<SubToolBarAction*>(_texture_secondary_tool[0])->GET<CheckBoxAction*>(unpaintable_chunk_index)->checkbox()->isChecked() && current_mode == editing_mode::paint;
 }
 
-void ViewToolbar::nextFlattenMode(MapView* mapView)
+void ViewToolbar::nextFlattenMode()
 {
-    mapView->getFlattenTool()->_flatten_mode.next();
-
     CheckBoxAction* _raise_option = static_cast<SubToolBarAction*>(_flatten_secondary_tool[0])->GET<CheckBoxAction*>(raise_index);
     CheckBoxAction* _lower_option = static_cast<SubToolBarAction*>(_flatten_secondary_tool[0])->GET<CheckBoxAction*>(lower_index);
 
@@ -460,4 +520,134 @@ float ViewToolbar::getAlphaSphereLight()
     auto slider = toolbar->GET<SliderAction*>(sphere_light_alpha_index)->slider();
 
     return float(slider->value()) / 100.f;
+}
+
+PushButtonAction::PushButtonAction(const QString& text)
+  : QWidgetAction(NULL)
+{
+  QWidget* _widget = new QWidget(NULL);
+  QHBoxLayout* _layout = new QHBoxLayout();
+  _layout->setMargin(0);
+
+  _push = new QPushButton(text);
+
+  _layout->addWidget(_push);
+  _widget->setLayout(_layout);
+
+  setDefaultWidget(_widget);
+}
+
+QPushButton* PushButtonAction::pushbutton()
+{
+  return _push;
+}
+
+CheckBoxAction::CheckBoxAction(const QString& text, bool checked)
+  : QWidgetAction(NULL)
+{
+  QWidget* _widget = new QWidget(NULL);
+  QHBoxLayout* _layout = new QHBoxLayout();
+  _layout->setMargin(0);
+
+  _checkbox = new QCheckBox(text);
+  _checkbox->setChecked(checked);
+
+  _layout->addWidget(_checkbox);
+  _widget->setLayout(_layout);
+
+  setDefaultWidget(_widget);
+}
+
+QCheckBox* CheckBoxAction::checkbox()
+{
+  return _checkbox;
+}
+
+IconAction::IconAction(const QIcon& icon)
+  : QWidgetAction(NULL)
+{
+  QWidget* _widget = new QWidget(NULL);
+  QHBoxLayout* _layout = new QHBoxLayout();
+  _layout->setMargin(0);
+
+  _icon = new QLabel();
+  _icon->setPixmap(icon.pixmap(QSize(22, 22)));
+
+  _layout->addWidget(_icon);
+  _widget->setLayout(_layout);
+  setDefaultWidget(_widget);
+}
+
+QLabel* IconAction::icon()
+{
+  return _icon;
+}
+
+SpacerAction::SpacerAction(Qt::Orientation orientation)
+  : QWidgetAction(NULL)
+{
+  QWidget* _widget = new QWidget(NULL);
+  QHBoxLayout* _layout = new QHBoxLayout();
+  _layout->setMargin(0);
+
+  if (orientation == Qt::Vertical)
+    _layout->addSpacerItem(new QSpacerItem(0, 0, QSizePolicy::Minimum, QSizePolicy::Expanding));
+
+  if (orientation == Qt::Horizontal)
+    _layout->addSpacerItem(new QSpacerItem(0, 0, QSizePolicy::Expanding, QSizePolicy::Minimum));
+
+  _widget->setLayout(_layout);
+  setDefaultWidget(_widget);
+}
+
+SubToolBarAction::SubToolBarAction()
+  : QWidgetAction(NULL)
+{
+  QWidget* _widget = new QWidget(NULL);
+  QHBoxLayout* _layout = new QHBoxLayout();
+  _layout->setSpacing(5);
+  _layout->setMargin(0);
+
+  _toolbar = new QToolBar();
+  _toolbar->setContextMenuPolicy(Qt::PreventContextMenu);
+  _toolbar->setAllowedAreas(Qt::TopToolBarArea | Qt::BottomToolBarArea);
+  _toolbar->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
+  _toolbar->setOrientation(Qt::Horizontal);
+
+  _layout->addWidget(_toolbar);
+  _widget->setLayout(_layout);
+
+  setDefaultWidget(_widget);
+}
+
+QToolBar* SubToolBarAction::toolbar()
+{
+  return _toolbar;
+}
+
+void SubToolBarAction::ADD_ACTION(QWidgetAction* _act)
+{
+  _actions.push_back(_act);
+}
+
+void SubToolBarAction::SETUP_WIDGET(bool forceSpacer, Qt::Orientation orientation)
+{
+  _toolbar->clear();
+  for (int i = 0; i < _actions.size(); ++i)
+  {
+    _toolbar->addAction(_actions[i]);
+    if (i == _actions.size() - 1)
+    {
+      if (forceSpacer)
+      {
+        /* TODO: fix this spacer */
+
+        _toolbar->addAction(new SpacerAction(orientation));
+      }
+    }
+    else
+    {
+      _toolbar->addSeparator();
+    }
+  }
 }

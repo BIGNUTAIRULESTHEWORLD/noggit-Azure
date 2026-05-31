@@ -78,7 +78,7 @@ NoggitProjectCreationDialog::NoggitProjectCreationDialog(ProjectInformation& pro
                      std::filesystem::path game_path(project_information.game_client_path);
                      if (!std::filesystem::exists(game_path))
                      {
-                       QMessageBox::critical(this, "Error", "Game client path does not exist.");
+                       QMessageBox::critical(this, "Error", "Game client path does not exist. \nAvoid special characters.");
                        return;
                      }
 
@@ -89,6 +89,18 @@ NoggitProjectCreationDialog::NoggitProjectCreationDialog(ProjectInformation& pro
                      if (project_path.empty())
                      {
                        QMessageBox::critical(this, "Error", "Project path is empty.");
+                       return;
+                     }
+
+                     if (!std::filesystem::exists(project_path))
+                     {
+                       QMessageBox::critical(this, "Error", "Project path does not exist. \nAvoid special characters.");
+                       return;
+                     }
+
+                     if (project_path == project_path.root_path())
+                     {
+                       QMessageBox::critical(this, "Error", "Project path can't be the root of a drive.\nPoint to a folder, preferrably empty.");
                        return;
                      }
 

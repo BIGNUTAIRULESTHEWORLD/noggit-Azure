@@ -1,6 +1,7 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/Misc.h>
+#include <noggit/Model.h>
 #include <noggit/Particle.h>
 #include <opengl/context.hpp>
 #include <opengl/context.inl>
@@ -889,18 +890,23 @@ void RibbonEmitter::setup(int anim, int time, int animtime)
   // kill stuff from the end TODO: occasional crashes here
   float l = 0;
   bool erasemode = false;
-  for (std::list<RibbonSegment>::iterator it = segs.begin(); it != segs.end();) {
-    if (!erasemode) {
+  for (std::list<RibbonSegment>::iterator it = segs.begin(); it != segs.end();)
+  {
+    if (!erasemode)
+    {
       l += it->len;
-      if (l > length) {
-        it->len = l - length;
-        erasemode = true;
+      if (l > length)
+      {
+          it->len = l - length;
+          erasemode = true;
       }
+
+      ++it;
     }
-    else {
-      segs.erase(it);
+    else
+    {
+      it = segs.erase(it);
     }
-    ++it;
   }
 
   tpos = ntpos;

@@ -1,19 +1,19 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
+#include <ClientFile.hpp>
 #include <math/frustum.hpp>
-#include <noggit/AsyncLoader.h>
+#include <math/ray.hpp>
+#include <noggit/application/NoggitApplication.hpp>
 #include <noggit/Log.h> // LogDebug
+#include <noggit/Model.h>
+#include <noggit/ModelInstance.h>
 #include <noggit/ModelManager.h> // ModelManager
 #include <noggit/TextureManager.h> // TextureManager, Texture
 #include <noggit/WMO.h>
-#include <noggit/World.h>
-#include <noggit/rendering/Primitives.hpp>
-#include <noggit/application/NoggitApplication.hpp>
-#include <opengl/scoped.hpp>
+#include <noggit/wmo_liquid.hpp>
 
 #include <algorithm>
 #include <iomanip>
-#include <iostream>
 #include <map>
 #include <sstream>
 #include <string>
@@ -24,6 +24,10 @@ WMO::WMO(BlizzardArchive::Listfile::FileKey const& file_key, Noggit::NoggitRende
   : AsyncObject(file_key)
   , _context(context)
   , _renderer(this)
+{
+}
+
+WMO::~WMO()
 {
 }
 
@@ -131,7 +135,7 @@ void WMO::finishLoading ()
     f.read(&materials[i], sizeof(WMOMaterial));
 
     uint32_t shader = materials[i].shader;
-    bool use_second_texture = (shader == 6 || shader == 5 || shader == 3);
+    bool use_second_texture = (shader == 6 || shader == 5 || shader == 3 || shader == 21 || shader == 23);
 
     materials[i].texture1 = load_texture(materials[i].texture_offset_1);
     if (use_second_texture)
@@ -159,7 +163,7 @@ void WMO::finishLoading ()
   assert (fourcc == 'MOGI');
 
   groups.reserve(nGroups);
-  for (int i (0); i < nGroups; ++i) {
+  for (unsigned int i (0); i < nGroups; ++i) {
     groups.emplace_back (this, &f, i, groupnames);
   }
 
@@ -355,7 +359,7 @@ void WMO::waitForChildrenLoaded()
   }
 }
 
-std::vector<float> WMO::intersect (math::ray const& ray, bool do_exterior) const
+std::vector<float> WMO::intersect (math::ray const& ray, bool do_exterior, bool do_interior, bool first_occurence) const
 {
   std::vector<float> results;
 
@@ -367,14 +371,17 @@ std::vector<float> WMO::intersect (math::ray const& ray, bool do_exterior) const
   for (auto& group : groups)
   {
     if (!do_exterior && !group.is_indoor())
-          continue;
+      continue;
 
-    group.intersect (ray, &results);
+    else if (!do_interior && group.is_indoor())
+      continue;
+
+    group.intersect (ray, &results, first_occurence);
   }
 
   if (!do_exterior && results.size())
   {
-      // dirty way to find the furthest face and ignore invisible faces, cleaner way would be to do a direction check on faces
+      // dirty way to find the furthest face and ignore back culled(invisible) faces, cleaner way would be to do a direction check on faces
       // float max = *std::max_element(std::begin(results), std::end(results));
       // results.clear();
       // results.push_back(max);
@@ -389,8 +396,6 @@ std::vector<float> WMO::intersect (math::ray const& ray, bool do_exterior) const
 
   return results;
 }
-
-
 
 std::map<uint32_t, std::vector<wmo_doodad_instance>> WMO::doodads_per_group(uint16_t doodadset) const
 {
@@ -417,6 +422,39 @@ std::map<uint32_t, std::vector<wmo_doodad_instance>> WMO::doodads_per_group(uint
   }
 
   return doodads;
+}
+
+[[nodiscard]]
+bool WMO::is_hidden() const
+{
+  return _hidden;
+}
+
+void WMO::toggle_visibility()
+{
+  _hidden = !_hidden;
+}
+
+void WMO::show()
+{
+  _hidden = false;
+}
+
+void WMO::hide()
+{
+  _hidden = true;
+}
+
+[[nodiscard]]
+bool WMO::is_required_when_saving() const
+{
+  return true;
+}
+
+[[nodiscard]]
+Noggit::Rendering::WMORender* WMO::renderer()
+{
+  return &_renderer;
 }
 
 void WMOLight::init(BlizzardArchive::ClientFile* f)
@@ -639,7 +677,7 @@ void WMOGroup::load()
   }
 
   center = (VertexBoxMax + VertexBoxMin) * 0.5f;
-  rad = (VertexBoxMax - center).length () + 300.0f;;
+  rad = glm::distance(center, VertexBoxMax);
 
   f.seekRelative (size);
 
@@ -1052,7 +1090,7 @@ void WMOGroup::fix_vertex_color_alpha()
     {
       r += ((r * a / 64.f) - wmo_ambient_color.x);
       g += ((g * a / 64.f) - wmo_ambient_color.y);
-      r += ((b * a / 64.f) - wmo_ambient_color.z);
+      b += ((b * a / 64.f) - wmo_ambient_color.z);
     }
     else
     {
@@ -1080,22 +1118,66 @@ bool WMOGroup::is_visible( glm::mat4x4 const& transform
                          , display_mode display
                          ) const
 {
-    glm::vec3 pos = transform * glm::vec4(center, 0);
+   // glm::vec3 pos = transform * glm::vec4(center, 0);
+   // 
+    // glm::vec3 pos = transform[3] * glm::vec4(center, 1.0f);
+    // glm::vec3 test_pos = transform[3] + glm::vec4(center, 0);
+    // glm::vec3 test_pos2 = transform[3];
+
+
+    // TODO center is just the center of the group vertex box, and rad is distance from box max to center.
+    // to do operation on group we need to get its true position
+    // 
+    // adjusted group transform mat = 
+    glm::vec3 pos = transform *  glm::vec4(center, 1.0f);
+
+  float dist = display == display_mode::in_3D
+    ? glm::distance(pos, camera) - rad
+    : std::abs(pos.y - camera.y) - rad;
+
+  // Camera is within the bounding sphere, always draw
+  if (dist < 0)
+      return true;
+
+  float cull = cull_distance;
+
+  if (dist > cull_distance)
+      return false;
+
 
   if (!frustum.intersects(pos + BoundingBoxMin, pos + BoundingBoxMax))
   {
     return false;
   }
 
-  float dist = display == display_mode::in_3D
-    ? glm::distance(pos, camera) - rad
-    : std::abs(pos.y - camera.y) - rad;
-
-  return (dist < cull_distance);
+  return true;
 }
 
+[[nodiscard]]
+std::vector<uint16_t> WMOGroup::doodad_ref() const
+{
+  return _doodad_ref;
+}
 
-void WMOGroup::intersect (math::ray const& ray, std::vector<float>* results) const
+[[nodiscard]]
+bool WMOGroup::has_skybox() const
+{
+  return header.flags.skybox;
+}
+
+[[nodiscard]]
+bool WMOGroup::is_indoor() const
+{
+  return header.flags.indoor;
+}
+
+[[nodiscard]]
+Noggit::Rendering::WMOGroupRender* WMOGroup::renderer()
+{
+  return &_renderer;
+}
+
+void WMOGroup::intersect (math::ray const& ray, std::vector<float>* results, bool first_occurence) const
 {
   if (!ray.intersect_bounds (VertexBoxMin, VertexBoxMax))
   {
@@ -1105,7 +1187,7 @@ void WMOGroup::intersect (math::ray const& ray, std::vector<float>* results) con
   //! \todo Also allow clicking on doodads and liquids.
   for (auto&& batch : _batches)
   {
-    for (size_t i (batch.index_start); i < batch.index_start + batch.index_count; i += 3)
+    for (int i (batch.index_start); i < batch.index_start + batch.index_count; i += 3)
     {
       // TODO : only intersect visible triangles
       // TODO : option to only check collision
@@ -1117,6 +1199,8 @@ void WMOGroup::intersect (math::ray const& ray, std::vector<float>* results) con
          )
       {
         results->emplace_back (*distance);
+        if (first_occurence)
+          return;
       }
     }
   }
@@ -1202,4 +1286,29 @@ void WMOManager::unload_all(Noggit::NoggitRenderContext context)
         }
         , context
     );
+}
+
+bool wmo_triangle_material_info::isTransFace() const
+{
+  return flags.flag_0x01 && (flags.detail || flags.render);
+}
+
+bool wmo_triangle_material_info::isColor() const
+{
+  return !flags.collision;
+}
+
+bool wmo_triangle_material_info::isRenderFace() const
+{
+  return flags.render && !flags.detail;
+}
+
+bool wmo_triangle_material_info::isCollidable() const
+{
+  return flags.collision || isRenderFace();
+}
+
+bool wmo_triangle_material_info::isCollision() const
+{
+  return texture == 0xff;
 }
