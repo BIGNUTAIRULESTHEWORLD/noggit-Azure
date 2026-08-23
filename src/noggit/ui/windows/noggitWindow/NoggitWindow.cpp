@@ -13,6 +13,7 @@
 #include <noggit/ui/tools/UiCommon/StackedWidget.hpp>
 #include <noggit/ui/UidFixWindow.hpp>
 #include <noggit/ui/windows/about/About.h>
+#include <noggit/ui/windows/adtPorter/AdtPorterDialog.hpp>
 #include <noggit/ui/windows/noggitWindow/components/BuildMapListComponent.hpp>
 #include <noggit/ui/windows/noggitWindow/NoggitWindow.hpp>
 #include <noggit/ui/windows/noggitWindow/widgets/MapBookmarkListItem.hpp>
@@ -130,6 +131,23 @@ namespace Noggit::Ui::Windows
                        _settings->show();
                      }
     );
+
+    auto adt_porter_action(file_menu->addAction("ADT Porting Tool..."));
+    QObject::connect(adt_porter_action, &QAction::triggered, this, [this]
+    {
+      if (map_loaded)
+      {
+        QMessageBox::information(this, "ADT Porting Tool",
+          "Return to the map-selection screen before porting an ADT. This prevents the tool from "
+          "changing files that are currently open in the world editor.");
+        return;
+      }
+      auto* dialog = new AdtPorterDialog(_project, this);
+      dialog->setAttribute(Qt::WA_DeleteOnClose);
+      dialog->show();
+      dialog->raise();
+      dialog->activateWindow();
+    });
 
     auto about_action(file_menu->addAction("About"));
     QObject::connect(about_action, &QAction::triggered, [&]
