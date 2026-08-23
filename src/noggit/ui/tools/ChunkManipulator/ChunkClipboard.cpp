@@ -1577,12 +1577,7 @@ ChunkPasteResult ChunkClipboard::pasteSelection(glm::vec3 const& destination,
   MapChunk* pivot = _world->getChunkAt(destination);
   if (_map_view && !pivot)
     return result;
-  // In the viewport the cursor must resolve to a real chunk. Offline callers
-  // such as the ADT porter use the destination as a free rotation pivot, which
-  // may intentionally sit over an empty map square outside the rotated shape.
-  glm::vec2 const destination_pivot = pivot
-      ? glm::vec2{pivot->getCenter().x, pivot->getCenter().z}
-      : glm::vec2{destination.x, destination.z};
+  glm::vec2 const destination_pivot{pivot->getCenter().x, pivot->getCenter().z};
   // The reference mover guarantees that every destination ADT is loaded before
   // applying a cached chunk. Preview may remain limited to visible tiles, but a
   // real paste must never silently omit chunks at the loaded-area boundary.

@@ -106,22 +106,18 @@ void ActionManager::endAction()
   assert(_cur_action && "ActionStack Error: endAction() called with no action running.");
 
   _cur_action->finish();
-  Action* const completed_action = _cur_action;
-  bool const discard_action = completed_action->getFlags() & eDO_NOT_WRITE_HISTORY;
-  if (!discard_action)
+  if (!(_cur_action->getFlags() & eDO_NOT_WRITE_HISTORY))
   {
-    emit addedAction(completed_action);
+    emit addedAction(_cur_action);
   }
   else
   {
     _action_stack.pop_back();
   }
 
-  emit onActionEnd(completed_action);
+  emit onActionEnd(_cur_action);
   _cur_action = nullptr;
   emit currentActionChanged(_undo_index);
-  if (discard_action)
-    delete completed_action;
 }
 
 void ActionManager::endActionOnModalityMismatch(unsigned modality_controls)
@@ -135,11 +131,9 @@ void ActionManager::endActionOnModalityMismatch(unsigned modality_controls)
   if ((modality_controls & _cur_action->getModalityControllers()) != _cur_action->getModalityControllers())
   {
     _cur_action->finish();
-    Action* const completed_action = _cur_action;
-    bool const discard_action = completed_action->getFlags() & eDO_NOT_WRITE_HISTORY;
-    if (!discard_action)
+    if (!(_cur_action->getFlags() & eDO_NOT_WRITE_HISTORY))
     {
-      emit addedAction(completed_action);
+      emit addedAction(_cur_action);
     }
     else
     {
@@ -147,8 +141,6 @@ void ActionManager::endActionOnModalityMismatch(unsigned modality_controls)
     }
     _cur_action = nullptr;
     emit currentActionChanged(_undo_index);
-    if (discard_action)
-      delete completed_action;
   }
 }
 

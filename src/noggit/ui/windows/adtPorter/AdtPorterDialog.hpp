@@ -6,7 +6,6 @@
 class QComboBox;
 class QCheckBox;
 class QLabel;
-class QDoubleSpinBox;
 class QSlider;
 class World;
 
@@ -26,7 +25,6 @@ namespace Noggit::Ui::Windows
 
   private:
     void portAdt();
-    void portRotatedAdts();
     void updateSummary();
     void reloadSourceGrid();
     void reloadDestinationGrid();
@@ -35,7 +33,6 @@ namespace Noggit::Ui::Windows
     QComboBox* _source_map = nullptr;
     QComboBox* _destination_map = nullptr;
     QCheckBox* _same_map = nullptr;
-    QDoubleSpinBox* _rotation = nullptr;
     QSlider* _preview_opacity = nullptr;
     AdtGridWidget* _source_grid = nullptr;
     AdtGridWidget* _destination_grid = nullptr;

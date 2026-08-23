@@ -1,13 +1,10 @@
 #include "AdtPorterDialog.hpp"
 
 #include <noggit/MapHeaders.h>
-#include <noggit/MapTile.h>
-#include <noggit/Log.h>
 #include <noggit/database/ClientDatabase.h>
 #include <noggit/project/ApplicationProject.h>
 #include <noggit/uid_storage.hpp>
 #include <noggit/World.h>
-#include <noggit/ui/tools/ChunkManipulator/ChunkClipboard.hpp>
 
 #include <blizzard-archive-library/include/ClientData.hpp>
 #include <blizzard-archive-library/include/ClientFile.hpp>
@@ -18,7 +15,6 @@
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDir>
-#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -28,18 +24,14 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QPainterPath>
-#include <QProgressDialog>
 #include <QPushButton>
 #include <QSaveFile>
 #include <QSettings>
 #include <QSlider>
 #include <QVBoxLayout>
-#include <QtMath>
 
 #include <algorithm>
 #include <cstring>
-#include <limits>
 #include <functional>
 #include <set>
 #include <vector>
@@ -93,14 +85,13 @@ namespace Noggit::Ui::Windows
                       QPoint destination_anchor = {-1, -1},
                       std::set<QPoint, bool(*)(QPoint const&, QPoint const&)> source_tiles
                         = std::set<QPoint, bool(*)(QPoint const&, QPoint const&)>(pointLess),
-                      float rotation_degrees = 0.f, float opacity = .82f)
+                      float opacity = .82f)
     {
       _footprint = std::move(footprint);
       _overlay_image = std::move(source_image);
       _overlay_source_pivot = source_pivot;
       _overlay_destination_anchor = destination_anchor;
       _overlay_source_tiles = std::move(source_tiles);
-      _overlay_rotation_degrees = rotation_degrees;
       _overlay_opacity = opacity;
       update();
     }
@@ -132,7 +123,6 @@ namespace Noggit::Ui::Windows
         painter.setOpacity(_overlay_opacity);
         painter.translate((_overlay_destination_anchor.x() + .5f) * cell,
                           (_overlay_destination_anchor.y() + .5f) * cell);
-        painter.rotate(-_overlay_rotation_degrees);
         painter.translate(-_overlay_source_pivot.x() * cell,
                           -_overlay_source_pivot.y() * cell);
         for (QPoint const& source_tile : _overlay_source_tiles)
@@ -271,7 +261,6 @@ namespace Noggit::Ui::Windows
     std::set<QPoint, bool(*)(QPoint const&, QPoint const&)> _overlay_source_tiles{pointLess};
     QPointF _overlay_source_pivot{-1, -1};
     QPoint _overlay_destination_anchor{-1, -1};
-    float _overlay_rotation_degrees = 0.f;
     float _overlay_opacity = .82f;
     std::set<QPoint, bool(*)(QPoint const&, QPoint const&)> _selection{pointLess};
     std::set<QPoint, bool(*)(QPoint const&, QPoint const&)> _footprint{pointLess};
@@ -285,59 +274,6 @@ namespace Noggit::Ui::Windows
 
 namespace
 {
-  using TileSet = std::set<QPoint, bool(*)(QPoint const&, QPoint const&)>;
-
-  QPointF rotatePoint(QPointF value, float degrees)
-  {
-    float const radians = qDegreesToRadians(degrees);
-    float const cosine = std::cos(radians);
-    float const sine = std::sin(radians);
-    return {cosine * value.x() + sine * value.y(),
-            -sine * value.x() + cosine * value.y()};
-  }
-
-  TileSet rotatedFootprint(TileSet const& selection, QPointF const& source_center,
-                           QPoint const& destination_anchor, float degrees, bool& outside)
-  {
-    TileSet footprint = selection;
-    footprint.clear();
-    outside = false;
-    QPointF const destination_center(destination_anchor.x() + .5, destination_anchor.y() + .5);
-    for (QPoint const& source : selection)
-    {
-      QPolygonF polygon;
-      for (QPointF const& corner : {QPointF(source.x(), source.y()),
-                                    QPointF(source.x() + 1., source.y()),
-                                    QPointF(source.x() + 1., source.y() + 1.),
-                                    QPointF(source.x(), source.y() + 1.)})
-        polygon << destination_center + rotatePoint(corner - source_center, degrees);
-      QRectF const bounds = polygon.boundingRect();
-      outside |= bounds.left() < 0. || bounds.top() < 0.
-              || bounds.right() > 64. || bounds.bottom() > 64.;
-      QPainterPath polygon_path;
-      polygon_path.addPolygon(polygon);
-      int const min_x = std::max(0, static_cast<int>(std::floor(bounds.left())));
-      int const max_x = std::min(63, static_cast<int>(std::ceil(bounds.right()) - 1));
-      int const min_z = std::max(0, static_cast<int>(std::floor(bounds.top())));
-      int const max_z = std::min(63, static_cast<int>(std::ceil(bounds.bottom()) - 1));
-      for (int z = min_z; z <= max_z; ++z)
-        for (int x = min_x; x <= max_x; ++x)
-        {
-          QRectF const cell(x, z, 1., 1.);
-          if (polygon_path.intersects(cell) || polygon_path.contains(cell.center()))
-            footprint.insert({x, z});
-        }
-    }
-    return footprint;
-  }
-
-  struct MapChoice
-  {
-    int id = -1;
-    QString name;
-    QString directory;
-  };
-
   struct ChunkHeader
   {
     std::uint32_t magic;
@@ -376,24 +312,6 @@ namespace
       error = QString("Unable to write %1: %2").arg(path, file.errorString());
       return false;
     }
-    return true;
-  }
-
-  bool readDiskFile(QString const& path, std::vector<char>& bytes, QString& error)
-  {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly))
-    {
-      error = QString("Unable to read %1: %2").arg(path, file.errorString());
-      return false;
-    }
-    QByteArray const data = file.readAll();
-    if (file.error() != QFileDevice::NoError)
-    {
-      error = QString("Unable to read %1: %2").arg(path, file.errorString());
-      return false;
-    }
-    bytes.assign(data.constData(), data.constData() + data.size());
     return true;
   }
 
@@ -590,18 +508,10 @@ AdtPorterDialog::AdtPorterDialog(std::shared_ptr<Project::NoggitProject> project
   _same_map->setToolTip("Move the painted ADTs within the source map and clear their original tile flags.");
   root->addWidget(_same_map);
   auto* transform_controls = new QFormLayout();
-  _rotation = new QDoubleSpinBox(this);
-  _rotation->setRange(-359.9, 359.9);
-  _rotation->setDecimals(1);
-  _rotation->setSingleStep(1.0);
-  _rotation->setSuffix("°");
-  _rotation->setWrapping(true);
-  _rotation->setToolTip("Rotate the selected terrain clockwise by any angle around its center.");
-  transform_controls->addRow("Rotation", _rotation);
   _preview_opacity = new QSlider(Qt::Horizontal, this);
   _preview_opacity->setRange(10, 100);
   _preview_opacity->setValue(82);
-  _preview_opacity->setToolTip("Adjust the rotated terrain ghost over the destination map.");
+  _preview_opacity->setToolTip("Adjust the source terrain ghost over the destination map.");
   transform_controls->addRow("Preview opacity", _preview_opacity);
   root->addLayout(transform_controls);
   root->addLayout(maps);
@@ -657,8 +567,6 @@ AdtPorterDialog::AdtPorterDialog(std::shared_ptr<Project::NoggitProject> project
     }
     updateSummary();
   });
-  connect(_rotation, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
-          [this](double) { updateSummary(); });
   connect(_preview_opacity, &QSlider::valueChanged, this,
           [this](int) { updateSummary(); });
   _source_grid->changed = [this] { updateSummary(); };
@@ -697,28 +605,32 @@ void AdtPorterDialog::updateSummary()
   }
   QPoint const source_pivot(min_x + (max_x - min_x + 1) / 2,
                             min_z + (max_z - min_z + 1) / 2);
-  float const rotation = static_cast<float>(_rotation->value());
-  QPointF const source_center = std::abs(rotation) > .0001f
-    ? QPointF((min_x + max_x + 1) * .5, (min_z + max_z + 1) * .5)
-    : QPointF(source_pivot.x() + .5, source_pivot.y() + .5);
   int collisions = 0;
   bool outside = false;
-  footprint = rotatedFootprint(selection, source_center, anchor, rotation, outside);
-  for (QPoint const& target : footprint)
-    if (_destination_grid->occupied(target))
-      ++collisions;
+  for (QPoint const& source_tile : selection)
+  {
+    QPoint const target = anchor + source_tile - source_pivot;
+    if (target.x() < 0 || target.x() >= 64 || target.y() < 0 || target.y() >= 64)
+      outside = true;
+    else
+    {
+      footprint.insert(target);
+      if (_destination_grid->occupied(target))
+        ++collisions;
+    }
+  }
   _destination_grid->setFootprint(std::move(footprint), _source_grid->mapImage(),
-                                  source_center, anchor, selection, rotation,
+                                  QPointF(source_pivot.x() + .5, source_pivot.y() + .5),
+                                  anchor, selection,
                                   _preview_opacity->value() / 100.f);
-  _summary->setText(QString("%1 selected source ADT%2 from %3 → %4, centered at %5_%6 and rotated %7°. %8")
+  _summary->setText(QString("%1 selected source ADT%2 from %3 → %4, centered at %5_%6. %7")
       .arg(selection.size()).arg(selection.size() == 1 ? "" : "s")
       .arg(source.value("directory").toString(), destination.value("directory").toString())
       .arg(anchor.x()).arg(anchor.y())
-      .arg(rotation, 0, 'f', 1)
-      .arg(outside ? "The rotated terrain extends outside the map."
+      .arg(outside ? "The destination footprint extends outside the map."
                    : collisions ? QString("%1 existing destination ADT%2 will be modified.")
                                       .arg(collisions).arg(collisions == 1 ? "" : "s")
-                                : "The rotated destination footprint is empty."));
+                                : "The destination footprint is clear."));
 }
 
 void AdtPorterDialog::reloadSourceGrid()
@@ -791,346 +703,6 @@ void AdtPorterDialog::reloadDestinationGrid()
   updateSummary();
 }
 
-void AdtPorterDialog::portRotatedAdts()
-{
-  using namespace Noggit::Ui::Tools::ChunkManipulator;
-
-  QVariantMap const source = _source_map->currentData().toMap();
-  QVariantMap const destination = _destination_map->currentData().toMap();
-  QString const source_dir = source.value("directory").toString();
-  QString const destination_dir = destination.value("directory").toString();
-  int const destination_id = destination.value("id").toInt();
-  auto const& selection = _source_grid->selection();
-  QPoint const anchor = _destination_grid->anchor();
-  float const rotation = static_cast<float>(_rotation->value());
-  if (!_source_preview_world || !_destination_preview_world || selection.empty() || anchor.x() < 0)
-  {
-    _status->setText("Select source ADTs and a destination location first.");
-    return;
-  }
-
-  int min_x = 63;
-  int max_x = 0;
-  int min_z = 63;
-  int max_z = 0;
-  for (QPoint const& point : selection)
-  {
-    min_x = std::min(min_x, point.x());
-    max_x = std::max(max_x, point.x());
-    min_z = std::min(min_z, point.y());
-    max_z = std::max(max_z, point.y());
-  }
-  QPointF const source_center((min_x + max_x + 1) * .5,
-                              (min_z + max_z + 1) * .5);
-  bool outside = false;
-  TileSet const footprint = rotatedFootprint(selection, source_center, anchor, rotation, outside);
-  if (outside || footprint.empty())
-  {
-    _status->setText(outside ? "The rotated terrain extends outside the 64×64 map grid."
-                             : "The rotated terrain has no destination footprint.");
-    return;
-  }
-
-  QSettings settings;
-  if (settings.value("project/mysql/enabled", false).toBool())
-  {
-    _status->setText("This test build cannot safely update MySQL-backed UIDs. Disable MySQL UID "
-                     "storage before using arbitrary ADT rotation.");
-    return;
-  }
-  if (!uid_storage::hasMaxUIDStored(destination_id))
-  {
-    _status->setText("The destination map has no saved maximum UID. Open it once and complete the "
-                     "UID check before using arbitrary ADT rotation.");
-    return;
-  }
-  if (QMessageBox::warning(this, "Rotate and port ADTs",
-      QString("Rotate %1 selected source ADT%2 by %3° and reconstruct %4 destination ADT%5 in %6?\n\n"
-              "Terrain, textures, liquids, holes, shadows, ground effects, M2s, and WMOs inside the "
-              "rotated shape will be sampled into the destination. Existing data outside the shape "
-              "will be preserved. A backup will be created first. The destination WDL is not regenerated.")
-        .arg(selection.size()).arg(selection.size() == 1 ? "" : "s")
-        .arg(rotation, 0, 'f', 1).arg(footprint.size()).arg(footprint.size() == 1 ? "" : "s")
-        .arg(destination_dir),
-      QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
-    return;
-
-  QString error;
-  QString const destination_wdt = logicalWdtPath(destination_dir);
-  std::vector<char> wdt;
-  if (!readClientFile(_project, destination_wdt, wdt, error))
-  {
-    _status->setText(error);
-    return;
-  }
-  std::vector<char> const original_wdt = wdt;
-  for (QPoint const& tile : footprint)
-    if (!enableWdtTile(wdt, tile.x(), tile.y(), error))
-    {
-      _status->setText(error);
-      return;
-    }
-  bool const relocating_on_same_map = source_dir == destination_dir;
-  if (relocating_on_same_map)
-    for (QPoint const& tile : selection)
-      if (!footprint.contains(tile) && !disableWdtTile(wdt, tile.x(), tile.y(), error))
-      {
-        _status->setText(error);
-        return;
-      }
-
-  struct DestinationBackup
-  {
-    QPoint tile;
-    QString logical_path;
-    QString backup_path;
-    bool existed = false;
-  };
-
-  QString const stamp = QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
-  QString const backup_dir = QDir(QString::fromStdString(_project->ProjectPath))
-      .filePath(QString("noggit-backups/adt-rotate/%1").arg(stamp));
-  if (!QDir().mkpath(backup_dir)
-      || !writeFile(QDir(backup_dir).filePath("destination-original.wdt"), original_wdt, error))
-  {
-    _status->setText(error.isEmpty() ? "Unable to create the ADT rotation backup directory." : error);
-    return;
-  }
-
-  std::vector<DestinationBackup> backups;
-  backups.reserve(footprint.size());
-  for (QPoint const& tile : footprint)
-  {
-    DestinationBackup backup;
-    backup.tile = tile;
-    backup.logical_path = logicalAdtPath(destination_dir, tile.x(), tile.y());
-    backup.backup_path = QDir(backup_dir).filePath(
-        QString("destination-%1_%2-original.adt").arg(tile.x()).arg(tile.y()));
-    std::vector<char> original;
-    QString ignored;
-    backup.existed = readClientFile(_project, backup.logical_path, original, ignored);
-    if (backup.existed && !writeFile(backup.backup_path, original, error))
-    {
-      _status->setText(error);
-      return;
-    }
-    backups.emplace_back(std::move(backup));
-  }
-
-  QString const project_path = QString::fromStdString(_project->ProjectPath);
-  QString const destination_wdt_disk = diskPath(project_path, destination_wdt);
-  std::uint32_t const original_uid = uid_storage::getMaxUID(destination_id);
-  ChunkPasteResult result;
-  bool saved = false;
-  try
-  {
-    auto releaseLoadedData = [](World* world)
-    {
-      std::vector<TileIndex> loaded;
-      for (MapTile* tile : world->mapIndex.loaded_tiles())
-        loaded.push_back(tile->index);
-      for (TileIndex const& tile : loaded)
-        world->mapIndex.unloadTile(tile);
-      world->unload_every_model_and_wmo_instance();
-    };
-
-    ChunkPasteOptions options;
-    options.components = ChunkCopyFlags::TERRAIN | ChunkCopyFlags::LIQUID
-      | ChunkCopyFlags::WMOs | ChunkCopyFlags::MODELS | ChunkCopyFlags::SHADOWS
-      | ChunkCopyFlags::TEXTURES | ChunkCopyFlags::ALPHAMAPS | ChunkCopyFlags::VERTEX_COLORS
-      | ChunkCopyFlags::HOLES | ChunkCopyFlags::FLAGS | ChunkCopyFlags::AREA_ID
-      | ChunkCopyFlags::GROUND_EFFECTS | ChunkCopyFlags::GROUND_EFFECT_EXCLUSION;
-    options.rotation_degrees = rotation;
-    options.automatic_seams = false;
-    glm::vec3 const destination_position{
-      (static_cast<float>(anchor.x()) + .5f) * TILESIZE,
-      0.f,
-      (static_cast<float>(anchor.y()) + .5f) * TILESIZE};
-
-    int const progress_max = static_cast<int>(selection.size())
-                           * (relocating_on_same_map ? 2 : 1);
-    QProgressDialog progress("Preparing rotated ADTs...", QString(), 0, progress_max, this);
-    progress.setCancelButton(nullptr);
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(0);
-    progress.show();
-
-    auto captureTile = [&](ChunkClipboard& clipboard, QPoint const& tile)
-    {
-      for (unsigned chunk_x = 0; chunk_x < 16; ++chunk_x)
-        for (unsigned chunk_z = 0; chunk_z < 16; ++chunk_z)
-          clipboard.selectChunk(TileIndex(tile.x(), tile.y()), chunk_x, chunk_z,
-                                ChunkSelectionMode::SELECT);
-      if (!clipboard.copySelected())
-        throw std::runtime_error(QString("Unable to capture source ADT %1,%2.")
-                                   .arg(tile.x()).arg(tile.y()).toStdString());
-      clipboard.setSourcePivot({static_cast<float>(source_center.x()) * TILESIZE,
-                                static_cast<float>(source_center.y()) * TILESIZE});
-    };
-
-    auto ensureDestinationTiles = [&](QPoint const& source_tile)
-    {
-      TileSet source_tiles(selection.key_comp());
-      source_tiles.insert(source_tile);
-      bool outside = false;
-      TileSet const destination_tiles = rotatedFootprint(
-          source_tiles, source_center, anchor, rotation, outside);
-      if (outside)
-        throw std::runtime_error("A source ADT rotated outside the destination map grid.");
-      for (QPoint const& tile : destination_tiles)
-      {
-        TileIndex const index(tile.x(), tile.y());
-        if (!_destination_preview_world->mapIndex.hasTile(index))
-          _destination_preview_world->mapIndex.addTile(index);
-      }
-    };
-
-    auto applyClipboard = [&](ChunkClipboard& clipboard, QPoint const& source_tile)
-    {
-      ensureDestinationTiles(source_tile);
-      clipboard.setWorldForPaste(_destination_preview_world.get());
-      ChunkPasteResult const part = clipboard.pasteSelection(destination_position, options);
-      result.chunks_changed += part.chunks_changed;
-      result.objects_added += part.objects_added;
-      result.objects_removed += part.objects_removed;
-      result.textures_dropped += part.textures_dropped;
-      _destination_preview_world->mapIndex.saveChanged(_destination_preview_world.get());
-      releaseLoadedData(_destination_preview_world.get());
-      return part;
-    };
-
-    struct StagedAsset
-    {
-      QPoint source_tile;
-      QString path;
-    };
-    std::vector<StagedAsset> staged_assets;
-    staged_assets.reserve(selection.size());
-    int progress_value = 0;
-    if (relocating_on_same_map)
-    {
-      std::size_t staged = 0;
-      for (QPoint const& tile : selection)
-      {
-        QString const asset_path = QDir(backup_dir).filePath(
-            QString("source-%1_%2.nchk").arg(tile.x()).arg(tile.y()));
-        {
-          ChunkClipboard clipboard(_source_preview_world.get());
-          captureTile(clipboard, tile);
-          QString asset_error;
-          if (!clipboard.saveAsset(asset_path, &asset_error))
-            throw std::runtime_error(asset_error.toStdString());
-        }
-        releaseLoadedData(_source_preview_world.get());
-        staged_assets.push_back({tile, asset_path});
-        ++staged;
-        progress.setLabelText(QString("Staging source ADT %1 of %2...")
-                                .arg(staged).arg(selection.size()));
-        progress.setValue(++progress_value);
-        Log << "ADT rotation: staged source " << staged << "/" << selection.size()
-            << " (" << tile.x() << "," << tile.y() << ")" << std::endl;
-      }
-
-      std::size_t applied = 0;
-      for (StagedAsset const& asset : staged_assets)
-      {
-        ChunkClipboard clipboard(_destination_preview_world.get());
-        QString asset_error;
-        if (!clipboard.loadAsset(asset.path, &asset_error))
-          throw std::runtime_error(asset_error.toStdString());
-        ChunkPasteResult const part = applyClipboard(clipboard, asset.source_tile);
-        ++applied;
-        progress.setLabelText(QString("Applying staged ADT %1 of %2...")
-                                .arg(applied).arg(staged_assets.size()));
-        progress.setValue(++progress_value);
-        Log << "ADT rotation: applied source " << applied << "/" << staged_assets.size()
-            << " (" << part.chunks_changed << " destination chunks changed)" << std::endl;
-      }
-    }
-    else
-    {
-      std::size_t applied = 0;
-      for (QPoint const& tile : selection)
-      {
-        ChunkPasteResult part;
-        {
-          ChunkClipboard clipboard(_source_preview_world.get());
-          captureTile(clipboard, tile);
-          part = applyClipboard(clipboard, tile);
-        }
-        releaseLoadedData(_source_preview_world.get());
-        ++applied;
-        progress.setLabelText(QString("Rotating source ADT %1 of %2...")
-                                .arg(applied).arg(selection.size()));
-        progress.setValue(++progress_value);
-        Log << "ADT rotation: applied source " << applied << "/" << selection.size()
-            << " (" << tile.x() << "," << tile.y() << "; "
-            << part.chunks_changed << " destination chunks changed)" << std::endl;
-      }
-    }
-
-    for (StagedAsset const& asset : staged_assets)
-      QFile::remove(asset.path);
-    if (!result.chunks_changed)
-      throw std::runtime_error("The rotation sampler did not produce any destination chunks.");
-    if (!writeFile(destination_wdt_disk, wdt, error))
-      throw std::runtime_error(error.toStdString());
-    saved = true;
-  }
-  catch (std::exception const& exception)
-  {
-    error = exception.what();
-  }
-
-  if (!saved)
-  {
-    QString restore_error;
-    for (DestinationBackup const& backup : backups)
-    {
-      QString const path = diskPath(project_path, backup.logical_path);
-      if (backup.existed)
-      {
-        std::vector<char> original;
-        QString read_error;
-        if (readDiskFile(backup.backup_path, original, read_error))
-          writeFile(path, original, restore_error);
-        else if (restore_error.isEmpty())
-          restore_error = read_error;
-      }
-      else
-        QFile::remove(path);
-    }
-    writeFile(destination_wdt_disk, original_wdt, restore_error);
-    uid_storage::saveMaxUID(destination_id, original_uid);
-    QString const failure_message = error
-      + (restore_error.isEmpty() ? " The destination files were rolled back."
-                                 : " Rollback warning: " + restore_error)
-      + QString(" Backup: %1").arg(backup_dir);
-    _source_preview_world.reset();
-    _destination_preview_world.reset();
-    reloadSourceGrid();
-    reloadDestinationGrid();
-    _status->setStyleSheet("color: #d9534f;");
-    _status->setText(failure_message);
-    return;
-  }
-
-  QString const success_message = QString(
-      "Rotation complete: %1 source ADTs at %2° reconstructed %3 destination ADTs "
-      "(%4 chunks changed), added %5 objects, removed %6 objects%7. Backup: %8")
-      .arg(selection.size()).arg(rotation, 0, 'f', 1).arg(footprint.size())
-      .arg(result.chunks_changed).arg(result.objects_added).arg(result.objects_removed)
-      .arg(result.textures_dropped ? QString(", %1 excess texture layers dropped").arg(result.textures_dropped)
-                                   : QString())
-      .arg(backup_dir);
-  _source_preview_world.reset();
-  _destination_preview_world.reset();
-  reloadSourceGrid();
-  reloadDestinationGrid();
-  _status->setStyleSheet("color: #5cb85c;");
-  _status->setText(success_message);
-}
-
 void AdtPorterDialog::portAdt()
 {
   QVariantMap const source = _source_map->currentData().toMap();
@@ -1144,11 +716,6 @@ void AdtPorterDialog::portAdt()
   if (source_dir.isEmpty() || destination_dir.isEmpty() || selection.empty() || anchor.x() < 0)
   {
     _status->setText("Select source ADTs and a destination location first.");
-    return;
-  }
-  if (std::abs(_rotation->value()) > .0001)
-  {
-    portRotatedAdts();
     return;
   }
   int min_x = 63;
