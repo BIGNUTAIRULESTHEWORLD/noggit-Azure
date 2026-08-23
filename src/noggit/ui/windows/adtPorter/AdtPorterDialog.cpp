@@ -934,13 +934,6 @@ void AdtPorterDialog::portRotatedAdts()
       world->unload_every_model_and_wmo_instance();
     };
 
-    for (QPoint const& tile : footprint)
-    {
-      TileIndex const index(tile.x(), tile.y());
-      if (!_destination_preview_world->mapIndex.hasTile(index))
-        _destination_preview_world->mapIndex.addTile(index);
-    }
-
     ChunkPasteOptions options;
     options.components = ChunkCopyFlags::TERRAIN | ChunkCopyFlags::LIQUID
       | ChunkCopyFlags::WMOs | ChunkCopyFlags::MODELS | ChunkCopyFlags::SHADOWS
@@ -975,8 +968,26 @@ void AdtPorterDialog::portRotatedAdts()
                                 static_cast<float>(source_center.y()) * TILESIZE});
     };
 
-    auto applyClipboard = [&](ChunkClipboard& clipboard)
+    auto ensureDestinationTiles = [&](QPoint const& source_tile)
     {
+      TileSet source_tiles(selection.key_comp());
+      source_tiles.insert(source_tile);
+      bool outside = false;
+      TileSet const destination_tiles = rotatedFootprint(
+          source_tiles, source_center, anchor, rotation, outside);
+      if (outside)
+        throw std::runtime_error("A source ADT rotated outside the destination map grid.");
+      for (QPoint const& tile : destination_tiles)
+      {
+        TileIndex const index(tile.x(), tile.y());
+        if (!_destination_preview_world->mapIndex.hasTile(index))
+          _destination_preview_world->mapIndex.addTile(index);
+      }
+    };
+
+    auto applyClipboard = [&](ChunkClipboard& clipboard, QPoint const& source_tile)
+    {
+      ensureDestinationTiles(source_tile);
       clipboard.setWorldForPaste(_destination_preview_world.get());
       ChunkPasteResult const part = clipboard.pasteSelection(destination_position, options);
       result.chunks_changed += part.chunks_changed;
@@ -988,7 +999,12 @@ void AdtPorterDialog::portRotatedAdts()
       return part;
     };
 
-    std::vector<QString> staged_assets;
+    struct StagedAsset
+    {
+      QPoint source_tile;
+      QString path;
+    };
+    std::vector<StagedAsset> staged_assets;
     staged_assets.reserve(selection.size());
     int progress_value = 0;
     if (relocating_on_same_map)
@@ -1006,7 +1022,7 @@ void AdtPorterDialog::portRotatedAdts()
             throw std::runtime_error(asset_error.toStdString());
         }
         releaseLoadedData(_source_preview_world.get());
-        staged_assets.push_back(asset_path);
+        staged_assets.push_back({tile, asset_path});
         ++staged;
         progress.setLabelText(QString("Staging source ADT %1 of %2...")
                                 .arg(staged).arg(selection.size()));
@@ -1016,13 +1032,13 @@ void AdtPorterDialog::portRotatedAdts()
       }
 
       std::size_t applied = 0;
-      for (QString const& asset_path : staged_assets)
+      for (StagedAsset const& asset : staged_assets)
       {
         ChunkClipboard clipboard(_destination_preview_world.get());
         QString asset_error;
-        if (!clipboard.loadAsset(asset_path, &asset_error))
+        if (!clipboard.loadAsset(asset.path, &asset_error))
           throw std::runtime_error(asset_error.toStdString());
-        ChunkPasteResult const part = applyClipboard(clipboard);
+        ChunkPasteResult const part = applyClipboard(clipboard, asset.source_tile);
         ++applied;
         progress.setLabelText(QString("Applying staged ADT %1 of %2...")
                                 .arg(applied).arg(staged_assets.size()));
@@ -1040,7 +1056,7 @@ void AdtPorterDialog::portRotatedAdts()
         {
           ChunkClipboard clipboard(_source_preview_world.get());
           captureTile(clipboard, tile);
-          part = applyClipboard(clipboard);
+          part = applyClipboard(clipboard, tile);
         }
         releaseLoadedData(_source_preview_world.get());
         ++applied;
@@ -1053,8 +1069,8 @@ void AdtPorterDialog::portRotatedAdts()
       }
     }
 
-    for (QString const& asset_path : staged_assets)
-      QFile::remove(asset_path);
+    for (StagedAsset const& asset : staged_assets)
+      QFile::remove(asset.path);
     if (!result.chunks_changed)
       throw std::runtime_error("The rotation sampler did not produce any destination chunks.");
     if (!writeFile(destination_wdt_disk, wdt, error))
