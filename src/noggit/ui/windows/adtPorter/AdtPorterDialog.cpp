@@ -1,6 +1,8 @@
 #include "AdtPorterDialog.hpp"
 
 #include <noggit/MapHeaders.h>
+#include <noggit/MapTile.h>
+#include <noggit/Log.h>
 #include <noggit/database/ClientDatabase.h>
 #include <noggit/project/ApplicationProject.h>
 #include <noggit/uid_storage.hpp>
@@ -27,6 +29,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QSaveFile>
 #include <QSettings>
@@ -373,6 +376,24 @@ namespace
       error = QString("Unable to write %1: %2").arg(path, file.errorString());
       return false;
     }
+    return true;
+  }
+
+  bool readDiskFile(QString const& path, std::vector<char>& bytes, QString& error)
+  {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+      error = QString("Unable to read %1: %2").arg(path, file.errorString());
+      return false;
+    }
+    QByteArray const data = file.readAll();
+    if (file.error() != QFileDevice::NoError)
+    {
+      error = QString("Unable to read %1: %2").arg(path, file.errorString());
+      return false;
+    }
+    bytes.assign(data.constData(), data.constData() + data.size());
     return true;
   }
 
@@ -862,18 +883,9 @@ void AdtPorterDialog::portRotatedAdts()
   {
     QPoint tile;
     QString logical_path;
-    std::vector<char> original;
+    QString backup_path;
     bool existed = false;
   };
-  std::vector<DestinationBackup> backups;
-  backups.reserve(footprint.size());
-  for (QPoint const& tile : footprint)
-  {
-    DestinationBackup backup{tile, logicalAdtPath(destination_dir, tile.x(), tile.y())};
-    QString ignored;
-    backup.existed = readClientFile(_project, backup.logical_path, backup.original, ignored);
-    backups.emplace_back(std::move(backup));
-  }
 
   QString const stamp = QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
   QString const backup_dir = QDir(QString::fromStdString(_project->ProjectPath))
@@ -884,14 +896,26 @@ void AdtPorterDialog::portRotatedAdts()
     _status->setText(error.isEmpty() ? "Unable to create the ADT rotation backup directory." : error);
     return;
   }
-  for (DestinationBackup const& backup : backups)
-    if (backup.existed
-        && !writeFile(QDir(backup_dir).filePath(QString("destination-%1_%2-original.adt")
-              .arg(backup.tile.x()).arg(backup.tile.y())), backup.original, error))
+
+  std::vector<DestinationBackup> backups;
+  backups.reserve(footprint.size());
+  for (QPoint const& tile : footprint)
+  {
+    DestinationBackup backup;
+    backup.tile = tile;
+    backup.logical_path = logicalAdtPath(destination_dir, tile.x(), tile.y());
+    backup.backup_path = QDir(backup_dir).filePath(
+        QString("destination-%1_%2-original.adt").arg(tile.x()).arg(tile.y()));
+    std::vector<char> original;
+    QString ignored;
+    backup.existed = readClientFile(_project, backup.logical_path, original, ignored);
+    if (backup.existed && !writeFile(backup.backup_path, original, error))
     {
       _status->setText(error);
       return;
     }
+    backups.emplace_back(std::move(backup));
+  }
 
   QString const project_path = QString::fromStdString(_project->ProjectPath);
   QString const destination_wdt_disk = diskPath(project_path, destination_wdt);
@@ -900,16 +924,15 @@ void AdtPorterDialog::portRotatedAdts()
   bool saved = false;
   try
   {
-    ChunkClipboard clipboard(_source_preview_world.get());
-    for (QPoint const& tile : selection)
-      for (unsigned chunk_x = 0; chunk_x < 16; ++chunk_x)
-        for (unsigned chunk_z = 0; chunk_z < 16; ++chunk_z)
-          clipboard.selectChunk(TileIndex(tile.x(), tile.y()), chunk_x, chunk_z,
-                                ChunkSelectionMode::SELECT);
-    if (!clipboard.copySelected())
-      throw std::runtime_error("Unable to load the selected source ADTs into the rotation sampler.");
-    clipboard.setSourcePivot({static_cast<float>(source_center.x()) * TILESIZE,
-                              static_cast<float>(source_center.y()) * TILESIZE});
+    auto releaseLoadedData = [](World* world)
+    {
+      std::vector<TileIndex> loaded;
+      for (MapTile* tile : world->mapIndex.loaded_tiles())
+        loaded.push_back(tile->index);
+      for (TileIndex const& tile : loaded)
+        world->mapIndex.unloadTile(tile);
+      world->unload_every_model_and_wmo_instance();
+    };
 
     for (QPoint const& tile : footprint)
     {
@@ -918,7 +941,6 @@ void AdtPorterDialog::portRotatedAdts()
         _destination_preview_world->mapIndex.addTile(index);
     }
 
-    clipboard.setWorldForPaste(_destination_preview_world.get());
     ChunkPasteOptions options;
     options.components = ChunkCopyFlags::TERRAIN | ChunkCopyFlags::LIQUID
       | ChunkCopyFlags::WMOs | ChunkCopyFlags::MODELS | ChunkCopyFlags::SHADOWS
@@ -931,10 +953,110 @@ void AdtPorterDialog::portRotatedAdts()
       (static_cast<float>(anchor.x()) + .5f) * TILESIZE,
       0.f,
       (static_cast<float>(anchor.y()) + .5f) * TILESIZE};
-    result = clipboard.pasteSelection(destination_position, options);
+
+    int const progress_max = static_cast<int>(selection.size())
+                           * (relocating_on_same_map ? 2 : 1);
+    QProgressDialog progress("Preparing rotated ADTs...", QString(), 0, progress_max, this);
+    progress.setCancelButton(nullptr);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.show();
+
+    auto captureTile = [&](ChunkClipboard& clipboard, QPoint const& tile)
+    {
+      for (unsigned chunk_x = 0; chunk_x < 16; ++chunk_x)
+        for (unsigned chunk_z = 0; chunk_z < 16; ++chunk_z)
+          clipboard.selectChunk(TileIndex(tile.x(), tile.y()), chunk_x, chunk_z,
+                                ChunkSelectionMode::SELECT);
+      if (!clipboard.copySelected())
+        throw std::runtime_error(QString("Unable to capture source ADT %1,%2.")
+                                   .arg(tile.x()).arg(tile.y()).toStdString());
+      clipboard.setSourcePivot({static_cast<float>(source_center.x()) * TILESIZE,
+                                static_cast<float>(source_center.y()) * TILESIZE});
+    };
+
+    auto applyClipboard = [&](ChunkClipboard& clipboard)
+    {
+      clipboard.setWorldForPaste(_destination_preview_world.get());
+      ChunkPasteResult const part = clipboard.pasteSelection(destination_position, options);
+      result.chunks_changed += part.chunks_changed;
+      result.objects_added += part.objects_added;
+      result.objects_removed += part.objects_removed;
+      result.textures_dropped += part.textures_dropped;
+      _destination_preview_world->mapIndex.saveChanged(_destination_preview_world.get());
+      releaseLoadedData(_destination_preview_world.get());
+      return part;
+    };
+
+    std::vector<QString> staged_assets;
+    staged_assets.reserve(selection.size());
+    int progress_value = 0;
+    if (relocating_on_same_map)
+    {
+      std::size_t staged = 0;
+      for (QPoint const& tile : selection)
+      {
+        QString const asset_path = QDir(backup_dir).filePath(
+            QString("source-%1_%2.nchk").arg(tile.x()).arg(tile.y()));
+        {
+          ChunkClipboard clipboard(_source_preview_world.get());
+          captureTile(clipboard, tile);
+          QString asset_error;
+          if (!clipboard.saveAsset(asset_path, &asset_error))
+            throw std::runtime_error(asset_error.toStdString());
+        }
+        releaseLoadedData(_source_preview_world.get());
+        staged_assets.push_back(asset_path);
+        ++staged;
+        progress.setLabelText(QString("Staging source ADT %1 of %2...")
+                                .arg(staged).arg(selection.size()));
+        progress.setValue(++progress_value);
+        Log << "ADT rotation: staged source " << staged << "/" << selection.size()
+            << " (" << tile.x() << "," << tile.y() << ")" << std::endl;
+      }
+
+      std::size_t applied = 0;
+      for (QString const& asset_path : staged_assets)
+      {
+        ChunkClipboard clipboard(_destination_preview_world.get());
+        QString asset_error;
+        if (!clipboard.loadAsset(asset_path, &asset_error))
+          throw std::runtime_error(asset_error.toStdString());
+        ChunkPasteResult const part = applyClipboard(clipboard);
+        ++applied;
+        progress.setLabelText(QString("Applying staged ADT %1 of %2...")
+                                .arg(applied).arg(staged_assets.size()));
+        progress.setValue(++progress_value);
+        Log << "ADT rotation: applied source " << applied << "/" << staged_assets.size()
+            << " (" << part.chunks_changed << " destination chunks changed)" << std::endl;
+      }
+    }
+    else
+    {
+      std::size_t applied = 0;
+      for (QPoint const& tile : selection)
+      {
+        ChunkPasteResult part;
+        {
+          ChunkClipboard clipboard(_source_preview_world.get());
+          captureTile(clipboard, tile);
+          part = applyClipboard(clipboard);
+        }
+        releaseLoadedData(_source_preview_world.get());
+        ++applied;
+        progress.setLabelText(QString("Rotating source ADT %1 of %2...")
+                                .arg(applied).arg(selection.size()));
+        progress.setValue(++progress_value);
+        Log << "ADT rotation: applied source " << applied << "/" << selection.size()
+            << " (" << tile.x() << "," << tile.y() << "; "
+            << part.chunks_changed << " destination chunks changed)" << std::endl;
+      }
+    }
+
+    for (QString const& asset_path : staged_assets)
+      QFile::remove(asset_path);
     if (!result.chunks_changed)
       throw std::runtime_error("The rotation sampler did not produce any destination chunks.");
-    _destination_preview_world->mapIndex.saveChanged(_destination_preview_world.get());
     if (!writeFile(destination_wdt_disk, wdt, error))
       throw std::runtime_error(error.toStdString());
     saved = true;
@@ -951,7 +1073,14 @@ void AdtPorterDialog::portRotatedAdts()
     {
       QString const path = diskPath(project_path, backup.logical_path);
       if (backup.existed)
-        writeFile(path, backup.original, restore_error);
+      {
+        std::vector<char> original;
+        QString read_error;
+        if (readDiskFile(backup.backup_path, original, read_error))
+          writeFile(path, original, restore_error);
+        else if (restore_error.isEmpty())
+          restore_error = read_error;
+      }
       else
         QFile::remove(path);
     }
