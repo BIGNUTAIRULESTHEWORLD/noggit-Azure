@@ -34,6 +34,8 @@ public:
 
   static std::string getAreaFullName(int pAreaID);
   static std::uint32_t get_area_parent(int area_id);
+  // the area's parent zone id, or the area itself when it has no parent
+  static int resolve_zone_id(int area_id);
   static std::uint32_t get_new_areabit();
 };
 

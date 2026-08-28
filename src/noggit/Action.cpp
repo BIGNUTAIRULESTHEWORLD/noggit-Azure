@@ -1,13 +1,18 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include "Action.hpp"
+#include <noggit/ActionManager.hpp>
 #include <noggit/ChunkWater.hpp>
 #include <noggit/ContextObject.hpp>
+#include <noggit/DBC.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapView.h>
 #include <noggit/SceneObject.hpp>
+#include <noggit/Sky.h>
+#include <noggit/rendering/WorldRender.hpp>
 #include <noggit/texture_set.hpp>
 #include <noggit/World.h>
+#include <noggit/WMOInstance.h>
 
 #include <cstring>
 
@@ -194,9 +199,7 @@ void Noggit::Action::undo(bool redo)
     for (auto& pair : redo ? _chunk_liquid_post : _chunk_liquid_pre)
     {
       auto liquid_chunk = pair.first->liquid_chunk();
-      *liquid_chunk->getLayers() = pair.second;
-      liquid_chunk->update_layers();
-      liquid_chunk->tagUpdate();
+      liquid_chunk->restoreState(pair.second);
     }
   }
   if (_flags & ActionFlags::eVERTEX_SELECTION)
@@ -249,6 +252,50 @@ void Noggit::Action::undo(bool redo)
       }
     }
   }
+  if (_flags & ActionFlags::eSKY_TRANSFORMED)
+  {
+    auto& cache = redo ? _transformed_sky_post : _transformed_sky_pre;
+    auto& skies = _map_view->getWorld()->renderer()->skies();
+    for (auto const& entry : cache)
+    {
+      if (Sky* sky = skies->findSkyById(entry.id))
+      {
+        sky->pos = entry.pos;
+        sky->r1 = entry.inner_radius;
+        sky->r2 = entry.outer_radius;
+        sky->save_light_record();
+        _map_view->setDbcDirty(&gLightDB);
+      }
+    }
+    skies->force_update();
+    _map_view->invalidate();
+  }
+  if (_flags & ActionFlags::eSKY_ADDED)
+  {
+    auto& skies = _map_view->getWorld()->renderer()->skies();
+    for (Sky const& sky : _added_skies)
+    {
+      if (redo)
+        skies->restoreSky(sky);
+      else
+        skies->deleteSkyById(sky.Id);
+    }
+    _map_view->setDbcDirty(&gLightDB);
+    _map_view->invalidate();
+  }
+  if (_flags & ActionFlags::eSKY_REMOVED)
+  {
+    auto& skies = _map_view->getWorld()->renderer()->skies();
+    for (Sky const& sky : _removed_skies)
+    {
+      if (redo)
+        skies->deleteSkyById(sky.Id);
+      else
+        skies->restoreSky(sky);
+    }
+    _map_view->setDbcDirty(&gLightDB);
+    _map_view->invalidate();
+  }
 
 }
 
@@ -266,7 +313,12 @@ unsigned Noggit::Action::handleObjectAdded(unsigned uid, bool redo)
       unsigned old_uid = pair.first;
       SceneObject* obj;
       if (pair.second.type == ActionObjectTypes::WMO)
+      {
         obj = _map_view->getWorld()->addWMOAndGetInstance(pair.second.file_key, pair.second.pos, pair.second.dir, pair.second.scale, false);
+        auto* wmo = static_cast<WMOInstance*>(obj);
+        wmo->change_nameset(pair.second.wmo_nameset);
+        wmo->change_doodadset(pair.second.wmo_doodadset);
+      }
       else
         obj = _map_view->getWorld()->addM2AndGetInstance(pair.second.file_key, pair.second.pos,
                                                          pair.second.scale,  pair.second.dir, nullptr, false, false);
@@ -304,6 +356,8 @@ unsigned Noggit::Action::handleObjectAdded(unsigned uid, bool redo)
         }
       }
 
+      NOGGIT_ACTION_MGR->remapObjectUID(old_uid, new_uid, this);
+
     }
     else
     {
@@ -330,7 +384,12 @@ unsigned Noggit::Action::handleObjectRemoved(unsigned uid, bool redo)
       unsigned old_uid = pair.first;
       SceneObject* obj;
       if (pair.second.type == ActionObjectTypes::WMO)
+      {
         obj = _map_view->getWorld()->addWMOAndGetInstance(pair.second.file_key, pair.second.pos, pair.second.dir, pair.second.scale, false);
+        auto* wmo = static_cast<WMOInstance*>(obj);
+        wmo->change_nameset(pair.second.wmo_nameset);
+        wmo->change_doodadset(pair.second.wmo_doodadset);
+      }
       else
         obj = _map_view->getWorld()->addM2AndGetInstance(pair.second.file_key, pair.second.pos,
                                                          pair.second.scale,  pair.second.dir, nullptr, false, false);
@@ -367,6 +426,8 @@ unsigned Noggit::Action::handleObjectRemoved(unsigned uid, bool redo)
           break;
         }
       }
+
+      NOGGIT_ACTION_MGR->remapObjectUID(old_uid, new_uid, this);
 
     }
     else
@@ -405,6 +466,42 @@ unsigned Noggit::Action::handleObjectTransformed(unsigned uid, bool redo)
    }
 
    return -1;
+}
+
+void Noggit::Action::remapObjectUID(unsigned old_uid, unsigned new_uid)
+{
+  if (old_uid == new_uid)
+    return;
+
+  auto remap_cache = [old_uid, new_uid](auto& cache)
+  {
+    for (auto& entry : cache)
+      if (entry.first == old_uid)
+        entry.first = new_uid;
+  };
+
+  remap_cache(_added_objects_pre);
+  remap_cache(_removed_objects_pre);
+  remap_cache(_transformed_objects_pre);
+  remap_cache(_transformed_objects_post);
+
+  auto operations = _object_operations.find(old_uid);
+  if (operations == _object_operations.end())
+    return;
+
+  std::vector<unsigned> remapped_operations = std::move(operations->second);
+  _object_operations.erase(operations);
+  auto existing = _object_operations.find(new_uid);
+  if (existing == _object_operations.end())
+    _object_operations.emplace(new_uid, std::move(remapped_operations));
+  else
+  {
+    std::vector<unsigned> combined_operations(existing->second.begin(), existing->second.end());
+    combined_operations.insert(combined_operations.end(), remapped_operations.begin(),
+                               remapped_operations.end());
+    _object_operations.erase(existing);
+    _object_operations.emplace(new_uid, std::move(combined_operations));
+  }
 }
 
 void Noggit::Action::finish()
@@ -543,7 +640,7 @@ void Noggit::Action::finish()
       auto& post = _chunk_liquid_post.at(i);
       auto& pre = _chunk_liquid_pre.at(i);
       post.first = pre.first;
-      post.second = *pre.first->liquid_chunk()->getLayers();
+      post.second = pre.first->liquid_chunk()->getState();
     }
   }
   if (_flags & ActionFlags::eVERTEX_SELECTION)
@@ -580,6 +677,16 @@ void Noggit::Action::finish()
           post.second = trigger;
         }
       }
+    }
+  }
+  if (_flags & ActionFlags::eSKY_TRANSFORMED)
+  {
+    _transformed_sky_post.clear();
+    auto& skies = _map_view->getWorld()->renderer()->skies();
+    for (auto const& pre : _transformed_sky_pre)
+    {
+      if (Sky* sky = skies->findSkyById(pre.id))
+        _transformed_sky_post.push_back({ sky->Id, sky->pos, sky->r1, sky->r2 });
     }
   }
 
@@ -756,13 +863,14 @@ void Noggit::Action::registerObjectAdded(SceneObject* obj)
   _object_operations[obj->uid].emplace_back(ActionFlags::eOBJECTS_ADDED);
 
   ActionObjectTypes type = obj->which() == eWMO ? ActionObjectTypes::WMO : ActionObjectTypes::M2;
-  _added_objects_pre.emplace_back(std::make_pair(obj->uid,
-                                       ObjectInstanceCache{obj->instance_model()->file_key()
-                                                           , type
-                                                           , obj->pos
-                                                           , obj->dir
-                                                           , obj->scale}
-                                                           ));
+  ObjectInstanceCache cache{obj->instance_model()->file_key(), type, obj->pos, obj->dir, obj->scale};
+  if (type == ActionObjectTypes::WMO)
+  {
+    auto* wmo = static_cast<WMOInstance*>(obj);
+    cache.wmo_nameset = wmo->mNameset;
+    cache.wmo_doodadset = wmo->doodadset();
+  }
+  _added_objects_pre.emplace_back(std::make_pair(obj->uid, cache));
 }
 
 void Noggit::Action::registerObjectRemoved(SceneObject* obj)
@@ -778,13 +886,14 @@ void Noggit::Action::registerObjectRemoved(SceneObject* obj)
   _object_operations[obj->uid].emplace_back(ActionFlags::eOBJECTS_REMOVED);
 
   ActionObjectTypes type = obj->which() == eWMO ? ActionObjectTypes::WMO : ActionObjectTypes::M2;
-  _removed_objects_pre.emplace_back(std::make_pair(obj->uid,
-                                         ObjectInstanceCache{obj->instance_model()->file_key()
-                                                             , type
-                                                             , obj->pos
-                                                             , obj->dir
-                                                             , obj->scale}
-                                                             ));
+  ObjectInstanceCache cache{obj->instance_model()->file_key(), type, obj->pos, obj->dir, obj->scale};
+  if (type == ActionObjectTypes::WMO)
+  {
+    auto* wmo = static_cast<WMOInstance*>(obj);
+    cache.wmo_nameset = wmo->mNameset;
+    cache.wmo_doodadset = wmo->doodadset();
+  }
+  _removed_objects_pre.emplace_back(std::make_pair(obj->uid, cache));
 }
 
 void Noggit::Action::registerChunkHoleChange(MapChunk* chunk)
@@ -832,7 +941,7 @@ void Noggit::Action::registerChunkLiquidChange(MapChunk* chunk)
     if (pair.first == chunk)
       return;
   }
-  _chunk_liquid_pre.emplace_back(std::make_pair(chunk, *chunk->liquid_chunk()->getLayers()));
+  _chunk_liquid_pre.emplace_back(std::make_pair(chunk, chunk->liquid_chunk()->getState()));
 }
 
 void Noggit::Action::registerVertexSelectionChange()
@@ -916,6 +1025,36 @@ void Noggit::Action::registerAreaTriggerTransformed(area_trigger* trigger)
   }
 
   _transformed_area_trigger_pre.emplace_back(trigger->id, *trigger);
+}
+
+void Noggit::Action::registerSkyTransformed(Sky* sky)
+{
+  _flags |= ActionFlags::eSKY_TRANSFORMED;
+  for (auto const& entry : _transformed_sky_pre)
+  {
+    if (entry.id == sky->Id)
+      return;
+  }
+
+  _transformed_sky_pre.push_back({ sky->Id, sky->pos, sky->r1, sky->r2 });
+}
+
+void Noggit::Action::registerSkyAdded(Sky* sky)
+{
+  if (!sky)
+    return;
+
+  _flags |= ActionFlags::eSKY_ADDED;
+  _added_skies.push_back(*sky);
+}
+
+void Noggit::Action::registerSkyRemoved(Sky* sky)
+{
+  if (!sky)
+    return;
+
+  _flags |= ActionFlags::eSKY_REMOVED;
+  _removed_skies.push_back(*sky);
 }
 
 Noggit::Action::~Action()

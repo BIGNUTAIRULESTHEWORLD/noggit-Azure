@@ -173,6 +173,10 @@ public:
 
   void updateEmitters(float dt);
 
+  // The M2 loaded but its companion .skin did not, so no mesh can be drawn.
+  [[nodiscard]]
+  bool skin_load_failed() const { return _skin_load_failed; }
+
   void finishLoading() override;
   void waitForChildrenLoaded() override;
 
@@ -197,6 +201,12 @@ public:
 
   [[nodiscard]]
   Noggit::Rendering::ModelRender* renderer();
+
+  // read access for the detail doodad batch builder
+  std::vector<ModelVertex> const& vertexData() const { return _vertices; }
+  std::vector<uint16_t> const& indexData() const { return _indices; }
+  std::vector<scoped_blp_texture_reference> const& textureRefs() const { return _textures; }
+  std::vector<uint16_t> const& textureLookup() const { return _texture_lookup; }
 
   uint32_t get_anim_lenght(int16_t anim_id);
 
@@ -324,6 +334,7 @@ private:
   Noggit::Rendering::ModelRender _renderer;
 
   bool _hidden = false;
+  bool _skin_load_failed = false;
 
 };
 

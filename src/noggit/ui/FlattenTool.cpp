@@ -19,6 +19,8 @@
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSlider>
 
+#include <cmath>
+
 namespace Noggit
 {
   namespace Ui
@@ -307,7 +309,6 @@ namespace Noggit
       // store the ground height diff at center of all objects hit before editing it
       std::vector<std::pair<SceneObject*, float>> objects_ground_distance = world->getObjectsGroundDistance(cursor_pos, _radius_slider->value()
           , _snap_wmo_objects_chkbox->isChecked(), _snap_m2_objects_chkbox->isChecked());
-
 
       world->blurTerrain ( cursor_pos
                          , 1.f - pow (0.5f, dt * _speed_slider->value())

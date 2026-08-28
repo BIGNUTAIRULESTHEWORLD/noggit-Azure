@@ -70,15 +70,15 @@ AssetBrowserWidget::AssetBrowserWidget(MapView* map_view, QWidget *parent)
   connect(ui->comboBox_BrowseMode, qOverload<int>(&QComboBox::currentIndexChanged)
       , [this](int index)
       {
-          asset_browse_mode mode = brosweModeLabels[ui->comboBox_BrowseMode->currentText()];
-
-          set_browse_mode(mode);
+          auto const mode = brosweModeLabels.constFind(ui->comboBox_BrowseMode->itemText(index));
+          if (mode != brosweModeLabels.cend())
+            set_browse_mode(mode.value());
       }
   );
 
   _model = new QStandardItemModel(this);
   // _sort_model = new QSortFilterProxyModel(this);
-  _sort_model = new NoggitExpendableFilterProxyModel;
+  _sort_model = new NoggitExpendableFilterProxyModel(this);
   _sort_model->setFilterCaseSensitivity(Qt::CaseInsensitive);
   _sort_model->setFilterRole(Qt::UserRole);
   _sort_model->setRecursiveFilteringEnabled(true);
@@ -152,7 +152,7 @@ AssetBrowserWidget::AssetBrowserWidget(MapView* map_view, QWidget *parent)
             for (auto const& index : selected.indexes())
             {
               auto path = index.data(Qt::UserRole).toString();
-              if (path.endsWith(".m2") || path.endsWith(".wmo"))
+              if (path.endsWith(".m2", Qt::CaseInsensitive) || path.endsWith(".wmo", Qt::CaseInsensitive))
               {
                 auto str_path = path.toStdString();
 
@@ -196,7 +196,7 @@ AssetBrowserWidget::AssetBrowserWidget(MapView* map_view, QWidget *parent)
           auto child = _sort_model->index(i, 0, index);
           // auto child = index.child(i, 0);
           auto path = child.data(Qt::UserRole).toString();
-          if (path.endsWith(".wmo") || path.endsWith(".m2"))
+          if (path.endsWith(".wmo", Qt::CaseInsensitive) || path.endsWith(".m2", Qt::CaseInsensitive))
           {
             try
             {
@@ -204,9 +204,12 @@ AssetBrowserWidget::AssetBrowserWidget(MapView* map_view, QWidget *parent)
 
               auto preview_pixmap = _preview_renderer->renderToPixmap();
               auto item = _model->itemFromIndex(_sort_model->mapToSource(child));
-              item->setIcon(QIcon(*preview_pixmap));
-              item->setDragEnabled(true);
-              item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+              if (item)
+              {
+                item->setIcon(QIcon(*preview_pixmap));
+                item->setDragEnabled(true);
+                item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+              }
             }
             catch (std::exception const& e)
             {
@@ -359,56 +362,56 @@ bool AssetBrowserWidget::validateBrowseMode(const QString& wow_file_path)
     case asset_browse_mode::detail_doodads:
     {
         if (wow_file_path.startsWith("world/nodxt/detail/", Qt::CaseInsensitive) 
-            && wow_file_path.endsWith(".m2"))
+            && wow_file_path.endsWith(".m2", Qt::CaseInsensitive))
             return true;
         return false;
     }
     case asset_browse_mode::skybox:
     {
         if (wow_file_path.startsWith("environments/stars", Qt::CaseInsensitive)
-            && wow_file_path.endsWith(".m2"))
+            && wow_file_path.endsWith(".m2", Qt::CaseInsensitive))
             return true;
         return false;
     }
     case asset_browse_mode::creatures:
     {
         if (wow_file_path.startsWith("creature", Qt::CaseInsensitive)
-            && wow_file_path.endsWith(".m2"))
+            && wow_file_path.endsWith(".m2", Qt::CaseInsensitive))
             return true;
         return false;
     }
     case asset_browse_mode::characters:
     {
         if (wow_file_path.startsWith("character", Qt::CaseInsensitive)
-            && wow_file_path.endsWith(".m2"))
+            && wow_file_path.endsWith(".m2", Qt::CaseInsensitive))
             return true;
         return false;
     }
     case asset_browse_mode::particles:
     {
         if (wow_file_path.startsWith("particles", Qt::CaseInsensitive)
-            && wow_file_path.endsWith(".m2"))
+            && wow_file_path.endsWith(".m2", Qt::CaseInsensitive))
             return true;
         return false;
     }
     case asset_browse_mode::cameras:
     {
         if (wow_file_path.startsWith("cameras", Qt::CaseInsensitive)
-            && wow_file_path.endsWith(".m2"))
+            && wow_file_path.endsWith(".m2", Qt::CaseInsensitive))
             return true;
         return false;
     }
     case asset_browse_mode::items:
     {
         if (wow_file_path.startsWith("item", Qt::CaseInsensitive)
-            && wow_file_path.endsWith(".m2"))
+            && wow_file_path.endsWith(".m2", Qt::CaseInsensitive))
             return true;
         return false;
     }
     case asset_browse_mode::spells:
     {
         if (wow_file_path.startsWith("SPELLS", Qt::CaseInsensitive)
-            && wow_file_path.endsWith(".m2"))
+            && wow_file_path.endsWith(".m2", Qt::CaseInsensitive))
             return true;
         return false;
     }
@@ -418,7 +421,8 @@ bool AssetBrowserWidget::validateBrowseMode(const QString& wow_file_path)
 }
 
 // Add WMOs and M2s from project directory recursively
-void AssetBrowserWidget::recurseDirectory(Model::TreeManager& tree_mgr, const QString& s_dir, const QString& project_dir)
+void AssetBrowserWidget::recurseDirectory(Model::TreeManager& tree_mgr, const QString& s_dir,
+                                          const QString& project_dir, QSet<QString>* flat_paths)
 {
   QDir dir(s_dir);
   QFileInfoList list = dir.entryInfoList();
@@ -431,13 +435,13 @@ void AssetBrowserWidget::recurseDirectory(Model::TreeManager& tree_mgr, const QS
     {
       if (info.fileName() != ".." && info.fileName() != ".")
       {
-        recurseDirectory(tree_mgr, q_path, project_dir);
+        recurseDirectory(tree_mgr, q_path, project_dir, flat_paths);
       }
     }
     else
     {
-      if (!((q_path.endsWith(".wmo") && !_wmo_group_and_lod_regex.match(q_path).hasMatch())
-      || q_path.endsWith(".m2")))
+      if (!((q_path.endsWith(".wmo", Qt::CaseInsensitive) && !_wmo_group_and_lod_regex.match(q_path).hasMatch())
+      || q_path.endsWith(".m2", Qt::CaseInsensitive)))
         continue;
 
       QString rel_path = QDir(project_dir).relativeFilePath(q_path.toStdString().c_str());
@@ -445,39 +449,74 @@ void AssetBrowserWidget::recurseDirectory(Model::TreeManager& tree_mgr, const QS
       if (!validateBrowseMode(rel_path))
           continue;
 
-      tree_mgr.addItem(rel_path);
+      rel_path.replace('\\', '/');
+      if (flat_paths)
+      {
+        QString const key = rel_path.toLower();
+        if (flat_paths->contains(key))
+          continue;
+        flat_paths->insert(key);
+        auto* item = new QStandardItem(rel_path);
+        item->setData(rel_path, Qt::UserRole);
+        item->setEditable(false);
+        _model->appendRow(item);
+      }
+      else
+      {
+        tree_mgr.addItem(rel_path);
+      }
     }
   }
 }
 
 void AssetBrowserWidget::updateModelData()
 {
+  ui->listfileTree->setUpdatesEnabled(false);
+  _sort_model->setDynamicSortFilter(false);
   _model->clear();
   Model::TreeManager tree_mgr =  Model::TreeManager(_model);
+  QSet<QString> flat_paths;
   for (auto const& key_pair : Noggit::Application::NoggitApplication::instance()->clientData()->listfile()->pathToFileDataIDMap())
   {
     // std::string const& filename = key_pair.first;
 
     QString const q_path = QString(key_pair.first.c_str());
 
-    if (!( (ui->checkBox_WMOs->isChecked() && q_path.endsWith(".wmo")  && !_wmo_group_and_lod_regex.match(q_path).hasMatch())
-        || (ui->checkBox_M2s->isChecked() && q_path.endsWith(".m2")) 
+    if (!( (ui->checkBox_WMOs->isChecked() && q_path.endsWith(".wmo", Qt::CaseInsensitive)  && !_wmo_group_and_lod_regex.match(q_path).hasMatch())
+        || (ui->checkBox_M2s->isChecked() && q_path.endsWith(".m2", Qt::CaseInsensitive))
         ))
       continue;
 
     if (!validateBrowseMode(q_path))
         continue;
 
-    tree_mgr.addItem(q_path);
+    if (_browse_mode == asset_browse_mode::ALL)
+    {
+      QString const key = q_path.toLower();
+      if (flat_paths.contains(key))
+        continue;
+      flat_paths.insert(key);
+      auto* item = new QStandardItem(q_path);
+      item->setData(q_path, Qt::UserRole);
+      item->setEditable(false);
+      _model->appendRow(item);
+    }
+    else
+    {
+      tree_mgr.addItem(q_path);
+    }
   }
 
 
   QSettings settings;
   QString project_dir = QString(Noggit::Project::CurrentProject::get()->ProjectPath.c_str());
-  recurseDirectory(tree_mgr, project_dir, project_dir);
+  recurseDirectory(tree_mgr, project_dir, project_dir,
+                   _browse_mode == asset_browse_mode::ALL ? &flat_paths : nullptr);
 
   _sort_model->setSortRole(Qt::UserRole);
   _sort_model->sort(0, Qt::AscendingOrder);
+  _sort_model->setDynamicSortFilter(true);
+  ui->listfileTree->setUpdatesEnabled(true);
 
   // TODO : set default layout(base folder) for the modes
   if (_browse_mode != asset_browse_mode::ALL)

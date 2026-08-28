@@ -6,6 +6,7 @@
 #include <noggit/ActionManager.hpp>
 #include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
 #include <noggit/application/NoggitApplication.hpp>
+#include <noggit/BoolToggleProperty.hpp>
 #include <noggit/MapView.h>
 #include <noggit/ModelInstance.h>
 #include <noggit/Selection.h>
@@ -213,7 +214,8 @@ namespace Noggit
                     {
                       NOGGIT_ACTION_MGR->beginAction(reinterpret_cast<MapView*>(parent),
                                                                      Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
-                      world->scale_selected_models(_scale->value(), World::object_scaling_type::mult);
+                      world->scale_selected_models(_scale->value(), World::object_scaling_type::mult,
+                                                   scale_around_pivot_point && scale_around_pivot_point->get());
                       NOGGIT_ACTION_MGR->endAction();
                     }
                     else // reset value
@@ -342,7 +344,7 @@ namespace Noggit
           ( math::degrees(_rotation_x->value())
           , math::degrees(_rotation_y->value())
           , math::degrees(_rotation_z->value())
-          , *use_median_pivot_point
+          , use_median_pivot_point && use_median_pivot_point->get()
           );
       }
     }

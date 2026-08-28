@@ -4,6 +4,7 @@
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/MapHeaders.h>
 #include <noggit/MapTile.h>
+#include <noggit/MissingObjectPlaceholder.hpp>
 #include <noggit/ModelInstance.h>
 #include <noggit/rendering/Primitives.hpp>
 #include <noggit/scoped_blp_texture_reference.hpp>
@@ -86,11 +87,17 @@ WMOInstance::WMOInstance(WMOInstance&& other) noexcept
   pos = other.pos;
   scale = other.scale;
   dir = other.dir;
+  frame = other.frame;
+  _rendered_last_frame = other._rendered_last_frame;
+  _grouped = other._grouped;
+  chunk_mover_preview = other.chunk_mover_preview;
   _context = other._context;
   uid = other.uid;
 
+  bounding_radius = other.bounding_radius;
   _transform_mat = other._transform_mat;
   _transform_mat_inverted = other._transform_mat_inverted;
+  _tiles = std::move(other._tiles);
 }
 
 WMOInstance& WMOInstance::operator= (WMOInstance&& other) noexcept
@@ -102,6 +109,10 @@ WMOInstance& WMOInstance::operator= (WMOInstance&& other) noexcept
   std::swap(dir, other.dir);
   std::swap(uid, other.uid);
   std::swap(scale, other.scale);
+  std::swap(frame, other.frame);
+  std::swap(_rendered_last_frame, other._rendered_last_frame);
+  std::swap(_grouped, other._grouped);
+  std::swap(chunk_mover_preview, other.chunk_mover_preview);
   std::swap(mFlags, other.mFlags);
   std::swap(mNameset, other.mNameset);
   std::swap(_doodadset, other._doodadset);
@@ -109,7 +120,9 @@ WMOInstance& WMOInstance::operator= (WMOInstance&& other) noexcept
   std::swap(_need_doodadset_update, other._need_doodadset_update);
   std::swap(_transform_mat, other._transform_mat);
   std::swap(_transform_mat_inverted, other._transform_mat_inverted);
+  std::swap(bounding_radius, other.bounding_radius);
   std::swap(_context, other._context);
+  std::swap(_tiles, other._tiles);
   std::swap(_need_recalc_extents, other._need_recalc_extents);
   std::swap(_update_group_extents, other._update_group_extents);
   // std::swap(hasLowResModel, other.hasLowResModel);
@@ -236,8 +249,26 @@ void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
 
 void WMOInstance::intersect (math::ray const& ray, selection_result* results, bool do_exterior, bool do_interior, bool first_occurence)
 {
-  if (!finishedLoading() || wmo->loading_failed())
+  if (chunk_mover_preview)
     return;
+  if (!finishedLoading())
+    return;
+
+  if (wmo->loading_failed())
+  {
+    auto const& bounds = getExtents();
+    glm::vec3 const radius{Noggit::MissingObjectPlaceholder::wmo_display_scale};
+    glm::vec3 const min = Noggit::MissingObjectPlaceholder::valid_bounds(bounds[0], bounds[1])
+        ? bounds[0]
+        : pos - radius;
+    glm::vec3 const max = Noggit::MissingObjectPlaceholder::valid_bounds(bounds[0], bounds[1])
+        ? bounds[1]
+        : pos + radius;
+
+    if (auto const distance = ray.intersect_bounds(min, max); distance && *distance >= 0.0f)
+      results->emplace_back(*distance, this);
+    return;
+  }
 
   ensureExtents();
 
@@ -307,8 +338,14 @@ void WMOInstance::updateDetails(Noggit::Ui::detail_infos* detail_widget)
     // << "<br><b>FileDataID: </b>" << wmo->file_key().fileDataID() not in wrath
     << "<br><b>unique ID: </b>" << uid
     << "<br><b>position X/Y/Z: </b>{" << pos.x << ", " << pos.y << ", " << pos.z << "}"
-    << "<br><b>rotation X/Y/Z: </b>{" << dir.x << ", " << dir.y << ", " << dir.z << "}"
-    << "<br><b>WMO Id: </b>" << wmo->WmoId
+    << "<br><b>rotation X/Y/Z: </b>{" << dir.x << ", " << dir.y << ", " << dir.z << "}";
+
+  if (wmo->loading_failed())
+    select_info << "<br><font color=\"Red\"><b>load error:</b> displaying spells/unitcube.m2</font>";
+  else
+    select_info << "<br><b>WMO Id: </b>" << wmo->WmoId;
+
+  select_info
     << "<br><b>doodad set: </b>" << doodadset()
     << "<br><b>name set: </b>" << mNameset
 
@@ -359,7 +396,13 @@ void WMOInstance::recalcExtents()
 
   if (wmo->loading_failed())
   {
-      extents[0] = extents[1] = pos;
+      // MODF stores WMO extents, so retain the last saved box when the WMO
+      // itself is unavailable. Collapsing it here would corrupt that box and
+      // the chunk references produced from it on save.
+      if (Noggit::MissingObjectPlaceholder::valid_bounds(extents[0], extents[1]))
+        bounding_radius = glm::distance(extents[1], extents[0]) * 0.5f;
+      else
+        bounding_radius = Noggit::MissingObjectPlaceholder::wmo_display_scale;
       _need_recalc_extents = false;
       return;
   }

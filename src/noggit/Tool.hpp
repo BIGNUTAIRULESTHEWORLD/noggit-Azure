@@ -158,6 +158,9 @@ namespace Noggit
         virtual bool useMultiselectionPivot() const;
 
         [[nodiscard]]
+        virtual bool scaleMultiselectionAroundPivot() const;
+
+        [[nodiscard]]
         virtual bool useMedianPivotPoint() const;
 
         // will be called whenever this tool gets selected by the user

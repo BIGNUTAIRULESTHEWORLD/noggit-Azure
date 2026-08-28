@@ -8,8 +8,10 @@
 #include <string>
 #include <external/tsl/robin_map.h>
 #include <noggit/area_trigger.hpp>
+#include <noggit/Sky.h>
 #include <noggit/texture_set.hpp>
 #include <noggit/liquid_layer.hpp>
+#include <noggit/ChunkWater.hpp>
 #include <QObject>
 
 #include <functional>
@@ -40,6 +42,9 @@ namespace Noggit
         eCHUNK_DOODADS_EXCLUSION  = 0x2000, // ground effects exclusion mapping
         eCHUNKS_LAYERINFO         = 0x4000, // ground effect id and texture flags
         eAREA_TRIGGER_TRANSFORMED = 0x8000,
+        eSKY_TRANSFORMED          = 0x10000,
+        eSKY_ADDED                = 0x20000,
+        eSKY_REMOVED              = 0x40000,
     };
 
     enum ActionModalityControllers
@@ -81,6 +86,16 @@ namespace Noggit
       glm::vec3 pos;
       math::degrees::vec3 dir;
       float scale;
+      uint16_t wmo_nameset = 0;
+      uint16_t wmo_doodadset = 0;
+    };
+
+    struct SkyTransformCache
+    {
+      int id;
+      glm::vec3 pos;
+      float inner_radius;
+      float outer_radius;
     };
 
     struct VertexSelectionCache
@@ -109,6 +124,7 @@ namespace Noggit
         unsigned handleObjectAdded(unsigned uid, bool redo);
         unsigned handleObjectRemoved(unsigned uid, bool redo);
         unsigned handleObjectTransformed(unsigned uid, bool redo);
+        void remapObjectUID(unsigned old_uid, unsigned new_uid);
         void setDelta(float delta);
         float getDelta() const;
         void setBlockCursor(bool state);
@@ -139,6 +155,9 @@ namespace Noggit
         void registerChunkDetailDoodadExclusionChange(MapChunk* chunk);
         void registerAllChunkChanges(MapChunk* chunk);
         void registerAreaTriggerTransformed(area_trigger* trigger);
+        void registerSkyTransformed(Sky* sky);
+        void registerSkyAdded(Sky* sky);
+        void registerSkyRemoved(Sky* sky);
 
 
     private:
@@ -170,10 +189,14 @@ namespace Noggit
         std::vector<std::pair<MapChunk*, std::array<std::uint8_t, 8>>> _chunk_detaildoodad_exclusion_post;
         std::vector<std::pair<MapChunk*, mcnk_flags>> _chunk_flags_pre;
         std::vector<std::pair<MapChunk*, mcnk_flags>> _chunk_flags_post;
-        std::vector<std::pair<MapChunk*, std::vector<liquid_layer>>> _chunk_liquid_pre;
-        std::vector<std::pair<MapChunk*, std::vector<liquid_layer>>> _chunk_liquid_post;
+        std::vector<std::pair<MapChunk*, ChunkWaterState>> _chunk_liquid_pre;
+        std::vector<std::pair<MapChunk*, ChunkWaterState>> _chunk_liquid_post;
         std::vector<std::pair<uint32_t, area_trigger>> _transformed_area_trigger_pre;
         std::vector<std::pair<uint32_t, area_trigger>> _transformed_area_trigger_post;
+        std::vector<SkyTransformCache> _transformed_sky_pre;
+        std::vector<SkyTransformCache> _transformed_sky_post;
+        std::vector<Sky> _added_skies;
+        std::vector<Sky> _removed_skies;
 
         VertexSelectionCache _vertex_selection_pre;
         VertexSelectionCache _vertex_selection_post;

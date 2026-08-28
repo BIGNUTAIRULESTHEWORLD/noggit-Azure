@@ -38,7 +38,10 @@ namespace OpenGL
     glm::vec4 RiverColorDark;
   };
 
-  struct TerrainParamsUniformBlock
+  // std140 uniform blocks are rounded to a 16-byte size. Keep the CPU-side
+  // allocation equally aligned/rounded so glBindBufferRange never exposes a
+  // shorter range than the shader's overlay_params block.
+  struct alignas(16) TerrainParamsUniformBlock
   {
     int draw_shadows = false;
     int draw_lines = false;
@@ -63,8 +66,10 @@ namespace OpenGL
     int draw_noeffectdoodad_overlay = false;
     int draw_only_normals = false;
     int point_normals_up = false;
-    // int padding;
   };
+
+  static_assert(sizeof(TerrainParamsUniformBlock) % 16 == 0,
+                "TerrainParamsUniformBlock must match std140 block alignment");
 
   struct ChunkInstanceDataUniformBlock
   {

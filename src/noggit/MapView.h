@@ -18,6 +18,8 @@
 
 #include <array>
 #include <forward_list>
+#include <string>
+#include <unordered_map>
 
 
 class DBCFile;
@@ -27,6 +29,7 @@ struct ImGuiContext;
 class QSettings;
 class QDockWidget;
 class QLabel;
+class QTreeWidget;
 class QWidgetAction;
 class QOpenGLContext;
 
@@ -110,7 +113,7 @@ private:
   glm::vec3 _cursor_pos;
   QPoint _drag_start_pos;
   QPoint _right_click_pos;
-  float _cursorRotation;
+  float _cursorRotation = 0.0f;
   bool look, freelook;
   bool ui_hidden = false;
 
@@ -328,6 +331,7 @@ private:
   virtual void resizeGL (int w, int h) override;
   virtual void mouseMoveEvent (QMouseEvent*) override;
   virtual void mousePressEvent (QMouseEvent*) override;
+  virtual void mouseDoubleClickEvent (QMouseEvent*) override;
   virtual void mouseReleaseEvent (QMouseEvent*) override;
   virtual void wheelEvent (QWheelEvent*) override;
   virtual void keyReleaseEvent (QKeyEvent*) override;
@@ -376,6 +380,37 @@ private:
   QDockWidget* _asset_browser_dock;
   QDockWidget* _node_editor_dock;
   QDockWidget* _detail_infos_dock;
+  QDockWidget* _missing_objects_dock = nullptr;
+  QTreeWidget* _missing_objects_tree = nullptr;
+  QLabel* _missing_objects_summary = nullptr;
+  QTimer* _missing_objects_refresh_timer = nullptr;
+
+  struct MissingObjectRecord
+  {
+    bool is_wmo = false;
+    bool is_wmo_doodad = false;
+    std::uint32_t owner_uid = 0;
+    std::string path;
+    std::string owner_path;
+    glm::vec3 pos{};
+    glm::vec3 reload_pos{};
+  };
+  std::unordered_map<std::uint64_t, MissingObjectRecord> _missing_object_records;
+  bool _missing_object_warning_pending = false;
+
+  struct MissingTerrainTextureRecord
+  {
+    std::string path;
+    glm::vec3 pos{};
+    std::size_t adt_x = 0;
+    std::size_t adt_z = 0;
+    unsigned int chunk_x = 0;
+    unsigned int chunk_z = 0;
+    std::size_t layer = 0;
+  };
+  std::unordered_map<std::uint64_t, MissingTerrainTextureRecord> _missing_terrain_texture_records;
+  std::unordered_map<std::uint64_t, std::uint64_t> _missing_terrain_texture_slots;
+  std::uint64_t _next_missing_terrain_texture_record_id = 1;
 
   Noggit::Ui::Tools::ToolPanel* _tool_panel_dock;
 
@@ -407,6 +442,13 @@ private:
   void setupNodeEditor();
   void setupAssetBrowser();
   void setupDetailInfos();
+  void setupMissingObjects();
+  void refreshMissingObjects();
+  void focusMissingObject(std::uint64_t record_key);
+  void focusMissingTerrainTexture(std::uint64_t record_key);
+  void repairMissingTerrainTexturePath(std::uint64_t record_key);
+  void removeMissingTerrainTextureLayer(std::uint64_t record_key);
+  void clearMissingTerrainTextureRecordsForChunk(MissingTerrainTextureRecord const& record);
   void updateDetailInfos();
   void setupToolbars();
   void setupKeybindingsGui();

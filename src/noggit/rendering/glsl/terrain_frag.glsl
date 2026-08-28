@@ -81,6 +81,11 @@ uniform float cursorRotation;
 uniform float outer_cursor_radius;
 uniform float inner_cursor_ratio;
 uniform vec4 cursor_color;
+uniform bool draw_stamp_protection;
+uniform bool draw_painted_stamp_selection;
+uniform vec2 painted_stamp_selection_origin;
+uniform vec3 stamp_protection_center;
+uniform float stamp_protection_radius;
 uniform bool enable_mists_heightmapping;
 
 in vec3 vary_position;
@@ -392,14 +397,15 @@ void main()
       uint unit_x = uint(floor((vary_position.x - (tile_base_pos.x + chunk_base_pos.x)) / UNITSIZE));
       uint unit_z = uint(floor((vary_position.z - (tile_base_pos.y + chunk_base_pos.y)) / UNITSIZE));
 
-      // x and y aren't swapped because getDoodadActiveLayerIdAt() already does it in code
-      if (unit_x < 4)
+      // bit = unit_z * 8 + unit_x, same packing as the exclusion map below
+      // and the on-disk doodadMapping rows (row = z, 2-bit slot = x)
+      if (unit_z < 4)
       {
-        is_active =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.b) & (1 << ((unit_x * 8) + unit_z) );
+        is_active =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.b) & (1 << ((unit_z * 8) + unit_x) );
       }
       else
       {
-        is_active =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.a) & (1 << ((unit_x * 8) + unit_z) - 32 ); // (unit_x-4) * 8 + unit_z)
+        is_active =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.a) & (1 << ((unit_z * 8) + unit_x - 32) );
       }
 
       if (is_active != 0)
@@ -429,14 +435,15 @@ void main()
     uint unit_x = uint(floor((vary_position.x - (tile_base_pos.x + chunk_base_pos.x)) / UNITSIZE));
     uint unit_z = uint(floor((vary_position.z - (tile_base_pos.y + chunk_base_pos.y)) / UNITSIZE));
   
-    // swapped x and y order, the data is wrongly ordered when loaded
+    // bit = unit_z * 8 + unit_x, matching the on-disk doodadStencil layout
+    // (byte row = z, bit = x)
     if (unit_z < 4)
     {
       no_doodad =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.r) & (1 << ((unit_z * 8) + unit_x) );
     }
     else
     {
-      no_doodad =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.g) & (1 << ((unit_z * 8) + unit_x) - 32 ); // (unit_x-4) * 8 + unit_z)
+      no_doodad =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.g) & (1 << ((unit_z * 8) + unit_x - 32) );
     }
   
     if (no_doodad != 0)
@@ -458,7 +465,11 @@ void main()
 
   if(draw_selection_overlay != 0 && instances[instanceID].AreaIDColor_Pad2_DrawSelection.a != 0)
   {
-   out_color.rgb = mix(vec3(1.0), out_color.rgb, 0.5);
+    float selection_kind = instances[instanceID].AreaIDColor_Pad2_DrawSelection.a;
+    vec3 selection_color = selection_kind == 2.0 ? vec3(0.15, 1.0, 0.2)
+                         : selection_kind == 3.0 ? vec3(0.15, 0.7, 1.0)
+                         : vec3(1.0);
+    out_color.rgb = mix(selection_color, out_color.rgb, 0.45);
   }
 
   if (draw_shadows != 0)
@@ -583,13 +594,22 @@ void main()
       out_color.rgb = mix(out_color.rgb, color.rgb, color.a);
   }
 
+  if (draw_painted_stamp_selection)
+  {
+    vec2 selection_uv = (vary_position.xz - painted_stamp_selection_origin) / TILESIZE;
+    float selection_bounds = float(selection_uv.x >= 0.0 && selection_uv.x <= 1.0
+        && selection_uv.y >= 0.0 && selection_uv.y <= 1.0);
+    float selection = texture(stamp_brush, selection_uv).r * selection_bounds;
+    out_color.rgb = mix(out_color.rgb, vec3(0.03, 0.20, 1.0), selection * 0.34);
+  }
+
   if(draw_cursor_circle == 1)
   {
     float diff = length(vary_position.xz - cursor_position.xz);
     diff = min(abs(diff - outer_cursor_radius), abs(diff - outer_cursor_radius * inner_cursor_ratio));
     float alpha = smoothstep(0.0, length(fw.xz), diff);
 
-    out_color.rgb = mix(cursor_color.rgb, out_color.rgb, alpha);
+    out_color.rgb = mix(out_color.rgb, cursor_color.rgb, (1.0 - alpha) * cursor_color.a);
   }
   else if(draw_cursor_circle == 2)
   {
@@ -604,9 +624,11 @@ void main()
     /*out_color.rgb = mix(out_color.rgb, texture(stampBrush, rotatedTexcoord).rgb
     , 1.0 * (int(length(vary_position.xz - cursor_position.xz) / outer_cursor_radius < 1.0))
     * (1.0 - length(vary_position.xz - cursor_position.xz) / outer_cursor_radius));*/
-    out_color.rgb = mix(out_color.rgb, cursor_color.rgb, texture(stamp_brush, rotatedTexcoord).r
-    * int(abs(vary_position.x - cursor_position.x) <= outer_cursor_radius
-    && abs(vary_position.z - cursor_position.z) <= outer_cursor_radius));
+    vec4 stamp_sample = texture(stamp_brush, rotatedTexcoord);
+    float stamp_bounds = float(abs(vary_position.x - cursor_position.x) <= outer_cursor_radius
+        && abs(vary_position.z - cursor_position.z) <= outer_cursor_radius);
+    out_color.rgb = mix(out_color.rgb, cursor_color.rgb,
+        stamp_sample.r * stamp_bounds * cursor_color.a);
     /*vec2 posRel = vary_position.xz - cursor_position.xz;
     float pos_x = posRel.x * sin(angle) - posRel.y * cos(angle);
     float pos_z = posRel.y * sin(angle) + posRel.x * cos(angle);
@@ -618,6 +640,26 @@ void main()
     && (outer_cursor_radius - diff_x <= d || outer_cursor_radius - diff_z <= d)) || (diff_x < inner_radius
     && diff_z < inner_radius && (inner_radius - diff_x <= d || inner_radius - diff_z <= d))));
     out_color.rgb = mix(cursor_color.rgb, out_color.rgb, alpha);*/
+  }
+  else if(draw_cursor_circle == 3)
+  {
+    vec2 offset = abs(vary_position.xz - cursor_position.xz);
+    float diff = max(offset.x, offset.y);
+    diff = min(abs(diff - outer_cursor_radius), abs(diff - outer_cursor_radius * inner_cursor_ratio));
+    float alpha = smoothstep(0.0, length(fw.xz), diff);
+
+    out_color.rgb = mix(out_color.rgb, cursor_color.rgb, (1.0 - alpha) * cursor_color.a);
+  }
+
+  if (draw_stamp_protection)
+  {
+    vec2 protection_uv = (vary_position.xz - stamp_protection_center.xz)
+        / (stamp_protection_radius * 2.0) + 0.5;
+    float protection_bounds = float(protection_uv.x >= 0.0 && protection_uv.x <= 1.0
+        && protection_uv.y >= 0.0 && protection_uv.y <= 1.0);
+    float protection = texture(stamp_brush, protection_uv).g * protection_bounds;
+    out_color.rgb = mix(out_color.rgb, vec3(1.0, 0.56, 0.69),
+        protection * 0.38);
   }
 
   if(draw_only_normals != 0)

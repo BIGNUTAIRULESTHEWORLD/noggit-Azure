@@ -14,14 +14,18 @@
 class World;
 class MapView;
 
+class QButtonGroup;
 class QCheckBox;
 class QDoubleSpinBox;
 class QGroupBox;
+class QLabel;
 class QPushButton;
 class QSpinBox;
 class QTabWidget;
 
 inline constexpr const char* STRING_EMPTY_DISPLAY = "-NONE-";
+// the placeholder blp current_texture holds while no real texture is selected
+inline constexpr const char* STRING_EMPTY_TEXTURE = "tileset\\generic\\black.blp";
 
 namespace Noggit
 {
@@ -55,6 +59,7 @@ namespace Noggit
       paint,
       swap,
       anim,
+      road,
       ground_effect
     };
 
@@ -81,6 +86,13 @@ namespace Noggit
 
       float brush_radius() const;
       float hardness() const;
+      BrushShape brushShape() const;
+      float brushOpacity() const;
+      bool roadModeEnabled() const;
+      float roadReferenceRadius() const;
+      float roadWidthScale() const;
+      float roadOpacityScale() const;
+      bool roadReplaceConflictingTextures() const;
       bool show_unpaintable_chunks() const;
 
       void set_brush_level (float level);
@@ -92,6 +104,10 @@ namespace Noggit
       void change_radius (float change);
       void setRadius(float radius);
       void setHardness(float hardness);
+      void applyRoadSample(float radius, float confidence, std::size_t material_count,
+                           std::string const& direction_description);
+      void showRoadReferenceSelectionStatus(std::size_t point_count);
+      void clearRoadSampleStatus();
       void change_hardness (float change);
       void change_pressure (float change);
       void change_brush_level (float change);
@@ -130,12 +146,18 @@ namespace Noggit
       texture_heightmapping_data& getCurrentHeightMappingSetting();
     signals:
       void texturePaletteToggled();
+      void roadCommitRequested();
+      void roadClearRequested();
+      void roadReferenceSelectionRequested();
+      void roadReferenceAccepted();
+      void roadCancelRequested();
 
     private:
       void change_tex_flags(World* world, glm::vec3 const& pos, bool add, scoped_blp_texture_reference texture);
 
       // slider functions
       void update_brush_hardness();
+      void set_brush_shape(BrushShape shape);
       void set_radius (float radius);
       void update_spray_brush();
 
@@ -156,7 +178,7 @@ namespace Noggit
       unsigned_int_property _anim_rotation_prop;
       BoolToggleProperty _overbright_prop;
 
-      texturing_mode _texturing_mode; // use getTexturingMode() to check for ground effect mode
+      texturing_mode _texturing_mode;
       texture_heightmapping_data textureHeightmappingData;
 
     private:
@@ -164,9 +186,16 @@ namespace Noggit
       Noggit::Ui::Tools::UiCommon::ExtendedSlider* _hardness_slider;
       Noggit::Ui::Tools::UiCommon::ExtendedSlider* _radius_slider;
       Noggit::Ui::Tools::UiCommon::ExtendedSlider* _pressure_slider;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _brush_opacity_slider;
       QSpinBox* _brush_level_spin;
 
       QCheckBox* _show_unpaintable_chunks_cb;
+      QLabel* _road_status_label;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _road_reference_radius_slider;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _road_width_scale_slider;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _road_opacity_scale_slider;
+      QCheckBox* _road_replace_conflicting_textures_cb;
+      QButtonGroup* _brush_shape_group;
 
       QGroupBox* _spray_mode_group;
       QWidget* _spray_content;

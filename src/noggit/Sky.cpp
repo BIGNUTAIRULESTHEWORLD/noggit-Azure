@@ -706,16 +706,18 @@ Skies::Skies(unsigned int mapid, Noggit::NoggitRenderContext context)
 
 Sky* Skies::createNewSky(Sky*  old_sky, unsigned int new_id, glm::vec3& pos)
 {
-  // TODO
-
   Sky new_sky_copy = *old_sky;
   new_sky_copy.Id = new_id;
   new_sky_copy.pos = pos;
 
   new_sky_copy.weight = 0.f;
   new_sky_copy.is_new_record = true;
+  new_sky_copy.setSelected(false);
 
-  new_sky_copy.save_to_dbc();
+  // A pasted light reuses the source lighting profiles, just as a pasted M2
+  // reuses its model asset. Keep its spatial Light.dbc row in memory so Ctrl+S
+  // can persist it, but do not write the DBC from a placement operation.
+  new_sky_copy.save_light_record();
 
   skies.push_back(new_sky_copy);
 
@@ -735,16 +737,55 @@ Sky* Skies::createNewSky(Sky*  old_sky, unsigned int new_id, glm::vec3& pos)
   return nullptr;
 }
 
+Sky* Skies::restoreSky(Sky const& sky)
+{
+  if (Sky* existing = findSkyById(sky.Id))
+    return existing;
+
+  skies.push_back(sky);
+  skies.back().setSelected(false);
+  skies.back().save_light_record();
+  ++numSkies;
+  std::sort(skies.begin(), skies.end());
+  force_update();
+  return findSkyById(sky.Id);
+}
+
+bool Skies::deleteSkyById(int sky_id)
+{
+  auto const found = std::find_if(skies.begin(), skies.end(), [sky_id](Sky const& sky)
+  {
+    return sky.Id == sky_id;
+  });
+  if (found == skies.end() || found->global || found->zone_light)
+    return false;
+
+  gLightDB.removeRecord(static_cast<std::size_t>(sky_id), LightDB::ID);
+  skies.erase(found);
+  if (numSkies > 0)
+    --numSkies;
+  force_update();
+  return true;
+}
+
+void Skies::selectSkyById(int sky_id)
+{
+  for (Sky& sky : skies)
+  {
+    sky.setSelected(!sky.global && !sky.zone_light && sky.Id == sky_id);
+  }
+}
+
 // returns the global light, not the highest weight
 Sky* Skies::findSkyWeights(glm::vec3 pos)
 {
-  Sky* default_sky = nullptr;
+  int default_sky_id = 0;
 
   for (auto& sky : skies)
   {
     if (sky.pos == glm::vec3(0, 0, 0))
     {
-      default_sky = &sky;
+      default_sky_id = sky.Id;
       break;
     }
   }
@@ -758,7 +799,7 @@ Sky* Skies::findSkyWeights(glm::vec3 pos)
   {
     float distance_to_light = glm::distance(pos, sky.pos);
 
-    if (default_sky == &sky || distance_to_light > sky.r2)
+    if (sky.Id == default_sky_id || distance_to_light > sky.r2)
     {
       sky.weight = 0.f;
       continue;
@@ -791,7 +832,7 @@ Sky* Skies::findSkyWeights(glm::vec3 pos)
     }
   }
 
-  return default_sky;
+  return default_sky_id ? findSkyById(default_sky_id) : nullptr;
 }
 
 Sky* Skies::findClosestSkyByWeight()
@@ -1515,6 +1556,36 @@ bool Sky::selected() const
   return _selected;
 }
 
+void Sky::setSelected(bool selected)
+{
+  _selected = selected;
+}
+
+void Sky::setMapId(int map_id)
+{
+  mapId = map_id;
+}
+
+void Sky::save_light_record()
+{
+  bool const create_record = !gLightDB.CheckIfIdExists(Id);
+  DBCFile::Record lightDbRecord = create_record ? gLightDB.addRecord(Id) : gLightDB.getByID(Id);
+
+  if (create_record)
+    lightDbRecord.write(LightDB::Map, mapId);
+
+  lightDbRecord.write(LightDB::PositionX, pos.x * skymul);
+  lightDbRecord.write(LightDB::PositionY, pos.y * skymul);
+  lightDbRecord.write(LightDB::PositionZ, pos.z * skymul);
+  lightDbRecord.write(LightDB::RadiusInner, r1 * skymul);
+  lightDbRecord.write(LightDB::RadiusOuter, r2 * skymul);
+
+  for (int param_id = 0; param_id < NUM_SkyParamsNames; ++param_id)
+    lightDbRecord.write(LightDB::DataIDs + param_id, skyParams[param_id]);
+
+  is_new_record = false;
+}
+
 void Sky::save_to_dbc()
 {
   // Save Light.dbc record
@@ -1538,9 +1609,9 @@ void Sky::save_to_dbc()
     bool save_floats_dbc = false;
     bool save_skybox_dbc = false;
 
-    for (int param_id = 0; param_id < NUM_SkyFloatParamsNames; param_id++)
+    for (int param_id = 0; param_id < NUM_SkyParamsNames; param_id++)
     {
-      auto param_opt = getCurrentParam();
+      auto param_opt = getParam(param_id);
       if (!param_opt.has_value())
         continue;
 
@@ -1712,7 +1783,7 @@ void Sky::save_to_dbc()
     gLightDB.save();
     if (save_colors_dbc)
         gLightIntBandDB.save();
-    if (save_colors_dbc)
+    if (save_floats_dbc)
         gLightFloatBandDB.save();
     if (save_param_dbc)
         gLightParamsDB.save();

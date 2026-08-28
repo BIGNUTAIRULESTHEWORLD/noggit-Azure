@@ -29,13 +29,20 @@
 #include <blizzard-archive-library/include/Exception.hpp>
 
 #include <QCheckBox>
+#include <QColorDialog>
+#include <QDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QIcon>
+#include <QLabel>
 #include <QLineEdit>
 #include <QProcess>
 #include <QScrollArea>
+#include <QSignalBlocker>
+#include <QSlider>
+#include <QTimer>
 #include <QtGui/QCloseEvent>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QHBoxLayout>
@@ -49,7 +56,10 @@
 #include <QtCore/QSettings>
 
 #include <chrono>
+#include <functional>
+#include <memory>
 #include <sstream>
+#include <vector>
 
 #include "revision.h"
 
@@ -67,7 +77,7 @@ namespace Noggit::Ui::Windows
   {
 
     std::stringstream title;
-    title << "Noggit - " << STRPRODUCTVER;
+    title << "Noggit Azure - " << STRPRODUCTVER;
     setWindowTitle(QString::fromStdString(title.str()));
     setWindowIcon(QIcon(":/icon"));
 
@@ -495,9 +505,10 @@ namespace Noggit::Ui::Windows
                      }
     );
 
-
     _minimap = new minimap_widget(this);
-    _minimap->draw_boundaries(true);
+    QSettings minimap_settings;
+    bool const show_adt_grid = minimap_settings.value("mainMenu/showAdtGrid", true).toBool();
+    _minimap->draw_boundaries(show_adt_grid);
     //_minimap->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 
     QObject::connect(_minimap, &minimap_widget::map_clicked, [this](::glm::vec3 const& pos)
@@ -511,12 +522,181 @@ namespace Noggit::Ui::Windows
 
     _right_side = new QTabWidget(this);
 
-    auto minimap_holder = new QScrollArea(this);
+    auto enter_map_tab = new QWidget(_right_side);
+    auto enter_map_layout = new QVBoxLayout(enter_map_tab);
+    enter_map_layout->setContentsMargins(6, 6, 6, 6);
+
+    auto show_grid_toggle = new QCheckBox(tr("Show ADT grid"), enter_map_tab);
+    show_grid_toggle->setChecked(show_adt_grid);
+    show_grid_toggle->setAccessibleName("main_menu_show_adt_grid");
+    QObject::connect(show_grid_toggle, &QCheckBox::toggled, [this](bool checked)
+      {
+        _minimap->draw_boundaries(checked);
+        QSettings settings;
+        settings.setValue("mainMenu/showAdtGrid", checked);
+      }
+    );
+    auto preview_controls = new QHBoxLayout();
+    preview_controls->addWidget(show_grid_toggle);
+    preview_controls->addStretch(1);
+
+    auto appearance_button = new QPushButton(tr("Heightmap appearance..."), enter_map_tab);
+    appearance_button->setAccessibleName("main_menu_heightmap_appearance");
+    preview_controls->addWidget(appearance_button);
+    enter_map_layout->addLayout(preview_controls);
+
+    auto appearance_dialog = new QDialog(this);
+    appearance_dialog->setWindowTitle(tr("Heightmap Appearance"));
+    appearance_dialog->setAttribute(Qt::WA_DeleteOnClose, false);
+    appearance_dialog->resize(760, 580);
+    auto appearance_layout = new QVBoxLayout(appearance_dialog);
+    auto appearance_help = new QLabel(
+      tr("Adjust each elevation stop and its color. Changes update the selected map preview live."),
+      appearance_dialog);
+    appearance_help->setWordWrap(true);
+    appearance_layout->addWidget(appearance_help);
+
+    auto palette_scroll = new QScrollArea(appearance_dialog);
+    palette_scroll->setWidgetResizable(true);
+    auto palette_widget = new QWidget(palette_scroll);
+    auto palette_grid = new QGridLayout(palette_widget);
+    palette_grid->addWidget(new QLabel(tr("Terrain band"), palette_widget), 0, 0);
+    palette_grid->addWidget(new QLabel(tr("Elevation"), palette_widget), 0, 1);
+    palette_grid->addWidget(new QLabel(tr("Value"), palette_widget), 0, 2);
+    palette_grid->addWidget(new QLabel(tr("Color"), palette_widget), 0, 3);
+
+    QStringList const palette_names = {
+      tr("Deep water"), tr("Ocean"), tr("Shallow water"), tr("Shoreline"),
+      tr("Lowest terrain"), tr("Lowland"), tr("Grassland"), tr("Upper grassland"),
+      tr("Highland"), tr("Foothills"), tr("Mountain"), tr("High mountain"),
+      tr("Snow transition"), tr("Snow"), tr("Peak snow")
+    };
+    auto editor_palette = std::make_shared<map_horizon_minimap_palette>(load_map_horizon_minimap_palette());
+    auto palette_sliders = std::make_shared<std::vector<QSlider*>>();
+    auto palette_values = std::make_shared<std::vector<QLabel*>>();
+    auto palette_buttons = std::make_shared<std::vector<QPushButton*>>();
+    palette_sliders->reserve(map_horizon_minimap_palette::stop_count);
+    palette_values->reserve(map_horizon_minimap_palette::stop_count);
+    palette_buttons->reserve(map_horizon_minimap_palette::stop_count);
+
+    auto preview_timer = new QTimer(appearance_dialog);
+    preview_timer->setSingleShot(true);
+    preview_timer->setInterval(60);
+    QObject::connect(preview_timer, &QTimer::timeout, [this, editor_palette]()
+      {
+        World* world = getWorld();
+        if (!world)
+          return;
+        world->horizon.minimap_palette(*editor_palette);
+        world->horizon.set_minimap(&world->mapIndex);
+        _minimap->update();
+      }
+    );
+    auto schedule_preview = [preview_timer, editor_palette]()
+      {
+        save_map_horizon_minimap_palette(*editor_palette);
+        preview_timer->start();
+      };
+
+    auto refresh_slider_ranges = std::make_shared<std::function<void()>>();
+    for (std::size_t i = 0; i < map_horizon_minimap_palette::stop_count; ++i)
+    {
+      auto name = new QLabel(palette_names.at(static_cast<int>(i)), palette_widget);
+      auto slider = new QSlider(Qt::Horizontal, palette_widget);
+      auto value = new QLabel(QString::number(editor_palette->stops[i].height), palette_widget);
+      value->setMinimumWidth(48);
+      auto color_button = new QPushButton(palette_widget);
+      color_button->setMinimumWidth(90);
+      auto update_swatch = [color_button](QColor const& color)
+        {
+          color_button->setText(color.name(QColor::HexRgb).toUpper());
+          color_button->setStyleSheet(QStringLiteral("QPushButton { background-color: %1; color: %2; }")
+            .arg(color.name(QColor::HexRgb), color.lightness() < 128 ? QStringLiteral("white")
+                                                                    : QStringLiteral("black")));
+        };
+      update_swatch(editor_palette->stops[i].color);
+
+      palette_sliders->push_back(slider);
+      palette_values->push_back(value);
+      palette_buttons->push_back(color_button);
+      palette_grid->addWidget(name, static_cast<int>(i) + 1, 0);
+      palette_grid->addWidget(slider, static_cast<int>(i) + 1, 1);
+      palette_grid->addWidget(value, static_cast<int>(i) + 1, 2);
+      palette_grid->addWidget(color_button, static_cast<int>(i) + 1, 3);
+
+      QObject::connect(slider, &QSlider::valueChanged,
+        [i, editor_palette, value, refresh_slider_ranges, schedule_preview](int height)
+        {
+          editor_palette->stops[i].height = height;
+          value->setText(QString::number(height));
+          if (*refresh_slider_ranges)
+            (*refresh_slider_ranges)();
+          schedule_preview();
+        });
+      QObject::connect(color_button, &QPushButton::clicked,
+        [i, appearance_dialog, editor_palette, update_swatch, schedule_preview]()
+        {
+          QColor const selected = QColorDialog::getColor(editor_palette->stops[i].color,
+                                                          appearance_dialog,
+                                                          QObject::tr("Select terrain color"));
+          if (!selected.isValid())
+            return;
+          editor_palette->stops[i].color = selected;
+          update_swatch(selected);
+          schedule_preview();
+        });
+    }
+
+    *refresh_slider_ranges = [editor_palette, palette_sliders]()
+      {
+        for (std::size_t i = 0; i < palette_sliders->size(); ++i)
+        {
+          int const minimum = i == 0 ? -1000 : editor_palette->stops[i - 1].height + 1;
+          int const maximum = i + 1 == palette_sliders->size()
+                            ? 2500 : editor_palette->stops[i + 1].height - 1;
+          QSignalBlocker blocker(palette_sliders->at(i));
+          palette_sliders->at(i)->setRange(minimum, maximum);
+          palette_sliders->at(i)->setValue(editor_palette->stops[i].height);
+        }
+      };
+    (*refresh_slider_ranges)();
+
+    palette_scroll->setWidget(palette_widget);
+    appearance_layout->addWidget(palette_scroll, 1);
+    auto reset_palette = new QPushButton(tr("Reset to reference defaults"), appearance_dialog);
+    QObject::connect(reset_palette, &QPushButton::clicked,
+      [editor_palette, palette_sliders, palette_values, palette_buttons,
+       refresh_slider_ranges, schedule_preview]()
+      {
+        *editor_palette = default_map_horizon_minimap_palette();
+        for (std::size_t i = 0; i < palette_sliders->size(); ++i)
+        {
+          palette_values->at(i)->setText(QString::number(editor_palette->stops[i].height));
+          QColor const color = editor_palette->stops[i].color;
+          palette_buttons->at(i)->setText(color.name(QColor::HexRgb).toUpper());
+          palette_buttons->at(i)->setStyleSheet(
+            QStringLiteral("QPushButton { background-color: %1; color: %2; }")
+              .arg(color.name(QColor::HexRgb), color.lightness() < 128 ? QStringLiteral("white")
+                                                                      : QStringLiteral("black")));
+        }
+        (*refresh_slider_ranges)();
+        schedule_preview();
+      });
+    appearance_layout->addWidget(reset_palette, 0, Qt::AlignRight);
+    QObject::connect(appearance_button, &QPushButton::clicked, [appearance_dialog]()
+      {
+        appearance_dialog->show();
+        appearance_dialog->raise();
+        appearance_dialog->activateWindow();
+      });
+
+    auto minimap_holder = new QScrollArea(enter_map_tab);
     minimap_holder->setWidgetResizable(true);
     minimap_holder->setAlignment(Qt::AlignCenter);
     minimap_holder->setWidget(_minimap);
+    enter_map_layout->addWidget(minimap_holder, 1);
 
-    _right_side->addTab(minimap_holder, "Enter map");
+    _right_side->addTab(enter_map_tab, "Enter map");
     minimap_holder->setAccessibleName("main_menu_minimap_holder");
 
     _map_wizard_connection = connect(_map_creation_wizard,

@@ -82,11 +82,12 @@ namespace Noggit::Rendering
     uint16_t textures[2];
     uint16_t uv_animations[2];
     std::optional<ModelPixelShader> pixel_shader;
+    bool invalid_texture_binding = false;
 
 
     bool prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model *m, OpenGL::M2RenderState& model_render_state);
     void afterDraw();
-    void bindTexture(size_t index, Model* m, OpenGL::M2RenderState& model_render_state, OpenGL::Scoped::use_program& m2_shader);
+    bool bindTexture(size_t index, Model* m, OpenGL::M2RenderState& model_render_state, OpenGL::Scoped::use_program& m2_shader);
     void initUVTypes(Model* m);
 
     bool operator< (const ModelRenderPass& m) const;
@@ -101,6 +102,9 @@ namespace Noggit::Rendering
 
     void upload() override;
     void unload() override;
+
+    [[nodiscard]]
+    bool uploaded() const { return _uploaded; }
 
     void draw(glm::mat4x4 const& model_view
         , ModelInstance& instance

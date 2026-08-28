@@ -2,6 +2,7 @@
 
 #include <noggit/ContextObject.hpp>
 #include <noggit/MapHeaders.h> // ENTRY_MDDF
+#include <noggit/MissingObjectPlaceholder.hpp>
 #include <noggit/Misc.h> // checkinside
 #include <noggit/Model.h> // Model, etc.
 #include <noggit/ModelInstance.h>
@@ -46,14 +47,23 @@ ModelInstance::ModelInstance(ModelInstance&& other) noexcept
   , light_color(other.light_color)
   , size_cat(other.size_cat)
   , _need_recalc_extents(other._need_recalc_extents)
+  , _need_gpu_transform_update(other._need_gpu_transform_update)
+  , _gpu_transform_uid(other._gpu_transform_uid)
 {
   pos = other.pos;
   dir = other.dir;
   scale = other.scale;
+  frame = other.frame;
+  _rendered_last_frame = other._rendered_last_frame;
+  _grouped = other._grouped;
+  chunk_mover_preview = other.chunk_mover_preview;
   extents[0] = other.extents[0];
   extents[1] = other.extents[1];
+  bounding_radius = other.bounding_radius;
+  _transform_mat = other._transform_mat;
   _transform_mat_inverted = other._transform_mat_inverted;
   _context = other._context;
+  _tiles = std::move(other._tiles);
   uid = other.uid;
 }
 
@@ -65,11 +75,20 @@ ModelInstance& ModelInstance::operator= (ModelInstance&& other) noexcept
   std::swap(light_color, other.light_color);
   std::swap(uid, other.uid);
   std::swap(scale, other.scale);
+  std::swap(frame, other.frame);
+  std::swap(_rendered_last_frame, other._rendered_last_frame);
+  std::swap(_grouped, other._grouped);
+  std::swap(chunk_mover_preview, other.chunk_mover_preview);
   std::swap(size_cat, other.size_cat);
   std::swap(_need_recalc_extents, other._need_recalc_extents);
+  std::swap(_need_gpu_transform_update, other._need_gpu_transform_update);
+  std::swap(_gpu_transform_uid, other._gpu_transform_uid);
   std::swap(extents, other.extents);
+  std::swap(bounding_radius, other.bounding_radius);
+  std::swap(_transform_mat, other._transform_mat);
   std::swap(_transform_mat_inverted, other._transform_mat_inverted);
   std::swap(_context, other._context);
+  std::swap(_tiles, other._tiles);
   return *this;
 }
 
@@ -182,8 +201,18 @@ void ModelInstance::intersect (glm::mat4x4 const& model_view
                               , bool only_opaque_tris
                               )
 {  
-  if (!finishedLoading() || model->loading_failed())
+  if (chunk_mover_preview)
     return;
+  if (!finishedLoading())
+    return;
+
+  if (model->loading_failed())
+  {
+    glm::vec3 const radius{Noggit::MissingObjectPlaceholder::m2_display_scale};
+    if (auto const distance = ray.intersect_bounds(pos - radius, pos + radius); distance && *distance >= 0.0f)
+      results->emplace_back(*distance, this);
+    return;
+  }
 
   ensureExtents();
 
@@ -280,6 +309,7 @@ void ModelInstance::recalcExtents()
   if (model->loading_failed())
   {
     extents[0] = extents[1] = pos;
+    bounding_radius = Noggit::MissingObjectPlaceholder::m2_display_scale;
     _need_recalc_extents = false;
     return;
   }
@@ -404,7 +434,12 @@ void ModelInstance::updateDetails(Noggit::Ui::detail_infos* detail_widget)
     << "<br><b>unique ID:</b> " << uid
     << "<br><b>position X/Y/Z:</b> {" << pos.x << " , " << pos.y << " , " << pos.z << "}"
     << "<br><b>rotation X/Y/Z:</b> {" << dir.x << " , " << dir.y << " , " << dir.z << "}"
-    << "<br><b>scale:</b> " << scale
+    << "<br><b>scale:</b> " << scale;
+
+  if (model->loading_failed())
+    select_info << "<br><font color=\"Red\"><b>load error:</b> displaying spells/errorcube.m2</font>";
+
+  select_info
 
     << "<br><b>server position X/Y/Z: </b>{" << (ZEROPOINT - pos.z) << ", " << (ZEROPOINT - pos.x) << ", " << pos.y << "}"
     << "<br><b>server orientation:  </b>" << fabs(2 * glm::pi<float>() - glm::pi<float>() / 180.0 * (float(dir.y) < 0 ? fabs(float(dir.y)) + 180.0 : fabs(float(dir.y) - 180.0)))

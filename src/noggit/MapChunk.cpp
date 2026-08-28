@@ -7,6 +7,7 @@
 #include <noggit/Alphamap.hpp>
 #include <noggit/Brush.h>
 #include <noggit/ChunkWater.hpp>
+#include <noggit/DetailDoodads.hpp>
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapHeaders.h>
@@ -44,8 +45,10 @@ MapChunk::MapChunk(MapTile* maintile, BlizzardArchive::ClientFile* f, bool bigAl
   {
 
     //  header.flags = 0;
-    px = chunk_idx / 16;
-    py = chunk_idx % 16;
+    // like the loaded path (px = header.ix = n % 16, py = header.iy = n / 16);
+    // these were transposed, which poisoned anything keyed on them
+    px = chunk_idx % 16;
+    py = chunk_idx / 16;
 
     zbase = ZEROPOINT - (maintile->zbase + py * CHUNKSIZE);
     xbase = ZEROPOINT - (maintile->xbase + px * CHUNKSIZE);
@@ -652,9 +655,21 @@ void MapChunk::updateVerticesData()
 
   for (int i(0); i < mapbufsize; ++i)
   {
-    vmin.y = std::min(vmin.y, mVertices[i].y);
-    vmax.y = std::max(vmax.y, mVertices[i].y);
-    tile_buffer[chunk_start + i * 4 + 3] = mVertices[i].y;
+    float const height = _chunk_mover_preview_heights
+      ? (*_chunk_mover_preview_heights)[i] : mVertices[i].y;
+    if (_chunk_mover_preview_normals)
+    {
+      tile_buffer[chunk_start + i * 4] = (*_chunk_mover_preview_normals)[i].x;
+      tile_buffer[chunk_start + i * 4 + 1] = (*_chunk_mover_preview_normals)[i].y;
+      tile_buffer[chunk_start + i * 4 + 2] = (*_chunk_mover_preview_normals)[i].z;
+    }
+
+    // Match Noggit3's preview bounds: retain the real terrain in the bounds as
+    // well as the ghost terrain. This prevents a large height offset from
+    // making the destination chunk disappear from culling or cursor tests.
+    vmin.y = std::min(vmin.y, std::min(height, mVertices[i].y));
+    vmax.y = std::max(vmax.y, std::max(height, mVertices[i].y));
+    tile_buffer[chunk_start + i * 4 + 3] = height;
   }
 
   mt->markExtentsDirty();
@@ -860,7 +875,8 @@ void MapChunk::updateNormalsData()
   //gl.texSubImage2D(GL_TEXTURE_2D, 0, 0, px * 16 + py, mapbufsize, 1, GL_RGB, GL_FLOAT, mNormals);
 }
 
-bool MapChunk::changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius)
+bool MapChunk::changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType,
+                             float inner_radius, BrushShape shape)
 {
   //float dist, xdiff, zdiff;
   bool changed = false;
@@ -868,7 +884,7 @@ bool MapChunk::changeTerrain(glm::vec3 const& pos, float change, float radius, i
   for (int i = 0; i < mapbufsize; ++i)
   {
     float dt = change;
-    if (changeTerrainProcessVertex(pos, mVertices[i], dt, radius, inner_radius, BrushType))
+    if (changeTerrainProcessVertex(pos, mVertices[i], dt, radius, inner_radius, BrushType, shape))
     {
       changed = true;
       mVertices[i].y += dt;
@@ -1194,7 +1210,8 @@ bool MapChunk::blurTerrain ( glm::vec3 const& pos
 }
 
 bool MapChunk::changeTerrainProcessVertex(glm::vec3 const& pos, glm::vec3 const& vertex, float& dt,
-                                          float radiusOuter, float radiusInner, int brushType)
+                                          float radiusOuter, float radiusInner, int brushType,
+                                          BrushShape shape)
 {
   float dist, xdiff, zdiff;
   bool changed = false;
@@ -1213,7 +1230,9 @@ bool MapChunk::changeTerrainProcessVertex(glm::vec3 const& pos, glm::vec3 const&
   }
   else
   {
-    dist = std::sqrt(xdiff*xdiff + zdiff*zdiff);
+    dist = shape == BrushShape::SQUARE
+      ? std::max(std::abs(xdiff), std::abs(zdiff))
+      : std::sqrt(xdiff*xdiff + zdiff*zdiff);
     if (dist < radiusOuter)
     {
       changed = true;
@@ -1250,7 +1269,7 @@ bool MapChunk::changeTerrainProcessVertex(glm::vec3 const& pos, glm::vec3 const&
 }
 
 auto MapChunk::stamp(glm::vec3 const& pos, float dt, QImage const* img, float radiusOuter
-, float radiusInner, int brushType, bool sculpt) -> void
+, float radiusInner, int brushType, bool sculpt, BrushShape shape) -> void
 {
   if (sculpt)
   {
@@ -1260,7 +1279,9 @@ auto MapChunk::stamp(glm::vec3 const& pos, float dt, QImage const* img, float ra
         continue;
 
       float delta = dt;
-      changeTerrainProcessVertex(pos, mVertices[i], delta, radiusOuter, radiusInner, brushType);
+      if (!changeTerrainProcessVertex(pos, mVertices[i], delta, radiusOuter, radiusInner,
+                                      brushType, shape))
+        continue;
 
       glm::vec3 const diff{mVertices[i] - pos};
 
@@ -1297,7 +1318,9 @@ auto MapChunk::stamp(glm::vec3 const& pos, float dt, QImage const* img, float ra
 
       float delta = cur_action->getDelta();
 
-      changeTerrainProcessVertex(pos, mVertices[i], delta, radiusOuter, radiusInner, brushType);
+      if (!changeTerrainProcessVertex(pos, mVertices[i], delta, radiusOuter, radiusInner,
+                                      brushType, shape))
+        continue;
 
       glm::vec3 const diff{glm::vec3{original_heightmap[i * 3], original_heightmap[i * 3 + 1], original_heightmap[i * 3 + 2]} - pos};
 
@@ -1511,9 +1534,15 @@ void MapChunk::save(util::sExtendableArray& lADTFile
 
   if(texture_set)
   {
-    // hackfix -- temp hackfix to bruteforce update + save
     texture_set->apply_alpha_changes();
-    texture_set->updateDoodadMapping();
+
+    // untouched chunks keep the doodadMapping loaded from the ADT; the
+    // recompute is an approximation and only runs when alphas were edited
+    if (_doodad_mapping_needs_update)
+    {
+      texture_set->updateDoodadMapping();
+      _doodad_mapping_needs_update = false;
+    }
 
     std::copy(texture_set->getDoodadMappingBase(), texture_set->getDoodadMappingBase() + 8
     , lMCNK_header->doodadMapping);
@@ -2159,10 +2188,103 @@ void MapChunk::initMCCV()
   }
 }
 
-void MapChunk::registerChunkUpdate(unsigned flags)
+void MapChunk::requeueChunkUpdate(unsigned flags)
 {
   _chunk_update_flags |= flags;
   mt->registerChunkUpdate(flags);
+}
+
+void MapChunk::setChunkMoverOverlay(int value, bool force_upload)
+{
+  if (chunk_mover_overlay == value && !force_upload)
+    return;
+
+  chunk_mover_overlay = value;
+  // Upload-only: selecting a chunk must not mark its ADT as edited.
+  requeueChunkUpdate(ChunkUpdateFlags::FLAGS);
+}
+
+void MapChunk::setChunkMoverPreviewHeights(std::optional<std::array<float, mapbufsize>> heights)
+{
+  if (_chunk_mover_preview_heights == heights)
+    return;
+  _chunk_mover_preview_heights = std::move(heights);
+  requeueChunkUpdate(ChunkUpdateFlags::VERTEX);
+}
+
+void MapChunk::setChunkMoverPreviewNormals(
+    std::optional<std::array<glm::vec3, mapbufsize>> normals)
+{
+  if (_chunk_mover_preview_normals == normals)
+    return;
+
+  auto& tile_buffer = mt->getChunkHeightmapBuffer();
+  int const chunk_start = (px * 16 + py) * mapbufsize * 4;
+  if (normals && !_chunk_mover_preview_normals)
+  {
+    _chunk_mover_preview_original_normals.emplace();
+    for (int i = 0; i < mapbufsize; ++i)
+      (*_chunk_mover_preview_original_normals)[i] = {
+          tile_buffer[chunk_start + i * 4], tile_buffer[chunk_start + i * 4 + 1],
+          tile_buffer[chunk_start + i * 4 + 2]};
+  }
+  else if (!normals && _chunk_mover_preview_original_normals)
+  {
+    // Restore the CPU-side texture buffer immediately. Clipboard capture can
+    // happen before the renderer consumes the queued update.
+    for (int i = 0; i < mapbufsize; ++i)
+    {
+      tile_buffer[chunk_start + i * 4] = (*_chunk_mover_preview_original_normals)[i].x;
+      tile_buffer[chunk_start + i * 4 + 1] = (*_chunk_mover_preview_original_normals)[i].y;
+      tile_buffer[chunk_start + i * 4 + 2] = (*_chunk_mover_preview_original_normals)[i].z;
+    }
+    _chunk_mover_preview_original_normals.reset();
+  }
+  _chunk_mover_preview_normals = std::move(normals);
+  requeueChunkUpdate(ChunkUpdateFlags::NORMALS);
+}
+
+void MapChunk::registerChunkUpdate(unsigned flags)
+{
+  requeueChunkUpdate(flags);
+
+  if (flags & (ChunkUpdateFlags::VERTEX | ChunkUpdateFlags::ALPHAMAP | ChunkUpdateFlags::FLAGS
+             | ChunkUpdateFlags::HOLES | ChunkUpdateFlags::GROUND_EFFECT
+             | ChunkUpdateFlags::DETAILDOODADS_EXCLUSION))
+  {
+    _detail_doodad_stamp++;
+  }
+
+  if (flags & ChunkUpdateFlags::ALPHAMAP)
+  {
+    _doodad_mapping_needs_update = true;
+  }
+}
+
+bool MapChunk::doodadMappingNeedsUpdate() const
+{
+  return _doodad_mapping_needs_update;
+}
+
+void MapChunk::clearDoodadMappingNeedsUpdate()
+{
+  _doodad_mapping_needs_update = false;
+}
+
+MapChunk::~MapChunk() = default;
+
+Noggit::ChunkDetailDoodads* MapChunk::getDetailDoodads()
+{
+  if (!_detail_doodads)
+  {
+    _detail_doodads = std::make_unique<Noggit::ChunkDetailDoodads>();
+  }
+  return _detail_doodads.get();
+}
+
+std::uint32_t MapChunk::detailDoodadStamp() const
+{
+  return _detail_doodad_stamp;
 }
 
 void MapChunk::endChunkUpdates()

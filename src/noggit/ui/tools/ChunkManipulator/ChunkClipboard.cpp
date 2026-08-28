@@ -169,6 +169,39 @@ namespace
     }
   }
 
+  glm::ivec2 rotateQuarterTurns(glm::ivec2 value, int turns)
+  {
+    switch (normalizeQuarterTurns(turns))
+    {
+      case 1: return {value.y, -value.x};
+      case 2: return {-value.x, -value.y};
+      case 3: return {-value.y, value.x};
+      default: return value;
+    }
+  }
+
+  bool usesExactChunkGridMapping(ChunkPasteOptions const& options)
+  {
+    // Arbitrary-angle Chunk Mover rotation was removed from the UI. Keep the
+    // legacy sampler as a fallback for old callers, while quarter turns and
+    // mirrors use an integer chunk-to-chunk mapping.
+    return std::abs(options.rotation_degrees) < .0001f;
+  }
+
+  int chunkGridCoordinate(float coordinate)
+  {
+    return static_cast<int>(std::floor(coordinate / CHUNKSIZE));
+  }
+
+  glm::ivec2 transformChunkOffset(glm::ivec2 value, ChunkPasteOptions const& options)
+  {
+    if (options.mirror_horizontal)
+      value.x = -value.x;
+    if (options.mirror_vertical)
+      value.y = -value.y;
+    return rotateQuarterTurns(value, options.rotation_quarter_turns);
+  }
+
   glm::vec2 transformRelative(glm::vec2 value, ChunkPasteOptions const& options)
   {
     if (options.mirror_horizontal)
@@ -242,6 +275,36 @@ namespace
     int column = std::clamp(static_cast<int>(std::round((point.x - cache.xbase - offset) / UNITSIZE)),
                             0, inner ? 7 : 8);
     return 17 * (row / 2) + (inner ? 9 : 0) + column;
+  }
+
+  glm::vec2 vertexLocalPosition(int index)
+  {
+    int const pair = index / 17;
+    int const within_pair = index % 17;
+    bool const inner = within_pair >= 9;
+    int const row = pair * 2 + (inner ? 1 : 0);
+    int const column = inner ? within_pair - 9 : within_pair;
+    float const half_unit = UNITSIZE * .5f;
+    return {column * UNITSIZE + (inner ? half_unit : 0.f), row * half_unit};
+  }
+
+  int nearestLocalVertexIndex(glm::vec2 point)
+  {
+    float const half_unit = UNITSIZE * .5f;
+    int const row = std::clamp(static_cast<int>(std::round(point.y / half_unit)), 0, 16);
+    bool const inner = (row & 1) != 0;
+    float const offset = inner ? half_unit : 0.f;
+    int const column = std::clamp(
+        static_cast<int>(std::round((point.x - offset) / UNITSIZE)), 0, inner ? 7 : 8);
+    return 17 * (row / 2) + (inner ? 9 : 0) + column;
+  }
+
+  int transformedSourceVertexIndex(int destination_index, ChunkPasteOptions const& options)
+  {
+    glm::vec2 const center{CHUNKSIZE * .5f};
+    glm::vec2 const source = center
+        + inverseTransformRelative(vertexLocalPosition(destination_index) - center, options);
+    return nearestLocalVertexIndex(source);
   }
 }
 
@@ -1212,6 +1275,46 @@ std::vector<MapChunk*> ChunkClipboard::destinationChunks(glm::vec2 const& destin
   std::vector<MapChunk*> result;
   result.reserve(_cached_chunks.size());
   std::unordered_set<MapChunk*> seen;
+
+  if (usesExactChunkGridMapping(options))
+  {
+    glm::ivec2 const source_pivot_grid{
+        chunkGridCoordinate(_source_pivot.x), chunkGridCoordinate(_source_pivot.y)};
+    glm::ivec2 const destination_pivot_grid{
+        chunkGridCoordinate(destination_pivot.x), chunkGridCoordinate(destination_pivot.y)};
+
+    for (ChunkCache const& cache : _cached_chunks)
+    {
+      glm::ivec2 const source_grid{
+          chunkGridCoordinate(cache.xbase + CHUNKSIZE * .5f),
+          chunkGridCoordinate(cache.zbase + CHUNKSIZE * .5f)};
+      glm::ivec2 const destination_grid = destination_pivot_grid
+          + transformChunkOffset(source_grid - source_pivot_grid, options);
+      if (destination_grid.x < 0 || destination_grid.y < 0
+          || destination_grid.x >= 64 * 16 || destination_grid.y >= 64 * 16)
+        continue;
+
+      glm::vec2 const candidate_center{
+          (static_cast<float>(destination_grid.x) + .5f) * CHUNKSIZE,
+          (static_cast<float>(destination_grid.y) + .5f) * CHUNKSIZE};
+      glm::vec3 const candidate_position{candidate_center.x, 0.f, candidate_center.y};
+      TileIndex const tile_index(candidate_position);
+      if (!tile_index.is_valid() || !_world->mapIndex.hasTile(tile_index))
+        continue;
+
+      MapTile* tile = _world->mapIndex.getTile(tile_index);
+      if (load_missing_tiles && !tile)
+        tile = _world->mapIndex.loadTile(tile_index);
+      if (load_missing_tiles && tile)
+        tile->wait_until_loaded();
+      MapChunk* chunk = tile && tile->finishedLoading()
+          ? _world->getChunkAt(candidate_position) : nullptr;
+      if (chunk && seen.emplace(chunk).second)
+        result.push_back(chunk);
+    }
+    return result;
+  }
+
   for (ChunkCache const& cache : _cached_chunks)
   {
     std::array<glm::vec2, 4> const corners{{
@@ -1344,8 +1447,10 @@ void ChunkClipboard::updatePreview(glm::vec3 const& destination,
       || previous_options.height_offset != options.height_offset
       || previous_options.height_mode != options.height_mode;
 
-  // Clear only previews that are leaving the destination footprint or whose
-  // display component was disabled. Overlapping chunks are overwritten once.
+  // A failed source lookup used to leave the previous optional height buffer
+  // installed on overlapping chunks. Once that happened, later height/scale
+  // changes kept rendering the same invalid strip. Drop the old terrain
+  // buffers whenever their mapping changes, then install a complete new set.
   for (auto const& index : _preview_chunks)
   {
     bool const remains = desired_chunks.contains(index);
@@ -1353,7 +1458,8 @@ void ChunkClipboard::updatePreview(glm::vec3 const& destination,
     if (tile && tile->finishedLoading() && index.x < 16 && index.z < 16)
     {
       MapChunk* chunk = tile->getChunk(index.x, index.z);
-      if (previous_height_preview && (!remains || !show_height_preview))
+      if (previous_height_preview
+          && (!remains || !show_height_preview || terrain_mapping_changed))
       {
         chunk->setChunkMoverPreviewHeights(std::nullopt);
         chunk->setChunkMoverPreviewNormals(std::nullopt);
@@ -1396,15 +1502,28 @@ void ChunkClipboard::updatePreview(glm::vec3 const& destination,
       std::array<glm::vec3, mapbufsize> normals{};
       for (int i = 0; i < mapbufsize; ++i)
       {
-        glm::vec2 const source = inverseTransform({chunk->mVertices[i].x, chunk->mVertices[i].z},
-                                                  destination_pivot, options);
-        float const source_height = sampleHeight(*source_chunk, source) + options.height_offset;
+        glm::vec2 const source = usesExactChunkGridMapping(options)
+            ? glm::vec2{}
+            : inverseTransform({chunk->mVertices[i].x, chunk->mVertices[i].z},
+                               destination_pivot, options);
+        int const source_index = usesExactChunkGridMapping(options)
+            ? transformedSourceVertexIndex(i, options)
+            : nearestVertexIndex(*source_chunk, source);
+        float const source_height = (usesExactChunkGridMapping(options)
+            ? source_chunk->heights[source_index]
+            : sampleHeight(*source_chunk, source)) + options.height_offset;
         heights[i] = applyHeightMode(chunk->mVertices[i].y, source_height, options.height_mode);
-        normals[i] = transformPackedNormal(
-            source_chunk->normals[nearestVertexIndex(*source_chunk, source)], options);
+        normals[i] = transformPackedNormal(source_chunk->normals[source_index], options);
       }
       chunk->setChunkMoverPreviewHeights(std::move(heights));
       chunk->setChunkMoverPreviewNormals(std::move(normals));
+    }
+    else if (!source_chunk && show_height_preview)
+    {
+      // Never retain terrain data from an earlier preview when this mapping
+      // cannot provide a source chunk.
+      chunk->setChunkMoverPreviewHeights(std::nullopt);
+      chunk->setChunkMoverPreviewNormals(std::nullopt);
     }
     if (show_texture_preview
         && (terrain_mapping_changed || newly_previewed || !previous_texture_preview))
@@ -1601,19 +1720,34 @@ ChunkPasteResult ChunkClipboard::pasteSelection(glm::vec3 const& destination,
     if (hasFlag(options.components, ChunkCopyFlags::TERRAIN))
     {
       bool any = false;
-      for (int i = 0; i < 145; ++i)
+      if (usesExactChunkGridMapping(options) && scalar_source)
       {
-        glm::vec2 const source = inverseTransform({chunk->mVertices[i].x, chunk->mVertices[i].z},
-                                                  destination_pivot, options);
-        ChunkCache const* source_chunk = sourceAt(source);
-        if (!source_chunk)
-          continue;
-        if (!any)
-          NOGGIT_CUR_ACTION->registerChunkTerrainChange(chunk);
-        float const source_height = sampleHeight(*source_chunk, source) + options.height_offset;
-        chunk->mVertices[i].y = applyHeightMode(chunk->mVertices[i].y,
-                                                source_height, options.height_mode);
+        NOGGIT_CUR_ACTION->registerChunkTerrainChange(chunk);
+        for (int i = 0; i < 145; ++i)
+        {
+          float const source_height = scalar_source->heights[
+              transformedSourceVertexIndex(i, options)] + options.height_offset;
+          chunk->mVertices[i].y = applyHeightMode(chunk->mVertices[i].y,
+                                                  source_height, options.height_mode);
+        }
         any = true;
+      }
+      else
+      {
+        for (int i = 0; i < 145; ++i)
+        {
+          glm::vec2 const source = inverseTransform(
+              {chunk->mVertices[i].x, chunk->mVertices[i].z}, destination_pivot, options);
+          ChunkCache const* source_chunk = sourceAt(source);
+          if (!source_chunk)
+            continue;
+          if (!any)
+            NOGGIT_CUR_ACTION->registerChunkTerrainChange(chunk);
+          float const source_height = sampleHeight(*source_chunk, source) + options.height_offset;
+          chunk->mVertices[i].y = applyHeightMode(chunk->mVertices[i].y,
+                                                  source_height, options.height_mode);
+          any = true;
+        }
       }
       if (any)
       {
@@ -1695,17 +1829,28 @@ ChunkPasteResult ChunkClipboard::pasteSelection(glm::vec3 const& destination,
     if (hasFlag(options.components, ChunkCopyFlags::VERTEX_COLORS))
     {
       bool any = false;
-      for (int i = 0; i < 145; ++i)
+      if (usesExactChunkGridMapping(options) && scalar_source)
       {
-        glm::vec2 const source = inverseTransform({chunk->mVertices[i].x, chunk->mVertices[i].z},
-                                                  destination_pivot, options);
-        ChunkCache const* source_chunk = sourceAt(source);
-        if (!source_chunk)
-          continue;
-        if (!any)
-          NOGGIT_CUR_ACTION->registerChunkVertexColorChange(chunk);
-        chunk->mccv[i] = source_chunk->vertex_colors[nearestVertexIndex(*source_chunk, source)];
+        NOGGIT_CUR_ACTION->registerChunkVertexColorChange(chunk);
+        for (int i = 0; i < 145; ++i)
+          chunk->mccv[i] = scalar_source->vertex_colors[
+              transformedSourceVertexIndex(i, options)];
         any = true;
+      }
+      else
+      {
+        for (int i = 0; i < 145; ++i)
+        {
+          glm::vec2 const source = inverseTransform(
+              {chunk->mVertices[i].x, chunk->mVertices[i].z}, destination_pivot, options);
+          ChunkCache const* source_chunk = sourceAt(source);
+          if (!source_chunk)
+            continue;
+          if (!any)
+            NOGGIT_CUR_ACTION->registerChunkVertexColorChange(chunk);
+          chunk->mccv[i] = source_chunk->vertex_colors[nearestVertexIndex(*source_chunk, source)];
+          any = true;
+        }
       }
       if (any)
       {

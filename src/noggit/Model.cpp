@@ -403,6 +403,7 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
     BlizzardArchive::ClientFile g(lodname, Noggit::Application::NoggitApplication::instance()->clientData());
     if (g.isEof()) {
       LogError << "loading skinfile " << lodname << std::endl;
+      _skin_load_failed = true;
       g.close();
       return;
     }

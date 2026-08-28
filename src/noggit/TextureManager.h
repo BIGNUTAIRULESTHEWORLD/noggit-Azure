@@ -66,6 +66,7 @@ struct blp_texture : public AsyncObject
   void uploadToArray(unsigned layer);
   void unload();
   bool is_uploaded() const;;
+  bool source_missing() const;
   GLuint texture_array() const;;
   int array_index() const;;
   bool is_specular() const;;
@@ -85,6 +86,7 @@ struct blp_texture : public AsyncObject
   blp_texture* getHeightMap();;
 private:
   bool _uploaded = false;
+  bool _source_missing = false;
 
   int _width;
   int _height;

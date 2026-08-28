@@ -3,6 +3,7 @@
 #include <noggit/rendering/TileRender.hpp>
 #include <noggit/MapTile.h>
 #include <noggit/MapChunk.h>
+#include <noggit/DBC.h>
 #include <noggit/texture_set.hpp>
 #include <noggit/ui/TexturingGUI.h>
 #include <noggit/application/NoggitApplication.hpp>
@@ -14,11 +15,39 @@
 
 using namespace Noggit::Rendering;
 
+namespace
+{
+  glm::vec3 ground_effect_color(unsigned int effect_id)
+  {
+    if (!effect_id || effect_id == 0xFFFFFFFF)
+    {
+      return { 0.f, 0.f, 0.f };
+    }
+    if (!gGroundEffectTextureDB.CheckIfIdExists(effect_id))
+    {
+      return { 1.f, 0.f, 0.f };
+    }
+
+    auto component = [effect_id](float a, float b, float multiplier)
+    {
+      double integral = 0.0;
+      return static_cast<float>(std::abs(std::modf(
+        std::sin(static_cast<float>(effect_id) * a + b) * multiplier, &integral)));
+    };
+    return { component(12.9898f, 78.233f, 43758.5453f),
+             component(11.5591f, 70.233f, 43569.5451f),
+             component(13.1234f, 76.234f, 43765.5452f) };
+  }
+}
+
 
 TileRender::TileRender(MapTile* map_tile)
 : _map_tile(map_tile)
 {
-
+  if (auto const texture = Noggit::Ui::selected_texture::get())
+  {
+    _geffect_active_texture = texture.value()->file_key().filepath();
+  }
 }
 
 void TileRender::upload()
@@ -174,23 +203,29 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
           _split_drawcall = true;
         }
       }
-      // this isn't exactly rendering but...
-      // TODO : this is extremely slow and shouldn't happen on initial texture loading, it's just read from file
-      // if (!_texture_not_loaded)
-      // {
-      //   if (flags & ChunkUpdateFlags::ALPHAMAP)
-      //   {
-      //       // recalculate doodad mapping.
-      //       // chunk->getTextureSet()->updateDoodadMapping();
-      //       // update render
-      //      setChunkGroundEffectActiveData(chunk.get());
-      //   }
-      //   else if (_require_geffect_active_texture_update)
-      //   {
-      //       // active texture render changed, just update render
-      //       setChunkGroundEffectActiveData(chunk.get());
-      //   }
-      // }
+      // ground effect active-layer overlay. loading is not an edit
+      // (doodadMappingNeedsUpdate is only set by alpha edits), so initial
+      // uploads keep the stored doodadMapping and only refresh the overlay
+      // bits; the recompute waits until the temp edit values have been
+      // applied (stroke end) so it reads the real alphamaps
+      if (!_texture_not_loaded)
+      {
+        if (flags & ChunkUpdateFlags::ALPHAMAP)
+        {
+          if (chunk->doodadMappingNeedsUpdate() && !chunk->texture_set->getTempAlphamaps())
+          {
+            chunk->texture_set->updateDoodadMapping();
+            chunk->clearDoodadMappingNeedsUpdate();
+          }
+          setChunkGroundEffectActiveData(chunk.get());
+        }
+        else if (_require_geffect_active_texture_update)
+        {
+          // active texture changed, just refresh the overlay bits
+          setChunkGroundEffectActiveData(chunk.get());
+          setChunkGroundEffectColorFromData(chunk.get());
+        }
+      }
 
       if (!flags)
         continue;
@@ -234,9 +269,9 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
       {
         _chunk_instance_data[i].ChunkHoles_DrawImpass_TexLayerCount_CantPaint[1] = chunk->header_flags.flags.impass;
 
-        for (int k = 0; k < chunk->texture_set->num(); ++k)
+        for (int k = 0; k < chunk->texture_set->renderTextureCount(); ++k)
         {
-          unsigned layer_flags = chunk->texture_set->flag(k);
+          unsigned layer_flags = chunk->texture_set->renderTextureFlag(k);
           auto flag_view = reinterpret_cast<MCLYFlags*>(&layer_flags);
 
           _chunk_instance_data[i].ChunkTexDoAnim[k] = flag_view->animation_enabled;
@@ -255,10 +290,8 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
 
       if (flags & ChunkUpdateFlags::GROUND_EFFECT)
       {
-          // TODO.
-          // currently directly handled in functions
-          // setChunkGroundEffectColor()
-          // setChunkGroundEffectActiveData()
+          setChunkGroundEffectColorFromData(chunk.get());
+          setChunkGroundEffectActiveData(chunk.get());
       }
 
       if (flags & ChunkUpdateFlags::DETAILDOODADS_EXCLUSION)
@@ -267,12 +300,13 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
       }
       
 
-      _chunk_instance_data[i].AreaIDColor_Pad2_DrawSelection[3] = _selected;
+      _chunk_instance_data[i].AreaIDColor_Pad2_DrawSelection[3]
+        = _selected ? 1.f : static_cast<float>(chunk->chunk_mover_overlay);
 
       chunk->endChunkUpdates();
 
       if (_texture_not_loaded || skip_upload_alphamap)
-        chunk->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+        chunk->requeueChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
 
     }
 
@@ -525,6 +559,8 @@ void Noggit::Rendering::TileRender::discardTileOcclusionQuery()
 void Noggit::Rendering::TileRender::notifyTileRendererOnSelectedTextureChange()
 {
   _requires_paintability_recalc = true;
+  auto const texture = Noggit::Ui::selected_texture::get();
+  setActiveRenderGEffectTexture(texture ? texture.value()->file_key().filepath() : std::string{});
 }
 
 
@@ -532,7 +568,7 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
 {
   MapTileDrawCall& draw_call = _draw_calls[draw_call_index];
 
-  _chunk_instance_data[chunk_index].ChunkHoles_DrawImpass_TexLayerCount_CantPaint[2] = static_cast<int>(chunk->texture_set->num());
+  _chunk_instance_data[chunk_index].ChunkHoles_DrawImpass_TexLayerCount_CantPaint[2] = static_cast<int>(chunk->texture_set->renderTextureCount());
 
   static constexpr unsigned NUM_SAMPLERS = 11;
 
@@ -549,10 +585,10 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
   }
 
 
-  auto& chunk_textures = (*chunk->texture_set->getTextures());
+  auto& chunk_textures = chunk->texture_set->renderTextures();
   bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
 
-  for (int k = 0; k < chunk->texture_set->num(); ++k)
+  for (int k = 0; k < chunk->texture_set->renderTextureCount(); ++k)
   {
     chunk_textures[k]->upload();
 
@@ -582,8 +618,8 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
         _chunk_instance_data[chunk_index].ChunkTextureHeightOffset[k] = hData.heightOffset;
     }
 
-    GLuint tex_array = (*chunk->texture_set->getTextures())[k]->texture_array();
-    int tex_index = (*chunk->texture_set->getTextures())[k]->array_index();
+    GLuint tex_array = chunk_textures[k]->texture_array();
+    int tex_index = chunk_textures[k]->array_index();
 
     int sampler_id = -1;
     for (int n = 0; n < draw_call.samplers.size(); ++n)
@@ -611,11 +647,11 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
     }
 
     _chunk_instance_data[chunk_index].ChunkTextureSamplers[k] = sampler_id;
-    _chunk_instance_data[chunk_index].ChunkTextureArrayIDs[k] = (*chunk->texture_set->getTextures())[k]->is_specular() ? tex_index : -tex_index;
+    _chunk_instance_data[chunk_index].ChunkTextureArrayIDs[k] = chunk_textures[k]->is_specular() ? tex_index : -tex_index;
     
     if(modern_features && heightRef)
     {
-        GLuint hTex_array = (*chunk->texture_set->getTextures())[k]->getHeightMap()->texture_array();
+        GLuint hTex_array = chunk_textures[k]->getHeightMap()->texture_array();
 
         sampler_id = -1;
         for (int n = 0; n < draw_call.samplers.size(); ++n)
@@ -673,7 +709,8 @@ void TileRender::initChunkData(MapChunk* chunk)
   chunk_render_instance.ChunkHoles_DrawImpass_TexLayerCount_CantPaint[2] = static_cast<int>(chunk->texture_set->num());
   chunk_render_instance.ChunkHoles_DrawImpass_TexLayerCount_CantPaint[3] = 0;
   chunk_render_instance.AreaIDColor_Pad2_DrawSelection[0] = chunk->areaID;
-  chunk_render_instance.AreaIDColor_Pad2_DrawSelection[3] = 0;
+  chunk_render_instance.AreaIDColor_Pad2_DrawSelection[3]
+      = static_cast<float>(chunk->chunk_mover_overlay);
 
   chunk_render_instance.ChunkGroundEffectColor[0] = 0.0f;
   chunk_render_instance.ChunkGroundEffectColor[1] = 0.0f;
@@ -685,6 +722,23 @@ void TileRender::initChunkData(MapChunk* chunk)
   chunk_render_instance.ChunkDoodadsEnabled2_ChunksLayerEnabled2[1] = 0;
   chunk_render_instance.ChunkDoodadsEnabled2_ChunksLayerEnabled2[2] = 0;
   chunk_render_instance.ChunkDoodadsEnabled2_ChunksLayerEnabled2[3] = 0;
+  setChunkGroundEffectColorFromData(chunk);
+  setChunkGroundEffectActiveData(chunk);
+}
+
+void TileRender::setChunkGroundEffectColorFromData(MapChunk* chunk)
+{
+  glm::vec3 color{ 0.f, 0.f, 0.f };
+  TextureSet* texture_set = chunk->getTextureSet();
+  for (int layer = 0; layer < texture_set->num(); ++layer)
+  {
+    if (texture_set->filename(layer) == _geffect_active_texture)
+    {
+      color = ground_effect_color(texture_set->getEffectForLayer(layer));
+      break;
+    }
+  }
+  setChunkGroundEffectColor(chunk->px * 16 + chunk->py, color);
 }
 
 void TileRender::setChunkDetaildoodadsExclusionData(MapChunk* chunk)
@@ -732,24 +786,23 @@ void Noggit::Rendering::TileRender::setChunkGroundEffectActiveData(MapChunk* chu
   int32_t active_map1 = 0;
   int32_t active_map2 = 0;
 
-  // convert layer id to bool (Is Active)
-  int bit = 0;
-  for (unsigned int x = 0; x < 8; x++)
+  // convert layer id to bool (Is Active). packed like the exclusion map and
+  // the on-disk doodadMapping: bit = unit_z * 8 + unit_x (row = z, slot = x)
+  for (unsigned int y = 0; y < 8; y++)
   {
-      for (unsigned int y = 0; y < 8; y++)
+      for (unsigned int x = 0; x < 8; x++)
       {
           uint8_t unit_layer_id = chunk->texture_set->getDoodadActiveLayerIdAt(x, y);
-          bool is_active = layer_id == unit_layer_id;
 
-          if (is_active)
-          {
-            if (bit < 32)
-              active_map1 |= (1 << bit);
-            else
-              active_map2 |= (1 << (bit-32));
-          }
+          if (layer_id != unit_layer_id)
+              continue;
 
-          bit++;
+          int bit = y * 8 + x;
+
+          if (bit < 32)
+            active_map1 |= (1 << bit);
+          else
+            active_map2 |= (1 << (bit-32));
       }
   }
 
@@ -765,6 +818,7 @@ void Noggit::Rendering::TileRender::setActiveRenderGEffectTexture(std::string ac
     _geffect_active_texture = active_texture;
 
     _require_geffect_active_texture_update = true;
+    _requires_ground_effect_color_recalc = true;
 
 }
 
@@ -809,7 +863,7 @@ bool Noggit::Rendering::TileRender::isOverridingOcclusionCulling() const
 
 void Noggit::Rendering::TileRender::setOverrideOcclusionCulling(bool state)
 {
-  _tile_frustum_culled = state;
+  _tile_occlusion_cull_override = state;
 }
 
 [[nodiscard]]

@@ -1,10 +1,12 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #include <noggit/DBC.h>
+#include <noggit/AsyncObject.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapView.h>
 #include <noggit/Misc.h>
 #include <noggit/ModelManager.h> // ModelManager
 #include <noggit/TextureManager.h> // TextureManager, Texture
+#include <noggit/texture_set.hpp>
 #include <noggit/WMOInstance.h> // WMOInstance
 #include <noggit/World.h>
 #include <noggit/MapTile.h>
@@ -76,6 +78,7 @@
 #include <noggit/tools/AreaTriggerTool.hpp>
 #include <noggit/StringHash.hpp>
 #include <noggit/application/NoggitApplication.hpp>
+#include <blizzard-archive-library/include/ClientData.hpp>
 #include <noggit/database/SqlDatabaseManager.h>
 
 #include <QtCore/QSettings>
@@ -101,6 +104,10 @@
 #include <QtWidgets/QOpenGLWidget>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QStatusBar>
+#include <QtWidgets/QHeaderView>
+#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QTreeWidget>
+#include <QtWidgets/QVBoxLayout>
 #include <QWidgetAction>
 #include <QSurfaceFormat>
 #include <QMessageBox>
@@ -124,6 +131,7 @@
 #include <vector>
 #include <random>
 #include <format>
+#include <unordered_set>
 
 
 /* Some ugly macros we use */
@@ -202,6 +210,28 @@ ACTION_CODE                                                                     
   }                                                               \
   while (false)
 
+// Viewport-wide commands such as the ADT/chunk grid must keep working while
+// focus is in a dock, menu, or auxiliary Noggit editor window.
+#define ADD_GLOBAL_TOGGLE_POST(menu_, name_, shortcut_, property_, post_)\
+  do                                                                     \
+  {                                                                      \
+    QAction* action (new QAction (name_, this));                         \
+    action->setShortcut (QKeySequence (shortcut_));                      \
+    action->setShortcutContext (Qt::ApplicationShortcut);                \
+    action->setCheckable (true);                                         \
+    action->setChecked (property_.get());                                \
+    menu_->addAction (action);                                           \
+    connect ( action, &QAction::toggled                                  \
+            , &property_, &Noggit::BoolToggleProperty::set               \
+            );                                                           \
+    connect ( &property_, &Noggit::BoolToggleProperty::changed           \
+            , action, &QAction::setChecked                               \
+            );                                                           \
+    connect ( action, &QAction::toggled, post_);                         \
+    connect ( &property_, &Noggit::BoolToggleProperty::changed, post_); \
+  }                                                                      \
+  while (false)
+
 
 
 #define ADD_TOGGLE_NS_POST(menu_, name_, property_, code_)        \
@@ -269,7 +299,7 @@ void MapView::set_editing_mode(editing_mode mode)
     _tool_panel_dock->show();
   }
 
-  if (context() && context()->isValid())
+  if (context() && context()->isValid() && terrainMode != mode)
   {
     _world->renderer()->getTerrainParamsUniformBlock()->draw_areaid_overlay = false;
     _world->renderer()->getTerrainParamsUniformBlock()->draw_impass_overlay = false;
@@ -282,12 +312,9 @@ void MapView::set_editing_mode(editing_mode mode)
     _world->renderer()->getTerrainParamsUniformBlock()->point_normals_up = false;
     _minimap->use_selection(nullptr);
     
-    if (terrainMode != mode)
-    {
-        activeTool()->onDeselected();
-        activeTool(mode);
-        activeTool()->onSelected();
-    }
+    activeTool()->onDeselected();
+    activeTool(mode);
+    activeTool()->onSelected();
   }
 
   _world->reset_selection();
@@ -637,6 +664,852 @@ void MapView::setupDetailInfos()
     {
       updateDetailInfos();
     });
+}
+
+void MapView::setupMissingObjects()
+{
+  _missing_objects_dock = new QDockWidget("Missing Objects", this);
+  _missing_objects_dock->setFeatures(QDockWidget::DockWidgetMovable
+                                     | QDockWidget::DockWidgetFloatable
+                                     | QDockWidget::DockWidgetClosable);
+  _missing_objects_dock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea
+                                         | Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+
+  auto* container = new QWidget(_missing_objects_dock);
+  auto* layout = new QVBoxLayout(container);
+  layout->setContentsMargins(6, 6, 6, 6);
+
+  _missing_objects_summary = new QLabel("No missing object placements have been detected in this map session.", container);
+  layout->addWidget(_missing_objects_summary);
+
+  _missing_objects_tree = new QTreeWidget(container);
+  _missing_objects_tree->setColumnCount(9);
+  _missing_objects_tree->setHeaderLabels({"Type", "State", "Missing file", "Owner / Source", "X", "Y", "Z", "ADT X", "ADT Z"});
+  _missing_objects_tree->setAlternatingRowColors(false);
+  _missing_objects_tree->setSelectionMode(QAbstractItemView::SingleSelection);
+  _missing_objects_tree->setRootIsDecorated(false);
+  _missing_objects_tree->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+  _missing_objects_tree->header()->setSectionResizeMode(2, QHeaderView::Stretch);
+  layout->addWidget(_missing_objects_tree);
+
+  auto* button_layout = new QHBoxLayout();
+  auto* previous_button = new QPushButton("Previous", container);
+  auto* focus_button = new QPushButton("Go To", container);
+  auto* next_button = new QPushButton("Next", container);
+  auto* repair_texture_button = new QPushButton("Repair // Path", container);
+  repair_texture_button->setEnabled(false);
+  repair_texture_button->setToolTip(
+    "Replace the selected terrain BLP's repeated slashes with single slashes. "
+    "If the corrected texture is already on the chunk, its layers are merged.");
+  auto* remove_texture_button = new QPushButton("Remove Missing Layer", container);
+  remove_texture_button->setEnabled(false);
+  remove_texture_button->setToolTip(
+    "Inspect the selected missing terrain texture's painted usage, then remove its chunk layer with confirmation.");
+  auto* refresh_button = new QPushButton("Refresh", container);
+  button_layout->addWidget(previous_button);
+  button_layout->addWidget(focus_button);
+  button_layout->addWidget(next_button);
+  button_layout->addWidget(repair_texture_button);
+  button_layout->addWidget(remove_texture_button);
+  button_layout->addStretch();
+  button_layout->addWidget(refresh_button);
+  layout->addLayout(button_layout);
+
+  _missing_objects_dock->setWidget(container);
+  _main_window->addDockWidget(Qt::BottomDockWidgetArea, _missing_objects_dock);
+  _missing_objects_dock->setVisible(_settings->value("map_view/missing_objects", false).toBool());
+  connect(this, &QObject::destroyed, _missing_objects_dock, &QObject::deleteLater);
+
+  auto focus_current = [this]()
+  {
+    if (auto* item = _missing_objects_tree->currentItem())
+    {
+      std::uint64_t const record_key = item->data(0, Qt::UserRole).toULongLong();
+      if (item->data(0, Qt::UserRole + 1).toBool())
+        focusMissingTerrainTexture(record_key);
+      else
+        focusMissingObject(record_key);
+    }
+  };
+
+  connect(_missing_objects_tree, &QTreeWidget::itemDoubleClicked,
+          this, [focus_current](QTreeWidgetItem*, int) { focus_current(); });
+  connect(focus_button, &QPushButton::clicked, this, focus_current);
+  connect(_missing_objects_tree, &QTreeWidget::itemSelectionChanged, this,
+          [this, repair_texture_button, remove_texture_button]()
+          {
+            auto* item = _missing_objects_tree->currentItem();
+            if (!item || !item->data(0, Qt::UserRole + 1).toBool())
+            {
+              repair_texture_button->setEnabled(false);
+              remove_texture_button->setEnabled(false);
+              return;
+            }
+
+            std::string const path = item->text(2).toStdString();
+            repair_texture_button->setEnabled(path.find("//") != std::string::npos
+                                               || path.find("\\\\") != std::string::npos);
+            remove_texture_button->setEnabled(true);
+          });
+  connect(repair_texture_button, &QPushButton::clicked, this,
+          [this]()
+          {
+            if (auto* item = _missing_objects_tree->currentItem();
+                item && item->data(0, Qt::UserRole + 1).toBool())
+            {
+              repairMissingTerrainTexturePath(item->data(0, Qt::UserRole).toULongLong());
+            }
+          });
+  connect(remove_texture_button, &QPushButton::clicked, this,
+          [this]()
+          {
+            if (auto* item = _missing_objects_tree->currentItem();
+                item && item->data(0, Qt::UserRole + 1).toBool())
+            {
+              removeMissingTerrainTextureLayer(item->data(0, Qt::UserRole).toULongLong());
+            }
+          });
+  connect(refresh_button, &QPushButton::clicked, this, &MapView::refreshMissingObjects);
+
+  auto select_relative = [this](int direction)
+  {
+    int const count = _missing_objects_tree->topLevelItemCount();
+    if (count == 0)
+      return;
+
+    int row = _missing_objects_tree->indexOfTopLevelItem(_missing_objects_tree->currentItem());
+    row = row < 0 ? (direction > 0 ? 0 : count - 1) : (row + direction + count) % count;
+    _missing_objects_tree->setCurrentItem(_missing_objects_tree->topLevelItem(row));
+    auto* item = _missing_objects_tree->currentItem();
+    std::uint64_t const record_key = item->data(0, Qt::UserRole).toULongLong();
+    if (item->data(0, Qt::UserRole + 1).toBool())
+      focusMissingTerrainTexture(record_key);
+    else
+      focusMissingObject(record_key);
+  };
+
+  connect(previous_button, &QPushButton::clicked, this, [select_relative]() { select_relative(-1); });
+  connect(next_button, &QPushButton::clicked, this, [select_relative]() { select_relative(1); });
+
+  _missing_objects_refresh_timer = new QTimer(_missing_objects_dock);
+  _missing_objects_refresh_timer->setInterval(1000);
+  connect(_missing_objects_refresh_timer, &QTimer::timeout, this, &MapView::refreshMissingObjects);
+  connect(_missing_objects_dock, &QDockWidget::visibilityChanged, this,
+          [this](bool visible)
+          {
+            if (ui_hidden)
+              return;
+
+            _settings->setValue("map_view/missing_objects", visible);
+            _settings->sync();
+            if (visible)
+              refreshMissingObjects();
+          });
+
+  refreshMissingObjects();
+  _missing_objects_refresh_timer->start();
+}
+
+void MapView::refreshMissingObjects()
+{
+  struct MissingObjectEntry
+  {
+    std::uint64_t record_key;
+    bool is_terrain_texture;
+    QString type;
+    QString path;
+    QString owner;
+    std::uint32_t owner_uid;
+    glm::vec3 pos;
+    bool loaded;
+  };
+
+  constexpr std::uint64_t wmo_doodad_record_flag = std::uint64_t{1} << 63;
+  std::unordered_set<std::uint64_t> loaded_record_keys;
+  auto collect_placement = [this, &loaded_record_keys](SceneObject& instance)
+  {
+    if (instance.chunk_mover_preview)
+      return;
+
+    std::uint64_t const record_key = instance.uid;
+    loaded_record_keys.insert(record_key);
+    if (instance.instance_model()->loading_failed())
+    {
+      if (!_missing_object_records.contains(record_key))
+        _missing_object_warning_pending = true;
+      _missing_object_records[record_key] = {
+        instance.which() == eWMO,
+        false,
+        instance.uid,
+        instance.instance_model()->file_key().filepath(),
+        {},
+        instance.pos,
+        instance.pos
+      };
+    }
+  };
+
+  auto& storage = _world->getModelInstanceStorage();
+  storage.for_each_m2_instance([&collect_placement](ModelInstance& instance) { collect_placement(instance); });
+  storage.for_each_wmo_instance(
+    [this, &collect_placement, &loaded_record_keys, wmo_doodad_record_flag](WMOInstance& instance)
+    {
+      collect_placement(instance);
+      if (instance.chunk_mover_preview
+          || (!AsyncLoader::instance->important_object_failed_loading()
+              && _missing_object_records.empty())
+          || !instance.wmo->finishedLoading()
+          || instance.wmo->loading_failed())
+      {
+        return;
+      }
+
+      auto const& doodads = instance.wmo->modelis;
+      for (std::size_t doodad_index = 0; doodad_index < doodads.size(); ++doodad_index)
+      {
+        auto const& doodad = doodads[doodad_index];
+        if (!doodad.model->loading_failed())
+          continue;
+
+        std::uint64_t const record_key = wmo_doodad_record_flag
+          | (static_cast<std::uint64_t>(instance.uid) << 31)
+          | (static_cast<std::uint64_t>(doodad_index) & 0x7FFFFFFFull);
+        loaded_record_keys.insert(record_key);
+
+        glm::vec3 const world_pos = glm::vec3(instance.transformMatrix() * glm::vec4(doodad.pos, 1.0f));
+        if (!_missing_object_records.contains(record_key))
+          _missing_object_warning_pending = true;
+        _missing_object_records[record_key] = {
+          false,
+          true,
+          instance.uid,
+          doodad.model->file_key().filepath(),
+          instance.wmo->file_key().filepath(),
+          world_pos,
+          instance.pos
+        };
+      }
+    });
+
+  std::unordered_set<std::uint64_t> loaded_terrain_texture_record_keys;
+  for (MapTile* tile : _world->mapIndex.loaded_tiles())
+  {
+    if (!tile || !tile->finishedLoading() || tile->loading_failed())
+      continue;
+
+    for (unsigned int chunk_z = 0; chunk_z < 16; ++chunk_z)
+    {
+      for (unsigned int chunk_x = 0; chunk_x < 16; ++chunk_x)
+      {
+        MapChunk* chunk = tile->getChunk(chunk_x, chunk_z);
+        if (!chunk || !chunk->texture_set)
+          continue;
+
+        auto* textures = chunk->texture_set->getTextures();
+        for (std::size_t layer = 0; layer < chunk->texture_set->num(); ++layer)
+        {
+          blp_texture* texture = (*textures)[layer].get();
+          if (!texture || !texture->finishedLoading() || !texture->file_key().hasFilepath())
+            continue;
+
+          if (!texture->source_missing() && !texture->loading_failed())
+            continue;
+
+          std::string const& path = texture->file_key().filepath();
+          std::uint64_t const slot_key = static_cast<std::uint64_t>(tile->index.x)
+                                       | (static_cast<std::uint64_t>(tile->index.z) << 6)
+                                       | (static_cast<std::uint64_t>(chunk_x) << 12)
+                                       | (static_cast<std::uint64_t>(chunk_z) << 16)
+                                       | (static_cast<std::uint64_t>(layer) << 20);
+
+          std::uint64_t record_key = 0;
+          auto const known_slot = _missing_terrain_texture_slots.find(slot_key);
+          if (known_slot != _missing_terrain_texture_slots.end())
+          {
+            auto const known_record = _missing_terrain_texture_records.find(known_slot->second);
+            if (known_record != _missing_terrain_texture_records.end()
+                && known_record->second.path == path)
+            {
+              record_key = known_slot->second;
+            }
+          }
+
+          if (record_key == 0)
+          {
+            record_key = _next_missing_terrain_texture_record_id++;
+            _missing_terrain_texture_slots[slot_key] = record_key;
+          }
+
+          loaded_terrain_texture_record_keys.insert(record_key);
+          _missing_terrain_texture_records[record_key] = {
+            path,
+            chunk->vcenter,
+            tile->index.x,
+            tile->index.z,
+            chunk_x,
+            chunk_z,
+            layer
+          };
+        }
+      }
+    }
+  }
+
+  if (!_missing_objects_dock->isVisible())
+    return;
+
+  std::vector<MissingObjectEntry> entries;
+  entries.reserve(_missing_object_records.size() + _missing_terrain_texture_records.size());
+  for (auto const& [record_key, record] : _missing_object_records)
+  {
+    entries.push_back({record_key,
+                       false,
+                       record.is_wmo_doodad ? "WMO doodad" : (record.is_wmo ? "WMO" : "M2"),
+                       QString::fromStdString(record.path),
+                       QString::number(record.owner_uid),
+                       record.owner_uid,
+                       record.pos,
+                       loaded_record_keys.contains(record_key)});
+  }
+
+  for (auto const& [record_key, record] : _missing_terrain_texture_records)
+  {
+    entries.push_back({
+      record_key,
+      true,
+      "Terrain BLP",
+      QString::fromStdString(record.path),
+      QString("ADT %1,%2 / Chunk %3,%4 / Layer %5")
+        .arg(static_cast<qulonglong>(record.adt_x))
+        .arg(static_cast<qulonglong>(record.adt_z))
+        .arg(record.chunk_x)
+        .arg(record.chunk_z)
+        .arg(static_cast<qulonglong>(record.layer)),
+      0,
+      record.pos,
+      loaded_terrain_texture_record_keys.contains(record_key)
+    });
+  }
+
+  std::sort(entries.begin(), entries.end(), [](MissingObjectEntry const& lhs, MissingObjectEntry const& rhs)
+  {
+    if (lhs.type != rhs.type)
+      return lhs.type < rhs.type;
+    if (lhs.path != rhs.path)
+      return lhs.path < rhs.path;
+    if (!lhs.is_terrain_texture && lhs.owner_uid != rhs.owner_uid)
+      return lhs.owner_uid < rhs.owner_uid;
+    if (lhs.is_terrain_texture && lhs.owner != rhs.owner)
+      return lhs.owner < rhs.owner;
+    return lhs.record_key < rhs.record_key;
+  });
+
+  QString const summary = entries.empty()
+    ? "No missing object placements or terrain textures have been detected in this map session."
+    : QString("%1 missing asset occurrence%2 detected this session. Double-click a row to go to it.")
+        .arg(static_cast<qulonglong>(entries.size()))
+        .arg(entries.size() == 1 ? "" : "s");
+  if (_missing_objects_summary->text() != summary)
+    _missing_objects_summary->setText(summary);
+
+  bool unchanged = static_cast<std::size_t>(_missing_objects_tree->topLevelItemCount()) == entries.size();
+  for (std::size_t row = 0; unchanged && row < entries.size(); ++row)
+  {
+    auto const& entry = entries[row];
+    auto* item = _missing_objects_tree->topLevelItem(static_cast<int>(row));
+    unchanged = item->data(0, Qt::UserRole).toULongLong() == entry.record_key
+             && item->data(0, Qt::UserRole + 1).toBool() == entry.is_terrain_texture
+             && item->text(0) == entry.type
+             && item->text(2) == entry.path
+             && item->text(3) == entry.owner
+             && item->text(4) == QString::number(entry.pos.x, 'f', 2)
+             && item->text(5) == QString::number(entry.pos.y, 'f', 2)
+             && item->text(6) == QString::number(entry.pos.z, 'f', 2);
+
+    if (unchanged)
+    {
+      QString const state = entry.loaded ? "Loaded" : "Unloaded";
+      if (item->text(1) != state)
+        item->setText(1, state);
+    }
+  }
+
+  if (unchanged)
+    return;
+
+  std::uint64_t selected_record_key = 0;
+  bool selected_is_terrain_texture = false;
+  if (auto* selected = _missing_objects_tree->currentItem())
+  {
+    selected_record_key = selected->data(0, Qt::UserRole).toULongLong();
+    selected_is_terrain_texture = selected->data(0, Qt::UserRole + 1).toBool();
+  }
+
+  _missing_objects_tree->setUpdatesEnabled(false);
+  _missing_objects_tree->clear();
+  QTreeWidgetItem* item_to_restore = nullptr;
+
+  for (auto const& entry : entries)
+  {
+    int const adt_x = static_cast<int>(std::floor(entry.pos.x / TILESIZE));
+    int const adt_z = static_cast<int>(std::floor(entry.pos.z / TILESIZE));
+    auto* item = new QTreeWidgetItem(_missing_objects_tree,
+      {entry.type,
+       entry.loaded ? "Loaded" : "Unloaded",
+       entry.path,
+       entry.owner,
+       QString::number(entry.pos.x, 'f', 2),
+       QString::number(entry.pos.y, 'f', 2),
+       QString::number(entry.pos.z, 'f', 2),
+       QString::number(adt_x),
+       QString::number(adt_z)});
+    item->setData(0, Qt::UserRole, static_cast<qulonglong>(entry.record_key));
+    item->setData(0, Qt::UserRole + 1, entry.is_terrain_texture);
+    item->setToolTip(2, entry.path);
+    if (entry.record_key == selected_record_key
+        && entry.is_terrain_texture == selected_is_terrain_texture)
+      item_to_restore = item;
+  }
+
+  if (item_to_restore)
+    _missing_objects_tree->setCurrentItem(item_to_restore);
+  _missing_objects_tree->setUpdatesEnabled(true);
+}
+
+void MapView::focusMissingObject(std::uint64_t record_key)
+{
+  auto record_it = _missing_object_records.find(record_key);
+  if (record_it == _missing_object_records.end())
+  {
+    std::uint32_t const placement_uid = static_cast<std::uint32_t>(record_key);
+    auto placement = _world->getModelInstanceStorage().get_instance(placement_uid);
+    if (placement && placement->index() == eEntry_Object)
+    {
+      SceneObject* loaded_object = std::get<selected_object_type>(*placement);
+      if (loaded_object && loaded_object->instance_model()->loading_failed())
+      {
+        _missing_object_warning_pending = true;
+        _missing_object_records[record_key] = {
+          loaded_object->which() == eWMO,
+          false,
+          loaded_object->uid,
+          loaded_object->instance_model()->file_key().filepath(),
+          {},
+          loaded_object->pos,
+          loaded_object->pos
+        };
+      }
+    }
+    record_it = _missing_object_records.find(record_key);
+  }
+
+  if (record_it == _missing_object_records.end())
+  {
+    refreshMissingObjects();
+    return;
+  }
+
+  MissingObjectRecord const record = record_it->second;
+  std::uint32_t const owner_uid = record.owner_uid;
+  auto instance = _world->getModelInstanceStorage().get_instance(owner_uid);
+  if (!instance || instance->index() != eEntry_Object)
+  {
+    TileIndex const tile(record.reload_pos);
+    if (_world->mapIndex.hasTile(tile))
+    {
+      makeCurrent();
+      OpenGL::context::scoped_setter const _(::gl, context());
+      if (MapTile* loaded_tile = _world->mapIndex.loadTile(tile))
+        loaded_tile->wait_until_loaded();
+    }
+    instance = _world->getModelInstanceStorage().get_instance(owner_uid);
+  }
+
+  SceneObject* object = instance && instance->index() == eEntry_Object
+    ? std::get<selected_object_type>(*instance)
+    : nullptr;
+  if (object)
+  {
+    _world->reset_selection();
+    _world->add_to_selection(object, true);
+  }
+  _cursor_pos = record.pos;
+
+  float const distance = record.is_wmo ? 80.0f : 55.0f;
+  _camera.position = record.pos + glm::vec3(0.0f, distance * 0.65f, -distance);
+  glm::vec3 const direction = glm::normalize(record.pos - _camera.position);
+  float const horizontal_distance = std::sqrt(direction.x * direction.x + direction.z * direction.z);
+  _camera.yaw(math::degrees(glm::degrees(std::atan2(direction.x, direction.z))));
+  _camera.pitch(math::degrees(glm::degrees(std::atan2(-direction.y, horizontal_distance))));
+  _camera_moved_since_last_draw = true;
+  invalidate();
+  setFocus(Qt::OtherFocusReason);
+
+  _main_window->statusBar()->showMessage(
+    QString("Missing %1 UID %2 at (%3, %4, %5): %6")
+      .arg(record.is_wmo_doodad ? "WMO doodad" : (record.is_wmo ? "WMO" : "M2"))
+      .arg(owner_uid)
+      .arg(record.pos.x, 0, 'f', 2)
+      .arg(record.pos.y, 0, 'f', 2)
+      .arg(record.pos.z, 0, 'f', 2)
+      .arg(QString::fromStdString(record.path)),
+    8000);
+
+  refreshMissingObjects();
+}
+
+void MapView::focusMissingTerrainTexture(std::uint64_t record_key)
+{
+  auto const record_it = _missing_terrain_texture_records.find(record_key);
+  if (record_it == _missing_terrain_texture_records.end())
+  {
+    refreshMissingObjects();
+    return;
+  }
+
+  MissingTerrainTextureRecord const record = record_it->second;
+  TileIndex const tile_index(record.adt_x, record.adt_z);
+  if (!_world->mapIndex.hasTile(tile_index))
+  {
+    refreshMissingObjects();
+    return;
+  }
+
+  makeCurrent();
+  OpenGL::context::scoped_setter const _(::gl, context());
+  if (MapTile* tile = _world->mapIndex.loadTile(tile_index))
+    tile->wait_until_loaded();
+
+  _world->reset_selection();
+  _cursor_pos = record.pos;
+
+  constexpr float distance = 55.0f;
+  _camera.position = record.pos + glm::vec3(0.0f, distance * 0.65f, -distance);
+  glm::vec3 const direction = glm::normalize(record.pos - _camera.position);
+  float const horizontal_distance = std::sqrt(direction.x * direction.x + direction.z * direction.z);
+  _camera.yaw(math::degrees(glm::degrees(std::atan2(direction.x, direction.z))));
+  _camera.pitch(math::degrees(glm::degrees(std::atan2(-direction.y, horizontal_distance))));
+  _camera_moved_since_last_draw = true;
+  invalidate();
+  setFocus(Qt::OtherFocusReason);
+
+  _main_window->statusBar()->showMessage(
+    QString("Missing terrain BLP at ADT %1,%2 / Chunk %3,%4 / Layer %5: %6")
+      .arg(static_cast<qulonglong>(record.adt_x))
+      .arg(static_cast<qulonglong>(record.adt_z))
+      .arg(record.chunk_x)
+      .arg(record.chunk_z)
+      .arg(static_cast<qulonglong>(record.layer))
+      .arg(QString::fromStdString(record.path)),
+    8000);
+
+  refreshMissingObjects();
+}
+
+void MapView::repairMissingTerrainTexturePath(std::uint64_t record_key)
+{
+  auto const record_it = _missing_terrain_texture_records.find(record_key);
+  if (record_it == _missing_terrain_texture_records.end())
+  {
+    refreshMissingObjects();
+    return;
+  }
+
+  MissingTerrainTextureRecord const record = record_it->second;
+  std::string canonical_path;
+  canonical_path.reserve(record.path.size());
+  for (char character : record.path)
+  {
+    char const normalized_character = character == '\\' ? '/' : character;
+    if (normalized_character == '/' && !canonical_path.empty() && canonical_path.back() == '/')
+      continue;
+    canonical_path.push_back(normalized_character);
+  }
+
+  if (canonical_path == record.path)
+  {
+    _main_window->statusBar()->showMessage("The selected terrain BLP has no repeated slashes to repair.", 8000);
+    return;
+  }
+
+  auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+  if (!client_data || !client_data->exists(canonical_path))
+  {
+    _main_window->statusBar()->showMessage(
+      QString("Cannot repair %1 because its one-slash counterpart does not exist: %2")
+        .arg(QString::fromStdString(record.path), QString::fromStdString(canonical_path)),
+      10000);
+    return;
+  }
+
+  TileIndex const tile_index(record.adt_x, record.adt_z);
+  if (!_world->mapIndex.hasTile(tile_index))
+  {
+    _main_window->statusBar()->showMessage("Cannot repair the terrain BLP because its ADT is unavailable.", 8000);
+    return;
+  }
+
+  makeCurrent();
+  OpenGL::context::scoped_setter const _(::gl, context());
+  MapTile* tile = _world->mapIndex.loadTile(tile_index);
+  if (!tile)
+    return;
+  tile->wait_until_loaded();
+
+  MapChunk* chunk = tile->getChunk(record.chunk_x, record.chunk_z);
+  if (!chunk || !chunk->texture_set)
+    return;
+
+  auto* textures = chunk->texture_set->getTextures();
+  std::size_t source_layer = chunk->texture_set->num();
+  if (record.layer < chunk->texture_set->num()
+      && (*textures)[record.layer]->file_key().hasFilepath()
+      && (*textures)[record.layer]->file_key().filepath() == record.path)
+  {
+    source_layer = record.layer;
+  }
+  else
+  {
+    for (std::size_t layer = 0; layer < chunk->texture_set->num(); ++layer)
+    {
+      if ((*textures)[layer]->file_key().hasFilepath()
+          && (*textures)[layer]->file_key().filepath() == record.path)
+      {
+        source_layer = layer;
+        break;
+      }
+    }
+  }
+
+  if (source_layer == chunk->texture_set->num())
+  {
+    _main_window->statusBar()->showMessage(
+      "The recorded texture layer has changed since it was detected; no repair was made.", 8000);
+    refreshMissingObjects();
+    return;
+  }
+
+  std::size_t counterpart_layer = chunk->texture_set->num();
+  for (std::size_t layer = 0; layer < chunk->texture_set->num(); ++layer)
+  {
+    if (layer != source_layer
+        && (*textures)[layer]->file_key().hasFilepath()
+        && (*textures)[layer]->file_key().filepath() == canonical_path)
+    {
+      counterpart_layer = layer;
+      break;
+    }
+  }
+
+  NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eCHUNKS_TEXTURE);
+  NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+
+  scoped_blp_texture_reference canonical_texture(canonical_path, _context);
+  (*textures)[source_layer] = std::move(canonical_texture);
+
+  bool const merged = counterpart_layer != chunk->texture_set->num();
+  if (merged)
+  {
+    layer_info const counterpart_info = chunk->texture_set->getMCLYEntries()[counterpart_layer];
+    std::size_t const retained_layer = std::min(source_layer, counterpart_layer);
+    chunk->texture_set->merge_layers(source_layer, counterpart_layer);
+    chunk->texture_set->getMCLYEntries()[retained_layer] = counterpart_info;
+  }
+  else
+  {
+    chunk->texture_set->markDirty();
+  }
+
+  _world->mapIndex.setChanged(tile);
+  NOGGIT_ACTION_MGR->endAction();
+
+  clearMissingTerrainTextureRecordsForChunk(record);
+
+  invalidate();
+  _main_window->statusBar()->showMessage(
+    QString("Repaired terrain BLP path: %1 -> %2%3")
+      .arg(QString::fromStdString(record.path),
+           QString::fromStdString(canonical_path),
+           merged ? " (duplicate layers merged)" : ""),
+    10000);
+  refreshMissingObjects();
+}
+
+void MapView::removeMissingTerrainTextureLayer(std::uint64_t record_key)
+{
+  auto const record_it = _missing_terrain_texture_records.find(record_key);
+  if (record_it == _missing_terrain_texture_records.end())
+  {
+    refreshMissingObjects();
+    return;
+  }
+
+  MissingTerrainTextureRecord const record = record_it->second;
+  TileIndex const tile_index(record.adt_x, record.adt_z);
+  if (!_world->mapIndex.hasTile(tile_index))
+  {
+    _main_window->statusBar()->showMessage("Cannot remove the terrain layer because its ADT is unavailable.", 8000);
+    return;
+  }
+
+  MapTile* tile = nullptr;
+  {
+    makeCurrent();
+    OpenGL::context::scoped_setter const context_setter(::gl, context());
+    tile = _world->mapIndex.loadTile(tile_index);
+    if (tile)
+      tile->wait_until_loaded();
+  }
+
+  MapChunk* chunk = tile ? tile->getChunk(record.chunk_x, record.chunk_z) : nullptr;
+  if (!chunk || !chunk->texture_set)
+    return;
+
+  auto find_recorded_layer = [&]()
+  {
+    auto* textures = chunk->texture_set->getTextures();
+    if (record.layer < chunk->texture_set->num()
+        && (*textures)[record.layer]->file_key().hasFilepath()
+        && (*textures)[record.layer]->file_key().filepath() == record.path)
+    {
+      return record.layer;
+    }
+
+    for (std::size_t layer = 0; layer < chunk->texture_set->num(); ++layer)
+    {
+      if ((*textures)[layer]->file_key().hasFilepath()
+          && (*textures)[layer]->file_key().filepath() == record.path)
+      {
+        return layer;
+      }
+    }
+    return chunk->texture_set->num();
+  };
+
+  std::size_t source_layer = find_recorded_layer();
+  if (source_layer == chunk->texture_set->num())
+  {
+    _main_window->statusBar()->showMessage(
+      "The recorded texture layer has changed since it was detected; nothing was removed.", 8000);
+    refreshMissingObjects();
+    return;
+  }
+
+  std::size_t painted_texels = 0;
+  float maximum_alpha = 0.0f;
+  double total_alpha = 0.0;
+  auto const& temporary_alphas = chunk->texture_set->getTempAlphamaps();
+  auto const* stored_alphas = chunk->texture_set->getAlphamaps();
+  for (std::size_t texel = 0; texel < 64 * 64; ++texel)
+  {
+    float alpha = 0.0f;
+    if (temporary_alphas)
+    {
+      alpha = temporary_alphas->map[source_layer][texel];
+    }
+    else if (source_layer == 0)
+    {
+      alpha = 255.0f;
+      for (std::size_t layer = 1; layer < chunk->texture_set->num(); ++layer)
+        alpha -= (*stored_alphas)[layer - 1]->getAlpha(texel);
+    }
+    else
+    {
+      alpha = (*stored_alphas)[source_layer - 1]->getAlpha(texel);
+    }
+
+    alpha = std::clamp(alpha, 0.0f, 255.0f);
+    if (alpha > 0.0f)
+      ++painted_texels;
+    maximum_alpha = std::max(maximum_alpha, alpha);
+    total_alpha += alpha;
+  }
+
+  double const average_percent = total_alpha / (4096.0 * 255.0) * 100.0;
+  double const maximum_percent = maximum_alpha / 255.0 * 100.0;
+
+  QMessageBox confirmation(this);
+  confirmation.setIcon(painted_texels == 0 ? QMessageBox::Question : QMessageBox::Warning);
+  confirmation.setWindowTitle("Remove missing terrain layer");
+  confirmation.setText(QString("Remove layer %1 from ADT %2,%3 / Chunk %4,%5?")
+    .arg(static_cast<qulonglong>(source_layer))
+    .arg(static_cast<qulonglong>(record.adt_x))
+    .arg(static_cast<qulonglong>(record.adt_z))
+    .arg(record.chunk_x)
+    .arg(record.chunk_z));
+  confirmation.setInformativeText(
+    QString("%1\n\nPainted texels: %2 / 4096\nMaximum opacity: %3%\nAverage contribution: %4%\n\n"
+            "Removing the layer reveals the layers beneath it. This action can be undone.")
+      .arg(QString::fromStdString(record.path))
+      .arg(static_cast<qulonglong>(painted_texels))
+      .arg(maximum_percent, 0, 'f', 2)
+      .arg(average_percent, 0, 'f', 4));
+  QPushButton* remove_button = confirmation.addButton("Remove Layer", QMessageBox::DestructiveRole);
+  confirmation.addButton(QMessageBox::Cancel);
+  confirmation.setDefaultButton(QMessageBox::Cancel);
+  confirmation.exec();
+  if (confirmation.clickedButton() != remove_button)
+    return;
+
+  source_layer = find_recorded_layer();
+  if (source_layer == chunk->texture_set->num())
+  {
+    _main_window->statusBar()->showMessage(
+      "The texture layer changed while confirmation was open; nothing was removed.", 8000);
+    refreshMissingObjects();
+    return;
+  }
+
+  makeCurrent();
+  OpenGL::context::scoped_setter const context_setter(::gl, context());
+  NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eCHUNKS_TEXTURE);
+  NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+  chunk->texture_set->eraseTexture(source_layer);
+  _world->mapIndex.setChanged(tile);
+  NOGGIT_ACTION_MGR->endAction();
+
+  clearMissingTerrainTextureRecordsForChunk(record);
+  invalidate();
+  _main_window->statusBar()->showMessage(
+    QString("Removed missing terrain layer %1 from ADT %2,%3 / Chunk %4,%5. Use Undo to restore it.")
+      .arg(static_cast<qulonglong>(source_layer))
+      .arg(static_cast<qulonglong>(record.adt_x))
+      .arg(static_cast<qulonglong>(record.adt_z))
+      .arg(record.chunk_x)
+      .arg(record.chunk_z),
+    10000);
+  refreshMissingObjects();
+}
+
+void MapView::clearMissingTerrainTextureRecordsForChunk(MissingTerrainTextureRecord const& record)
+{
+  std::unordered_set<std::uint64_t> record_keys;
+  for (auto record_it = _missing_terrain_texture_records.begin();
+       record_it != _missing_terrain_texture_records.end();)
+  {
+    MissingTerrainTextureRecord const& candidate = record_it->second;
+    if (candidate.adt_x == record.adt_x
+        && candidate.adt_z == record.adt_z
+        && candidate.chunk_x == record.chunk_x
+        && candidate.chunk_z == record.chunk_z)
+    {
+      record_keys.insert(record_it->first);
+      record_it = _missing_terrain_texture_records.erase(record_it);
+    }
+    else
+    {
+      ++record_it;
+    }
+  }
+
+  for (auto slot_it = _missing_terrain_texture_slots.begin();
+       slot_it != _missing_terrain_texture_slots.end();)
+  {
+    if (record_keys.contains(slot_it->second))
+      slot_it = _missing_terrain_texture_slots.erase(slot_it);
+    else
+      ++slot_it;
+  }
 }
 
 void MapView::updateDetailInfos()
@@ -1870,11 +2743,14 @@ void MapView::setupViewMenu()
   ADD_TOGGLE (view_menu, "Water",       Qt::Key_F4, _draw_water);
   ADD_TOGGLE (view_menu, "WMOs",        Qt::Key_F6, _draw_wmo);
 
-  ADD_TOGGLE_POST (view_menu, "Lines", Qt::Key_F7, _draw_lines,
+  ADD_GLOBAL_TOGGLE_POST (view_menu, "Lines", Qt::Key_F7, _draw_lines,
                    [=]
                    {
                      _world->renderer()->getTerrainParamsUniformBlock()->draw_lines = _draw_lines.get();
                      _world->renderer()->markTerrainParamsUniformBlockDirty();
+                     _main_window->statusBar()->showMessage(
+                       _draw_lines.get() ? "ADT/chunk borders enabled (F7)" : "ADT/chunk borders disabled (F7)",
+                       2000);
                    });
 
   ADD_TOGGLE_POST (view_menu, "Contours", Qt::Key_F9, _draw_contour,
@@ -1966,6 +2842,7 @@ void MapView::setupViewMenu()
         _keybindings,
         _minimap_dock,
         _asset_browser_dock,
+        _missing_objects_dock,
         _overlay_widget,
         _tool_panel_dock
 
@@ -2003,6 +2880,7 @@ void MapView::setupViewMenu()
   ADD_ACTION(view_menu, "Toggle UI", Qt::Key_Tab, hide_widgets);
 
   ADD_TOGGLE (view_menu, "Detail infos", Qt::Key_F8, _show_detail_info_window);
+  view_menu->addAction(_missing_objects_dock->toggleViewAction());
 
   addHotkey( Qt::Key_H
     , MOD_none
@@ -2116,7 +2994,7 @@ void MapView::setupHelpMenu()
                   }
                 );
   ADD_ACTION_NS ( help_menu
-                , "Noggit Red Repository"
+                , "Noggit Azure Repository"
                 , []
                   {
                     ShellExecute ( nullptr
@@ -2130,7 +3008,7 @@ void MapView::setupHelpMenu()
                 );
 
   ADD_ACTION_NS ( help_menu
-                , "Noggit Red Discord"
+                , "Noggit Azure Discord"
                 , []
                   {
                     ShellExecute ( nullptr
@@ -2212,6 +3090,20 @@ void MapView::setupHotkeys()
   addHotkey(Qt::Key_C, MOD_ctrl, "copySelection"_hash);
 
   addHotkey(Qt::Key_V, MOD_ctrl, "paste"_hash);
+
+  addHotkey(Qt::Key_V, MOD_none, "chunkMoverPaste"_hash);
+
+  addHotkey(Qt::Key_X, MOD_none, "chunkMoverClear"_hash);
+
+  addHotkey(Qt::Key_X, MOD_none, "toggleTextureBrowser"_hash);
+
+  addHotkey(Qt::Key_X, MOD_none, "roadCancel"_hash);
+
+  addHotkey(Qt::Key_R, MOD_none, "chunkMoverRotate"_hash);
+
+  addHotkey(Qt::Key_F, MOD_none, "chunkMoverMirrorHorizontal"_hash);
+
+  addHotkey(Qt::Key_F, MOD_alt, "chunkMoverMirrorVertical"_hash);
 
   addHotkey(Qt::Key_V, MOD_shift, "importM2FromWmv"_hash);
 
@@ -2366,6 +3258,16 @@ void MapView::setupHotkeys()
   addHotkey(Qt::Key_F, MOD_none, "setAreaId"_hash);
 
   addHotkey(Qt::Key_Delete, MOD_none, "deleteSelection"_hash);
+
+  // These are registered last so Stamp Mode receives F before the older chunk/object/area
+  // bindings. The tool condition keeps every existing F binding unchanged in other modes.
+  addHotkey(Qt::Key_F, MOD_none, "mapStampLockCursor"_hash);
+  addHotkey(Qt::Key_F, MOD_space, "mapStampToggleLock"_hash);
+
+  // R is shared with Chunk Mover, but tool-scoped conditions make the behaviors exclusive.
+  // The Ctrl variant ensures releasing R while fine adjustment is held ends the drag.
+  addHotkey(Qt::Key_R, MOD_none, "stampRotateDrag"_hash);
+  addHotkey(Qt::Key_R, MOD_ctrl, "stampRotateDrag"_hash);
 }
 
 void MapView::setupMinimap()
@@ -2471,6 +3373,7 @@ void MapView::createGUI()
   // texturingTool->setup_ge_tool_renderer();
   setupNodeEditor();
   setupDetailInfos();
+  setupMissingObjects();
   setupToolbars();
   setupKeybindingsGui();
 
@@ -2554,7 +3457,7 @@ MapView::MapView( math::degrees camera_yaw0
   , _tablet_manager(Noggit::TabletManager::instance()),
     _project(Project)
 {
-  setWindowTitle ("Noggit Studio Red - " STRPRODUCTVER);
+  setWindowTitle ("Noggit Azure - " STRPRODUCTVER);
   setFocusPolicy (Qt::StrongFocus);
   setMouseTracking (true);
   setMinimumHeight(200);
@@ -2689,7 +3592,8 @@ auto MapView::setBrushTexture(QImage const* img) -> void
 
   makeCurrent();
   OpenGL::context::scoped_setter const _{gl, context()};
-  OpenGL::texture::set_active_texture(4);
+  gl.activeTexture(GL_TEXTURE0 + 4);
+  OpenGL::texture::current_active_texture = 4;
   _texBrush->bind();
   gl.texImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, tex.data());
   gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -2849,6 +3753,11 @@ void MapView::paintGL()
   OpenGL::context::scoped_setter const _(::gl, context());
   makeCurrent();
 
+  // Upload painted-selection mask changes before clearing the frame. The
+  // renderer double-buffers these textures so the upload never overwrites the
+  // texture that the previous terrain frame may still be sampling.
+  _world->renderer()->preparePaintedStampSelectionOverlay();
+
   gl.clear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   {
@@ -2878,6 +3787,7 @@ void MapView::paintGL()
     _transform_gizmo.setCurrentGizmoOperation(_gizmo_operation);
     _transform_gizmo.setCurrentGizmoMode(_gizmo_mode);
     _transform_gizmo.setUseMultiselectionPivot(activeTool()->useMultiselectionPivot());
+    _transform_gizmo.setScaleMultiselectionAroundPivot(activeTool()->scaleMultiselectionAroundPivot());
 
     auto pivot = _world->multi_select_pivot().has_value() ?
         _world->multi_select_pivot().value() : glm::vec3(0.f, 0.f, 0.f);
@@ -3004,6 +3914,16 @@ MapView::~MapView()
       if (_tools[static_cast<int>(editing_mode::paint)])
       {
         _tools[static_cast<int>(editing_mode::paint)]->unload();
+      }
+
+      // ChunkClipboard owns viewport-only terrain and object previews and its
+      // destructor removes them through World. Destroy it while both the World
+      // and this OpenGL context are still valid; the generic tool-vector
+      // teardown otherwise happens after _world.reset().
+      if (_tools[static_cast<int>(editing_mode::chunk)])
+      {
+        _tools[static_cast<int>(editing_mode::chunk)]->unload();
+        _tools[static_cast<int>(editing_mode::chunk)].reset();
       }
     }
 
@@ -3657,8 +4577,17 @@ void MapView::draw_map()
 
   renderParams.cursorRotation = _cursorRotation;
   renderParams.cursor_type = _cursorType;
+  renderParams.project_cursor_on_water = draw_parameters.project_cursor_on_water;
+  renderParams.show_liquid_vertices = draw_parameters.show_liquid_vertices;
+  renderParams.liquid_attribute_overlay = draw_parameters.liquid_attribute_overlay;
+  renderParams.liquid_edit_layer = draw_parameters.liquid_edit_layer;
+  renderParams.liquid_surface_token = draw_parameters.liquid_surface_token;
+  renderParams.liquid_brush_falloff = draw_parameters.liquid_brush_falloff;
   renderParams.brush_radius = radius;
   renderParams.show_unpaintable_chunks = show_unpaintable;
+  renderParams.show_stamp_protection = draw_parameters.show_stamp_protection;
+  renderParams.stamp_protection_center = draw_parameters.stamp_protection_center;
+  renderParams.stamp_protection_radius = draw_parameters.stamp_protection_radius;
   renderParams.draw_only_inside_light_sphere = _left_sec_toolbar->drawOnlyInsideSphereLight();
   renderParams.draw_wireframe_light_sphere = _left_sec_toolbar->drawWireframeSphereLight();
   renderParams.alpha_light_sphere = _left_sec_toolbar->getAlphaSphereLight();
@@ -3692,11 +4621,34 @@ void MapView::draw_map()
   renderParams.render_select_m2_collission_bbox = _render_m2_collission_bbox;
   renderParams.render_select_wmo_aabb = _render_wmo_aabb;
   renderParams.render_select_wmo_groups_bounds = _render_wmo_groups_bounds;
+  renderParams.road_preview_centerline = draw_parameters.road_preview_centerline;
+  renderParams.road_preview_left_edge = draw_parameters.road_preview_left_edge;
+  renderParams.road_preview_right_edge = draw_parameters.road_preview_right_edge;
+  renderParams.road_preview_blocked = draw_parameters.road_preview_blocked;
+  renderParams.road_reference_centerline = draw_parameters.road_reference_centerline;
+  renderParams.road_reference_left_edge = draw_parameters.road_reference_left_edge;
+  renderParams.road_reference_right_edge = draw_parameters.road_reference_right_edge;
+  renderParams.road_reference_mask_lines = draw_parameters.road_reference_mask_lines;
+  renderParams.show_painted_stamp_selection = draw_parameters.show_painted_stamp_selection;
+  renderParams.stamp_height_preview_lines = draw_parameters.stamp_height_preview_lines;
 
+  // The main viewport property is authoritative. Auxiliary renders and tool
+  // transitions also use the shared overlay UBO, so repair any stale value
+  // before every frame instead of relying on a one-time QAction callback.
+  auto* terrain_params = _world->renderer()->getTerrainParamsUniformBlock();
+  int const expected_draw_lines = (_draw_lines.get() || terrainMode == editing_mode::holes) ? 1 : 0;
+  if (terrain_params->draw_lines != expected_draw_lines)
+  {
+    terrain_params->draw_lines = expected_draw_lines;
+    _world->renderer()->markTerrainParamsUniformBlockDirty();
+  }
+
+  glm::vec3 const rendered_cursor_pos = draw_parameters.use_cursor_position_override
+      ? draw_parameters.cursor_position_override : _cursor_pos;
   _world->renderer()->draw (
                   _model_view
                 , _projection
-                , _cursor_pos
+                , rendered_cursor_pos
                 , cursorColor
                 , ref_pos
                 , _camera.position
@@ -4084,6 +5036,33 @@ void MapView::mousePressEvent(QMouseEvent* event)
   }
 }
 
+void MapView::mouseDoubleClickEvent(QMouseEvent* event)
+{
+  if (event->button() == Qt::LeftButton
+      && (terrainMode == editing_mode::object || terrainMode == editing_mode::minimap))
+  {
+    _last_mouse_pos = event->pos();
+    makeCurrent();
+    OpenGL::context::scoped_setter const _(::gl, context());
+
+    for (auto const& result : intersect_result(false))
+    {
+      if (result.second.index() != eEntry_Object)
+        continue;
+
+      SceneObject* object = std::get<selected_object_type>(result.second);
+      if (object && object->instance_model()->loading_failed())
+      {
+        focusMissingObject(object->uid);
+        event->accept();
+        return;
+      }
+    }
+  }
+
+  Noggit::Ui::Tools::ViewportManager::Viewport::mouseDoubleClickEvent(event);
+}
+
 void MapView::wheelEvent (QWheelEvent* event)
 {
   //! \todo: move the function call requiring a context in tick ?
@@ -4194,8 +5173,9 @@ void MapView::save(save_mode mode)
   bool save = true;
 
   activeTool()->saveSettings();
+  refreshMissingObjects();
 
-  if (AsyncLoader::instance->important_object_failed_loading())
+  if (_missing_object_warning_pending)
   {
     save = false;
     QPushButton *yes, *no;
@@ -4206,7 +5186,7 @@ void MapView::save(save_mode mode)
     first_warning.setWindowTitle("Some models couldn't be loaded");
     first_warning.setText("Error:\nSome models could not be loaded and saving will cause collision and culling issues,"
       " this is most likely caused by missing or corrupted models."
-      "\nCheck the log file for the list of model errors and fix them."
+      "\nOpen View > Missing Objects to review their placements and coordinates."
       "\nWould you still like to save ?");
     // roles are swapped to force the user to pay attention and both are "accept" roles so that escape does nothing
     no = first_warning.addButton("No", QMessageBox::ButtonRole::AcceptRole);
@@ -4276,6 +5256,7 @@ void MapView::save(save_mode mode)
 
     NOGGIT_ACTION_MGR->purge();
     AsyncLoader::instance->reset_object_fail();
+    _missing_object_warning_pending = false;
 
     _main_window->statusBar()->showMessage("Map saved", 2000);
 

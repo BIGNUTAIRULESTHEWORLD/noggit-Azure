@@ -91,7 +91,14 @@ enum class CursorType
 {
   NONE = 0,
   CIRCLE = 1,
-  STAMP = 2
+  STAMP = 2,
+  SQUARE = 3
+};
+
+enum class BrushShape
+{
+  CIRCLE = 0,
+  SQUARE = 1
 };
 
 enum display_mode

@@ -77,6 +77,11 @@ namespace Noggit
         return false;
     }
 
+    bool Tool::scaleMultiselectionAroundPivot() const
+    {
+        return false;
+    }
+
     bool Tool::useMedianPivotPoint() const
     {
         return false;

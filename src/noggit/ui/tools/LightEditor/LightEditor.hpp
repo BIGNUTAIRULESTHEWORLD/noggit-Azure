@@ -6,6 +6,7 @@
 #include <QWidget>
 #include <noggit/MapView.h>
 #include <QtWidgets/qtreewidget.h>
+#include <functional>
 
 class LightViewPreview;
 class LightViewEditor;
@@ -96,6 +97,15 @@ namespace Noggit::Ui::Tools
 		void UpdateToolTime(); // update on time change
 		void updateActiveLights(); // only need to update on position change
 		void updateLightningInfo(); // needs to be updated on time change AND position change
+		int selectedSkyId() const;
+		void selectSkyById(int sky_id);
+		void clearSkySelection();
+		void refreshLightList(int select_id = 0);
+		void updateSelectedSkyTransform();
+		void updateClipboard(Sky const& sky);
+		std::function<void(int)> onSkySelected;
+		std::function<void(int)> onBrowserLightSelected;
+		std::function<void()> onDeleteSelected;
 
 		void UpdateWorldTime();
 		void updateLightning();
@@ -122,9 +132,17 @@ namespace Noggit::Ui::Tools
 		QListWidget* _active_lights_tree;
 
 		QLineEdit* _light_tree_filter;
+		QComboBox* _light_scope_combo;
 		QListWidget* _light_tree;
+		QLabel* _clipboard_label;
+		int _clipboard_light_id = 0;
+		float _clipboard_inner_radius = 0.0f;
+		float _clipboard_outer_radius = 0.0f;
+		bool _clipboard_global = false;
+		bool _clipboard_zone_light = false;
 
 		QPushButton* save_current_sky_button;
+		QPushButton* save_name_button;
 		QLabel* lightid_label;
 
 		QCheckBox* global_light_chk;
@@ -152,6 +170,8 @@ namespace Noggit::Ui::Tools
 
     void load_light_param(int param_id);
 		void loadSelectSky(Sky* new_sky);
+		void saveLightName();
+		void updateClipboardLabel();
   };
 
 

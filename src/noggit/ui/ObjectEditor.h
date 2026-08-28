@@ -51,6 +51,7 @@ namespace Noggit
                     , BoolToggleProperty* move_model_to_cursor_position
                     , BoolToggleProperty* snap_multi_selection_to_ground
                     , BoolToggleProperty* use_median_pivot_point
+                    , BoolToggleProperty* scale_around_pivot_point
                     , object_paste_params*
                     , BoolToggleProperty* rotate_along_ground
                     , BoolToggleProperty* rotate_along_ground_smooth
@@ -116,7 +117,6 @@ namespace Noggit
       QLabel* _selection_groups_info;
 
       bool _copy_model_stats;
-      bool _use_median_pivot_point;
 
       // std::vector<selection_type> selected;
       std::vector<selection_type> _model_instance_created;

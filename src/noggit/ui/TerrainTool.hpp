@@ -68,6 +68,8 @@ namespace Noggit
 
       float brushRadius() const;
       float innerRadius() const;
+      BrushShape brushShape() const;
+      float brushOpacity() const;
 
       void storeCursorPos (glm::vec3* cursor_pos);
 
@@ -97,10 +99,12 @@ namespace Noggit
       glm::vec3* _cursor_pos;
 
       int _vertex_mode;
+      BrushShape _brush_shape;
 
       // UI stuff:
 
       QButtonGroup* _type_button_group;
+      QButtonGroup* _shape_button_group;
       QButtonGroup* _vertex_button_group;
       QGroupBox* _speed_box;
       QGroupBox* _vertex_type_group;
@@ -109,6 +113,7 @@ namespace Noggit
       Noggit::Ui::Tools::UiCommon::ExtendedSlider* _radius_slider;
       Noggit::Ui::Tools::UiCommon::ExtendedSlider* _inner_radius_slider;
       Noggit::Ui::Tools::UiCommon::ExtendedSlider* _speed_slider;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _brush_opacity_slider;
       QCheckBox* _snap_m2_objects_chkbox;
       QCheckBox* _snap_wmo_objects_chkbox;
 

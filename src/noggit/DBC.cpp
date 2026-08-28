@@ -120,6 +120,12 @@ std::uint32_t AreaDB::get_area_parent(int area_id)
   }
 }
 
+int AreaDB::resolve_zone_id(int area_id)
+{
+  std::uint32_t const parent = get_area_parent(area_id);
+  return parent ? static_cast<int>(parent) : area_id;
+}
+
 std::uint32_t AreaDB::get_new_areabit()
 {
     unsigned int areabit = 0;

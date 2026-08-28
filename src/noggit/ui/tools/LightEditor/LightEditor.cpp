@@ -1,18 +1,29 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include "LightEditor.hpp"
+#include <noggit/ActionManager.hpp>
 #include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/DBC.h>
+#include <noggit/MapHeaders.h>
 #include <noggit/MapView.h>
 #include <noggit/Model.h>
 #include <noggit/ui/FontAwesome.hpp>
 #include <noggit/ui/widgets/LightViewWidget.h>
 #include <noggit/World.h>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
 #include <format>
 #include <map>
+#include <optional>
+#include <sstream>
 #include <string>
+#include <tuple>
+
+#include <ClientFile.hpp>
 
 #include <QApplication>
 #include <QCheckBox>
@@ -28,6 +39,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QSpinBox>
 #include <QStandardItemModel>
 #include <QStringList>
@@ -37,6 +49,113 @@
 
 
 using namespace Noggit::Ui::Tools;
+
+namespace
+{
+	constexpr int current_map_scope = -1;
+	constexpr int azeroth_map_id = 0;
+	constexpr int kalimdor_map_id = 1;
+	constexpr int outland_map_id = 530;
+	constexpr int northrend_map_id = 571;
+
+	QString continentName(int map_id)
+	{
+		switch (map_id)
+		{
+			case azeroth_map_id: return "Azeroth";
+			case outland_map_id: return "Outland";
+			case northrend_map_id: return "Northrend";
+			case kalimdor_map_id: return "Kalimdor";
+			default: return QString::fromStdString(MapDB::getMapName(map_id));
+		}
+	}
+
+	std::optional<std::uint32_t> areaIdAtPosition(int map_id, float world_x, float world_z)
+	{
+		int const tile_x = static_cast<int>(std::floor(world_x / TILESIZE));
+		int const tile_z = static_cast<int>(std::floor(world_z / TILESIZE));
+		if (tile_x < 0 || tile_x >= 64 || tile_z < 0 || tile_z >= 64)
+			return std::nullopt;
+
+		int const chunk_x = std::clamp(static_cast<int>(std::floor(
+			(world_x - tile_x * TILESIZE) / CHUNKSIZE)), 0, 15);
+		int const chunk_z = std::clamp(static_cast<int>(std::floor(
+			(world_z - tile_z * TILESIZE) / CHUNKSIZE)), 0, 15);
+		int const chunk_index = chunk_x * 16 + chunk_z;
+
+		using TileKey = std::tuple<int, int, int>;
+		static std::map<TileKey, std::array<std::uint32_t, 256>> area_cache;
+		TileKey const key{ map_id, tile_x, tile_z };
+		auto cached = area_cache.find(key);
+		if (cached == area_cache.end())
+		{
+			std::array<std::uint32_t, 256> area_ids{};
+			try
+			{
+				DBCFile::Record const map_record = gMapDB.getByID(map_id);
+				std::string const map_directory = map_record.getString(MapDB::InternalName);
+				std::ostringstream filename;
+				filename << "World\\Maps\\" << map_directory << "\\" << map_directory
+					<< "_" << tile_x << "_" << tile_z << ".adt";
+
+				auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+				if (client_data->exists(filename.str()))
+				{
+					BlizzardArchive::ClientFile file(filename.str(), client_data);
+					char const* buffer = file.getBuffer();
+					std::size_t const file_size = file.getSize();
+					if (file_size >= 0x14 + sizeof(MHDR))
+					{
+						MHDR header{};
+						std::memcpy(&header, buffer + 0x14, sizeof(header));
+						std::size_t const mcin_offset = static_cast<std::size_t>(header.mcin) + 0x14;
+						if (mcin_offset + 8 + 256 * sizeof(ENTRY_MCIN) <= file_size)
+						{
+							for (int index = 0; index < 256; ++index)
+							{
+								ENTRY_MCIN entry{};
+								std::memcpy(&entry, buffer + mcin_offset + 8
+									+ index * sizeof(ENTRY_MCIN), sizeof(entry));
+								if (!entry.offset)
+									continue;
+								std::size_t const header_offset = static_cast<std::size_t>(entry.offset) + 8;
+								if (header_offset + sizeof(MapChunkHeader) > file_size)
+									continue;
+
+								MapChunkHeader chunk_header{};
+								std::memcpy(&chunk_header, buffer + header_offset, sizeof(chunk_header));
+								area_ids[index] = chunk_header.areaid;
+							}
+						}
+					}
+				}
+			}
+			catch (...)
+			{
+				// A missing or malformed tile only means this light cannot receive a
+				// more specific runtime label.
+			}
+			cached = area_cache.emplace(key, area_ids).first;
+		}
+
+		std::uint32_t const area_id = cached->second[chunk_index];
+		return area_id ? std::optional<std::uint32_t>(area_id) : std::nullopt;
+	}
+
+	QString inferredLocationName(int map_id, std::optional<std::uint32_t> area_id)
+	{
+		QString const continent = continentName(map_id);
+		if (!area_id)
+			return continent + " / Unknown area";
+
+		QString area = QString::fromStdString(AreaDB::getAreaFullName(static_cast<int>(*area_id)));
+		if (area.isEmpty() || area == "Unknown location")
+			return continent + " / Unknown area";
+
+		area.replace(": ", " / ");
+		return continent + " / " + area;
+	}
+}
 
 LightEditor::LightEditor(MapView* map_view, QWidget* parent)
 : QWidget(parent)
@@ -68,6 +187,13 @@ LightEditor::LightEditor(MapView* map_view, QWidget* parent)
 	QPushButton* lightningInfoDialogButton = new QPushButton("View Lightning Info", this);
 	lightningInfoDialogButton->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::sun));
 	light_selection_layout->addWidget(lightningInfoDialogButton);
+
+	auto* clipboard_box = new QGroupBox("Clipboard", this);
+	auto* clipboard_layout = new QVBoxLayout(clipboard_box);
+	_clipboard_label = new QLabel("Empty (0 lights copied)", clipboard_box);
+	_clipboard_label->setWordWrap(true);
+	clipboard_layout->addWidget(_clipboard_label);
+	light_selection_layout->addWidget(clipboard_box);
 
 	_lightning_info_dialog = new LightningInfoDialog(this, this);
 
@@ -161,8 +287,15 @@ LightEditor::LightEditor(MapView* map_view, QWidget* parent)
 	// lightningBox->addPage(lightningBox_content);
 	// light_selection_layout->addWidget(lightningBox);
 
-	light_selection_layout->addWidget(new QLabel("Current Map Lights :", this));
-
+	light_selection_layout->addWidget(new QLabel("Light Browser :", this));
+	_light_scope_combo = new QComboBox(this);
+	_light_scope_combo->addItem("Current Map", current_map_scope);
+	_light_scope_combo->addItem("Azeroth", azeroth_map_id);
+	_light_scope_combo->addItem("Outland", outland_map_id);
+	_light_scope_combo->addItem("Northrend", northrend_map_id);
+	_light_scope_combo->addItem("Kalimdor", kalimdor_map_id);
+	_light_scope_combo->setToolTip("Browse lights from the current map or one of the four continent maps.");
+	light_selection_layout->addWidget(_light_scope_combo);
 
 	QHBoxLayout* filter_tree_ledit_layout = new QHBoxLayout(light_selection_widget);
 	filter_tree_ledit_layout->addWidget(new QLabel("Filter :", this));
@@ -229,48 +362,17 @@ LightEditor::LightEditor(MapView* map_view, QWidget* parent)
 		file.close();
 	}
 
-	// Load Tree from dbc. Could potentially be done from _world->renderer()->skies()->skies but it needs to be loaded first
-	for (DBCFile::Iterator i = gLightDB.begin(); i != gLightDB.end(); ++i)
-	{
-		if (i->getInt(LightDB::Map) == _world->getMapID())
-		{
-			QListWidgetItem* item = new QListWidgetItem();
-
-			std::stringstream ss;
-			unsigned int light_id = i->getUInt(LightDB::ID);
-			item->setData(Qt::UserRole + 1, QVariant(light_id) );
-
-			bool global = (i->getFloat(LightDB::PositionX) == 0.0f && i->getFloat(LightDB::PositionY) == 0.0f
-							&& i->getFloat(LightDB::PositionZ) == 0.0f);
-
-			std::string light_name = getLightName(light_id, global); // TODO light zone arg
-
-			if (global)
-			{
-				item->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::sun));
-			}
-
-			ss << light_id << "-" << light_name;
-			item->setText(QString(ss.str().c_str()));
-			// if (global)
-			_light_tree->addItem(item);
-
-			if (global)
-			{
-				_light_tree->setCurrentItem(item);
-			}
-		}
-	}
+	refreshLightList();
 
 	QPushButton* GetSelectedSkyButton = new QPushButton("Edit selected light", this);
 	GetSelectedSkyButton->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::cog));
 	light_selection_layout->addWidget(GetSelectedSkyButton);
 
-	QPushButton* addNewSkyButton = new QPushButton("(IN DEV) Duplicate selected(create new)", this);
+	QPushButton* addNewSkyButton = new QPushButton("Duplicate selected", this);
 	addNewSkyButton->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::plus));
 	light_selection_layout->addWidget(addNewSkyButton);
 
-	QPushButton* deleteSkyButton = new QPushButton("(IN DEV) delete light", this);
+	QPushButton* deleteSkyButton = new QPushButton("Delete selected light", this);
 	deleteSkyButton->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::times));
 	light_selection_layout->addWidget(deleteSkyButton);
 
@@ -320,12 +422,10 @@ LightEditor::LightEditor(MapView* map_view, QWidget* parent)
 	// global_values_layout->addRow("Name:", name_line_edit);
 
 	// Create a small button
-	QPushButton* save_name_button = new QPushButton(this);  // You can set any text or icon for the button
+	save_name_button = new QPushButton(this);  // You can set any text or icon for the button
 	save_name_button->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::save));
 	// small_button->setFixedSize(20, 20);  // Set a small size for the button
-	save_name_button->setToolTip("Save Name to \"noggit-definitions\\light_dbc_names.csv\""
-															 "\nBlizzard names are datamined up to AQ40."
-															"NOT YET IMPLEMENTED");
+	save_name_button->setToolTip("Save this Light ID's name to noggit-definitions\\light_dbc_names.csv.");
 	save_name_button->setEnabled(false);
 
 	// Create an HBoxLayout to hold the QLineEdit and button together
@@ -601,6 +701,44 @@ LightEditor::LightEditor(MapView* map_view, QWidget* parent)
 				loadSelectSky(sky);
 		});
 
+	connect(_light_scope_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int)
+		{
+			refreshLightList();
+		});
+
+	connect(_light_tree, &QListWidget::itemClicked, this, [this](QListWidgetItem* item)
+		{
+			int const selected_light_id = item->data(Qt::UserRole + 1).toInt();
+			if (onBrowserLightSelected)
+				onBrowserLightSelected(selected_light_id);
+
+			Sky* sky = _map_view->getWorld()->renderer()->skies()->findSkyById(
+				selected_light_id);
+			if (sky && !sky->global && !sky->zone_light)
+			{
+				// A single click selects the light for viewport actions such as
+				// copy/paste, but deliberately leaves the Light Selection tab open.
+				// Opening and populating Edit Light is reserved for double-click or
+				// the explicit "Edit selected light" button.
+				if (onSkySelected)
+					onSkySelected(sky->Id);
+
+				// QListWidget handles Ctrl+C itself while it owns keyboard focus,
+				// preventing the Light Tool's copy hotkey from seeing the command.
+				// The row stays selected after focus returns to the viewport.
+				_map_view->setFocus(Qt::OtherFocusReason);
+			}
+			else
+			{
+				// Rows from another continent have no live sphere in this world. They remain a
+				// valid browser copy source but must not retain a previous sphere
+				// selection from the current map.
+				if (onSkySelected)
+					onSkySelected(0);
+				_map_view->setFocus(Qt::OtherFocusReason);
+			}
+		});
+
 
 	connect(addNewSkyButton, &QPushButton::clicked, [=]() {
 
@@ -669,12 +807,22 @@ LightEditor::LightEditor(MapView* map_view, QWidget* parent)
 				"There can only be one global light per map."
 				, QMessageBox::Ok
 			);
+			return;
 		}
 
 		unsigned int new_light_id = gLightDB.getEmptyRecordID(LightDB::ID);
 
 		// create new sky entry (duplicate)
+		auto* action = NOGGIT_ACTION_MGR->beginAction(_map_view, Noggit::ActionFlags::eSKY_ADDED);
 		Sky* new_sky = _map_view->getWorld()->renderer()->skies()->createNewSky(old_sky, new_light_id, _map_view->getCamera()->position);
+		if (!new_sky)
+		{
+			NOGGIT_ACTION_MGR->endAction();
+			return;
+		}
+		action->registerSkyAdded(new_sky);
+		_map_view->setDbcDirty(&gLightDB);
+		NOGGIT_ACTION_MGR->endAction();
 
 		// add new item to tree
 		{
@@ -701,7 +849,8 @@ LightEditor::LightEditor(MapView* map_view, QWidget* parent)
 		});
 
 	connect(deleteSkyButton, &QPushButton::clicked, [=]() {
-
+		if (onDeleteSelected)
+			onDeleteSelected();
 		});
 
 	connect(portToSkyButton, &QPushButton::clicked, [=]() {
@@ -746,6 +895,23 @@ LightEditor::LightEditor(MapView* map_view, QWidget* parent)
 		}
 		curr_sky->save_to_dbc();
 		});
+
+	connect(name_line_edit, &QLineEdit::textChanged, this, [this](QString const& text)
+		{
+			Sky* sky = get_selected_sky();
+			if (!sky)
+			{
+				save_name_button->setEnabled(false);
+				return;
+			}
+
+			QString const stored_name = QString::fromStdString(
+				getLightName(sky->Id, sky->global, sky->zone_light));
+			save_name_button->setEnabled(!text.trimmed().isEmpty()
+				&& text.trimmed() != stored_name);
+		});
+
+	connect(save_name_button, &QPushButton::clicked, this, &LightEditor::saveLightName);
 
 	connect(pos_x_spin, qOverload<double>(&QDoubleSpinBox::valueChanged), [&](double v) {
 		get_selected_sky()->pos.x = v;
@@ -845,6 +1011,8 @@ void LightEditor::loadSelectSky(Sky* _curr_sky)
 		return;
 
 	_selected_sky_id = _curr_sky->getId();
+	if (onSkySelected)
+		onSkySelected(_selected_sky_id);
 	// Sky* curr_sky = get_selected_sky();
 
 	QSignalBlocker const _1(pos_x_spin);
@@ -888,6 +1056,7 @@ void LightEditor::loadSelectSky(Sky* _curr_sky)
 
 	// name_line_edit->setText(QString::fromStdString(_curr_sky->name));
 	name_line_edit->setText(QString::fromStdString(light_name));
+	save_name_button->setEnabled(false);
 
 	global_light_chk->setChecked(_curr_sky->global);
 	pos_x_spin->setEnabled(!_curr_sky->global);
@@ -1197,11 +1366,250 @@ void LightEditor::load_light_param(int param_id)
 	  skybox_flag_1->setChecked(true);
 
 	if (sky_param->skyboxFlags & (1 << 1))
-	  skybox_flag_1->setChecked(true);
+	  skybox_flag_2->setChecked(true);
 
 	skybox_flag_1->setEnabled(true);
 	skybox_flag_2->setEnabled(true);
 
+}
+
+int LightEditor::selectedSkyId() const
+{
+	return _selected_sky_id;
+}
+
+void LightEditor::refreshLightList(int select_id)
+{
+	QSignalBlocker const blocker(_light_tree);
+	_light_tree->clear();
+	QListWidgetItem* fallback_global = nullptr;
+	QListWidgetItem* requested = nullptr;
+
+	int const selected_scope = _light_scope_combo
+		? _light_scope_combo->currentData().toInt()
+		: current_map_scope;
+	int const selected_map_id = selected_scope == current_map_scope
+		? _world->getMapID()
+		: selected_scope;
+	for (DBCFile::Iterator i = gLightDB.begin(); i != gLightDB.end(); ++i)
+	{
+		int const light_map_id = i->getInt(LightDB::Map);
+		if (light_map_id != selected_map_id)
+			continue;
+
+		auto* item = new QListWidgetItem(_light_tree);
+		unsigned int const light_id = i->getUInt(LightDB::ID);
+		item->setData(Qt::UserRole + 1, QVariant(light_id));
+		item->setData(Qt::UserRole + 2, QVariant(light_map_id));
+		bool const global = i->getFloat(LightDB::PositionX) == 0.0f
+			&& i->getFloat(LightDB::PositionY) == 0.0f
+			&& i->getFloat(LightDB::PositionZ) == 0.0f;
+		if (global)
+		{
+			item->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::sun));
+			fallback_global = item;
+		}
+		QString light_name = QString::fromStdString(getLightName(light_id, global));
+		if (light_name == "Unnamed Light")
+		{
+			constexpr float sky_position_scale = 36.0f;
+			float const world_x = i->getFloat(LightDB::PositionX) / sky_position_scale;
+			float const world_z = i->getFloat(LightDB::PositionZ) / sky_position_scale;
+			std::optional<std::uint32_t> area_id;
+			if (light_map_id == _world->getMapID())
+			{
+				std::uint32_t const loaded_area_id = _world->getAreaID(glm::vec3(world_x, 0.0f, world_z));
+				if (loaded_area_id != static_cast<std::uint32_t>(-1) && loaded_area_id != 0)
+					area_id = loaded_area_id;
+			}
+			if (!area_id)
+				area_id = areaIdAtPosition(light_map_id, world_x, world_z);
+
+			light_name = inferredLocationName(light_map_id, area_id);
+			item->setToolTip("Runtime-inferred from the Area ID of the terrain chunk at the light's center. No DBC data is changed.");
+		}
+		item->setText(QString("%1-%2").arg(light_id).arg(light_name));
+		if (static_cast<int>(light_id) == select_id)
+			requested = item;
+	}
+
+	QListWidgetItem* current = requested ? requested : fallback_global;
+	if (current)
+	{
+		_light_tree->setCurrentItem(current);
+		_light_tree->scrollToItem(current);
+	}
+
+	QString const filter = _light_tree_filter->text();
+	for (int row = 0; row < _light_tree->count(); ++row)
+		_light_tree->item(row)->setHidden(!filter.isEmpty()
+			&& !_light_tree->item(row)->text().contains(filter, Qt::CaseInsensitive));
+}
+
+void LightEditor::selectSkyById(int sky_id)
+{
+	Sky* sky = _map_view->getWorld()->renderer()->skies()->findSkyById(sky_id);
+	if (!sky || sky->global || sky->zone_light)
+		return;
+
+	for (int row = 0; row < _light_tree->count(); ++row)
+	{
+		QListWidgetItem* item = _light_tree->item(row);
+		if (item->data(Qt::UserRole + 1).toInt() == sky_id)
+		{
+			_light_tree->setCurrentItem(item);
+			break;
+		}
+	}
+
+	loadSelectSky(sky);
+}
+
+void LightEditor::clearSkySelection()
+{
+	_selected_sky_id = 0;
+	_light_tree->clearSelection();
+	_light_editing_widget->setEnabled(false);
+	save_current_sky_button->setEnabled(false);
+	if (onSkySelected)
+		onSkySelected(0);
+}
+
+void LightEditor::updateSelectedSkyTransform()
+{
+	Sky* sky = get_selected_sky();
+	if (!sky)
+		return;
+
+	QSignalBlocker const block_x(pos_x_spin);
+	QSignalBlocker const block_y(pos_y_spin);
+	QSignalBlocker const block_z(pos_z_spin);
+	QSignalBlocker const block_inner(inner_radius_spin);
+	QSignalBlocker const block_outer(outer_radius_spin);
+
+	pos_x_spin->setValue(sky->pos.x);
+	pos_y_spin->setValue(sky->pos.z);
+	pos_z_spin->setValue(sky->pos.y);
+	inner_radius_spin->setValue(sky->r1);
+	outer_radius_spin->setValue(sky->r2);
+}
+
+void LightEditor::updateClipboard(Sky const& sky)
+{
+	_clipboard_light_id = sky.Id;
+	_clipboard_inner_radius = sky.r1;
+	_clipboard_outer_radius = sky.r2;
+	_clipboard_global = sky.global;
+	_clipboard_zone_light = sky.zone_light;
+	updateClipboardLabel();
+}
+
+void LightEditor::updateClipboardLabel()
+{
+	if (!_clipboard_light_id)
+	{
+		_clipboard_label->setText("Empty (0 lights copied)");
+		return;
+	}
+
+	std::string const light_name = getLightName(
+		_clipboard_light_id, _clipboard_global, _clipboard_zone_light);
+	_clipboard_label->setText(QString("Light: %1-%2\nInner radius: %3\nOuter radius: %4")
+		.arg(_clipboard_light_id)
+		.arg(QString::fromStdString(light_name))
+		.arg(_clipboard_inner_radius, 0, 'f', 2)
+		.arg(_clipboard_outer_radius, 0, 'f', 2));
+}
+
+void LightEditor::saveLightName()
+{
+	Sky* sky = get_selected_sky();
+	if (!sky)
+		return;
+
+	QString const name = name_line_edit->text().trimmed();
+	if (name.isEmpty() || name.contains(',') || name.contains('\n') || name.contains('\r'))
+	{
+		QMessageBox::warning(this, "Invalid light name",
+			"Light names cannot be empty or contain commas or line breaks.");
+		return;
+	}
+
+	QString const definitions_path = QString::fromStdString(
+		Noggit::Application::NoggitApplication::instance()->getConfiguration()->ApplicationNoggitDefinitionsPath)
+		+ "\\light_dbc_names.csv";
+
+	QStringList lines;
+	QFile input(definitions_path);
+	if (input.exists())
+	{
+		if (!input.open(QIODevice::ReadOnly | QIODevice::Text))
+		{
+			QMessageBox::warning(this, "Unable to save light name",
+				QString("Could not read %1: %2").arg(definitions_path, input.errorString()));
+			return;
+		}
+
+		QTextStream stream(&input);
+		while (!stream.atEnd())
+			lines.push_back(stream.readLine());
+
+		// QSaveFile atomically replaces the destination during commit. On
+		// Windows that replacement is denied while this read handle is open.
+		input.close();
+	}
+
+	if (lines.empty())
+		lines.push_back("ID,Name");
+
+	bool replaced = false;
+	for (QString& line : lines)
+	{
+		int const comma = line.indexOf(',');
+		if (comma <= 0)
+			continue;
+
+		bool valid_id = false;
+		int const row_id = line.left(comma).trimmed().toInt(&valid_id);
+		if (valid_id && row_id == sky->Id)
+		{
+			line = QString("%1,%2").arg(sky->Id).arg(name);
+			replaced = true;
+			break;
+		}
+	}
+
+	if (!replaced)
+		lines.push_back(QString("%1,%2").arg(sky->Id).arg(name));
+
+	QSaveFile output(definitions_path);
+	if (!output.open(QIODevice::WriteOnly | QIODevice::Text))
+	{
+		QMessageBox::warning(this, "Unable to save light name",
+			QString("Could not write %1: %2").arg(definitions_path, output.errorString()));
+		return;
+	}
+
+	QTextStream stream(&output);
+	for (QString const& line : lines)
+		stream << line << '\n';
+	stream.flush();
+
+	if (!output.commit())
+	{
+		QMessageBox::warning(this, "Unable to save light name",
+			QString("Could not replace %1: %2").arg(definitions_path, output.errorString()));
+		return;
+	}
+
+	light_names_map[sky->Id] = name.toStdString();
+	lightid_label->setText(QString("%1-%2").arg(sky->Id).arg(name));
+	save_name_button->setEnabled(false);
+	refreshLightList(sky->Id);
+	updateActiveLights();
+	updateLightningInfo();
+	if (_clipboard_light_id == sky->Id)
+		updateClipboardLabel();
 }
 
 Noggit::Ui::Tools::LightningInfoDialog::LightningInfoDialog(LightEditor* editor, QWidget* parent)

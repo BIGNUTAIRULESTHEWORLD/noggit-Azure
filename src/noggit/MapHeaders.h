@@ -357,3 +357,7 @@ struct mtxf_entry
     */
     uint32_t unused : 31;
 };
+
+static_assert(sizeof(MH2O_Header) == 12, "MH2O chunk header layout changed");
+static_assert(sizeof(MH2O_Information) == 24, "MH2O layer information layout changed");
+static_assert(sizeof(mh2o_uv) == 4, "MH2O UV entry layout changed");

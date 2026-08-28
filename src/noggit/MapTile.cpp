@@ -595,7 +595,10 @@ void MapTile::save(World* world, bool save_using_mclq_liquids)
     {
       if (model.value().index() == eEntry_Object)
       {
-        auto which = std::get<selected_object_type>(model.value())->which();
+        auto* scene_object = std::get<selected_object_type>(model.value());
+        if (scene_object->chunk_mover_preview)
+          continue;
+        auto which = scene_object->which();
         if (which == eWMO)
         {
           lObjectInstances.emplace_back(static_cast<WMOInstance*>(std::get<selected_object_type>(model.value())));
@@ -1894,6 +1897,9 @@ void MapTile::calcCamDist(glm::vec3 const& camera)
 void MapTile::markExtentsDirty()
 {
   _extents_dirty = true;
+  // An in-flight occlusion result describes the previous bounds. Keep the tile visible until
+  // a query using the updated terrain or transient-preview extents has completed.
+  _renderer.setOverrideOcclusionCulling(true);
 }
 
 void MapTile::tagCombinedExtents(bool state)

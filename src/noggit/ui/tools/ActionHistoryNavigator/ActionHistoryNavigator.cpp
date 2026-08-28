@@ -132,6 +132,18 @@ void ActionHistoryNavigator::pushAction(Noggit::Action* action)
   {
       layout->addWidget(new QLabel(" | Texture Layer Info", widget)); // todo : separate anim & ground effect?
   }
+  if (action->getFlags() & ActionFlags::eSKY_TRANSFORMED)
+  {
+    layout->addWidget(new QLabel(" | Sky Volume Transformed", widget));
+  }
+  if (action->getFlags() & ActionFlags::eSKY_ADDED)
+  {
+    layout->addWidget(new QLabel(" | Light Added", widget));
+  }
+  if (action->getFlags() & ActionFlags::eSKY_REMOVED)
+  {
+    layout->addWidget(new QLabel(" | Light Removed", widget));
+  }
 
   layout->addStretch();
   _action_stack->setItemWidget(item, widget);

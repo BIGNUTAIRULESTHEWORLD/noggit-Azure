@@ -91,6 +91,9 @@ public:
 
   bool _grouped = false;
 
+  // Render-only Chunk Mover ghost. Never serialized, selected, copied, or pasted as real data.
+  bool chunk_mover_preview = false;
+
 protected:
   SceneObjectTypes _type;
 

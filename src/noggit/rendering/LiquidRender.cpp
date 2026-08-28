@@ -22,6 +22,9 @@ void LiquidRender::draw(math::frustum const& frustum
     , int layer
     , display_mode display
     , LiquidTextureManager* tex_manager
+    , bool show_vertex_grid
+    , int vertex_grid_layer
+    , std::uint64_t surface_token
 )
 {
   if (!_map_tile->Water.hasData() && !_map_tile->Water.needsUpdate())
@@ -41,8 +44,16 @@ void LiquidRender::draw(math::frustum const& frustum
 
   std::size_t n_render_blocks = _render_layers.size();
 
-  for (auto& render_layer : _render_layers)
+  for (std::size_t layer_index = 0; layer_index < _render_layers.size(); ++layer_index)
   {
+    if (layer >= 0 && layer_index != static_cast<std::size_t>(layer))
+      continue;
+
+    auto& render_layer = _render_layers[layer_index];
+    water_shader.uniform("show_liquid_vertex_grid",
+                         show_vertex_grid
+                           && (surface_token != 0
+                               || layer_index == static_cast<std::size_t>(vertex_grid_layer)));
     gl.bindBufferRange(GL_UNIFORM_BUFFER, OpenGL::ubo_targets::CHUNK_LIQUID_INSTANCE_INDEX, render_layer.chunk_data_buf, 0, sizeof(OpenGL::LiquidChunkInstanceDataUniformBlock) * 256);
 
     gl.activeTexture(GL_TEXTURE0);
@@ -100,16 +111,15 @@ void LiquidRender::updateLayerData(LiquidTextureManager* tex_manager)
         for (std::size_t x = 0; x < 16; ++x)
         {
           ChunkWater* chunk = _map_tile->Water.chunks[z][x].get();
+          std::vector<liquid_layer>* render_layers = chunk->getRenderLayers();
 
-          if (layer_counter >= chunk->getLayers()->size())
+          if (layer_counter >= render_layers->size())
             continue;
 
           if (!_map_tile->Water._has_data)
-          {
-            _map_tile->Water._has_data = chunk->hasData(layer_counter);
-          }
+            _map_tile->Water._has_data = true;
 
-          liquid_layer& layer = (*chunk->getLayers())[layer_counter];
+          liquid_layer& layer = (*render_layers)[layer_counter];
 
           // create layer
           if (layer_counter >= _render_layers.size())
@@ -162,6 +172,13 @@ void LiquidRender::updateLayerData(LiquidTextureManager* tex_manager)
 
           params_data.subchunks_1 = subchunks & 0xFF'FF'FF'FF;
           params_data.subchunks_2 = subchunks >> 32;
+          params_data._pad1 = static_cast<unsigned>(layer.surfaceToken() & 0xFFFF'FFFFull);
+          params_data._pad2 = static_cast<unsigned>(layer.surfaceToken() >> 32);
+          MH2O_Attributes const& attributes = layer.getChunk()->getAttributes();
+          params_data._pad3 = static_cast<unsigned>(attributes.fishable & 0xFFFF'FFFFull);
+          params_data._pad4 = static_cast<unsigned>(attributes.fishable >> 32);
+          params_data._pad5 = static_cast<unsigned>(attributes.fatigue & 0xFFFF'FFFFull);
+          params_data._pad6 = static_cast<unsigned>(attributes.fatigue >> 32);
 
           // fill vertex data
           auto& vertices = layer.getVertices();

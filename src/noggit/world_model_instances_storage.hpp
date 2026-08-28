@@ -6,6 +6,7 @@
 #include <noggit/WMOInstance.h>
 #include <opengl/scoped.hpp>
 #include <atomic>
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -34,6 +35,9 @@ namespace Noggit
     // perform uid duplicate check, return the uid of the stored instance
     std::uint32_t add_wmo_instance(WMOInstance instance, bool from_reloading, bool action);
 
+    std::uint32_t new_unique_uid();
+    std::uint32_t new_preview_uid();
+
     std::optional<ModelInstance*> get_model_instance(std::uint32_t uid);
     std::optional<WMOInstance*> get_wmo_instance(std::uint32_t uid);
     std::optional<selection_type> get_instance(std::uint32_t uid, bool lock=true);
@@ -41,6 +45,8 @@ namespace Noggit
     void delete_instances_from_tile(TileIndex const& tile, bool action);
     void delete_instances(std::vector<selected_object_type> const& instances, bool action);
     void delete_instance(std::uint32_t uid, bool action);
+    void delete_instance_without_world_update(std::uint32_t uid, bool action);
+    void delete_preview_instance(std::uint32_t uid);
     void unload_instance_and_remove_from_selection_if_necessary(std::uint32_t uid);
 
     void clear();
@@ -61,6 +67,7 @@ namespace Noggit
     std::uint32_t unsafe_add_wmo_instance_no_world_upd(WMOInstance instance, bool action);
     std::optional<ModelInstance*> unsafe_get_model_instance(std::uint32_t uid);
     std::optional<WMOInstance*> unsafe_get_wmo_instance(std::uint32_t uid);
+    void unsafe_delete_instance_without_world_update(std::uint32_t uid, bool action);
 
   public:
     template<typename Fun>
@@ -105,6 +112,7 @@ namespace Noggit
     World* _world;
     std::mutex _mutex;
     std::atomic<bool> _uid_duplicates_found = {false};
+    std::uint32_t _next_preview_uid = std::numeric_limits<std::uint32_t>::max();
 
     m2_instance_umap _m2s;
     wmo_instance_umap _wmos;

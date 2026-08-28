@@ -9,6 +9,7 @@
 #include <opengl/types.hpp>
 
 #include <glm/glm.hpp>
+#include <cstdint>
 
 namespace math
 {
@@ -55,6 +56,9 @@ namespace Noggit::Rendering
         , int layer
         , display_mode display
         , LiquidTextureManager* tex_manager
+        , bool show_vertex_grid
+        , int vertex_grid_layer
+        , std::uint64_t surface_token
     );
 
     bool needsUpdate() const { return _need_buffer_update; };

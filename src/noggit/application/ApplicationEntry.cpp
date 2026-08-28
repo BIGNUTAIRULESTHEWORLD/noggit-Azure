@@ -35,6 +35,7 @@ int main(int argc, char *argv[])
   QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
   QApplication q_application (argc, argv);
   q_application.setApplicationName ("Noggit");
+  q_application.setApplicationDisplayName ("Noggit Azure");
   q_application.setOrganizationName ("Noggit");
 
   auto parser = ProcessCommandLine();

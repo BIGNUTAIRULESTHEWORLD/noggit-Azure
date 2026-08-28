@@ -200,12 +200,13 @@ namespace Noggit
       
       if (world())
       {
+        // Match the authored-map presentation: empty ADTs sit on a neutral
+        // editor grid while the continuous terrain image remains unobscured.
+        painter.fillRect(drawing_rect, QColor(54, 56, 62));
         painter.drawImage (drawing_rect, world()->horizon._qt_minimap);
 
         if (draw_boundaries())
         {
-          //! \todo Draw non-existing tiles aswell?
-          painter.setBrush (QColor (255, 255, 255, 30));
           for (int i (0); i < 64; ++i)
           {
             for (int j (0); j < 64; ++j)
@@ -215,6 +216,7 @@ namespace Noggit
 
               if (world()->mapIndex.hasTile (tile))
               {
+                painter.setBrush(Qt::NoBrush);
                 if (world()->mapIndex.tileLoaded (tile))
                 {
                   if (world()->mapIndex.has_unsaved_changes(tile))
@@ -222,31 +224,25 @@ namespace Noggit
                     changed = true;
                   }
 
-                  painter.setPen(QColor::fromRgbF(0.f, 0.f, 0.f, 0.6f));
+                  painter.setPen(QColor::fromRgbF(0.f, 0.f, 0.f, 0.18f));
+                  painter.drawRect(QRect(tile_size * i, tile_size * j, tile_size, tile_size));
                 }
                 else if (world()->mapIndex.isTileExternal(tile))
                 {
                   painter.setPen(QColor::fromRgbF(1.0f, 0.7f, 0.5f, 0.6f));
-                }
-                else
-                {
-                  painter.setPen (QColor::fromRgbF (0.8f, 0.8f, 0.8f, 0.4f));
+                  painter.drawRect(QRect(tile_size * i, tile_size * j, tile_size, tile_size));
                 }
               }
               else
               {
-                painter.setPen (QColor::fromRgbF (1.0f, 1.0f, 1.0f, 0.05f));
+                painter.setBrush(QColor(54, 56, 62));
+                painter.setPen(QColor(34, 36, 41));
+                painter.drawRect(QRect(tile_size * i, tile_size * j, tile_size, tile_size));
               }
-
-              painter.drawRect ( QRect ( tile_size * i
-                                       , tile_size * j
-                                       , tile_size
-                                       , tile_size
-                                       )
-                               );
 
               if (changed)
               {
+                painter.setBrush(Qt::NoBrush);
                 painter.setPen(QColor::fromRgbF(1.0f, 1.0f, 0.0f, 1.f));
                 painter.drawRect ( QRect ( tile_size * i + 1
                                          , tile_size * j + 1
@@ -258,6 +254,7 @@ namespace Noggit
               
               if (_use_selection && _selected_tiles->at(64 * i + j))
               {
+                painter.setBrush(Qt::NoBrush);
                 painter.setPen(QColor::fromRgbF(1.0f, 0.0f, 0.0f, 1.f));
                 painter.drawRect ( QRect ( tile_size * i + 1
                     , tile_size * j + 1

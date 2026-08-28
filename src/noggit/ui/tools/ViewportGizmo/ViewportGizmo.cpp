@@ -156,6 +156,16 @@ void ViewportGizmo::handleTransformGizmo(MapView* map_view
 
   bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
 
+  if (gizmo_selection_type == MULTISELECTION
+      && _gizmo_operation == ImGuizmo::SCALE
+      && _scale_multiselection_around_pivot
+      && _world)
+  {
+    float const scale_factor = new_scale.x / _last_pivot_scale;
+    _world->scale_selected_models(scale_factor, World::object_scaling_type::mult, true);
+    return;
+  }
+
   if (gizmo_selection_type == MULTISELECTION)
   {
 
@@ -377,6 +387,11 @@ bool ViewportGizmo::ViewportGizmo::isUsing() const
 void ViewportGizmo::ViewportGizmo::setUseMultiselectionPivot(bool use_pivot)
 {
   _use_multiselection_pivot = use_pivot;
+}
+
+void ViewportGizmo::ViewportGizmo::setScaleMultiselectionAroundPivot(bool scale_around_pivot)
+{
+  _scale_multiselection_around_pivot = scale_around_pivot;
 }
 
 void ViewportGizmo::ViewportGizmo::setMultiselectionPivot(glm::vec3 const& pivot)

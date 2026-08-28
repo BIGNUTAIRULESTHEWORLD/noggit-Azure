@@ -6,6 +6,7 @@
 #include <QRegularExpression>
 #include <QMainWindow>
 #include <QMap>
+#include <QSet>
 
 namespace Ui
 {
@@ -22,6 +23,8 @@ class NoggitExpendableFilterProxyModel : public QSortFilterProxyModel
 {
     Q_OBJECT
 public:
+    explicit NoggitExpendableFilterProxyModel(QObject* parent = nullptr)
+      : QSortFilterProxyModel(parent) {}
     QList<QModelIndex> findIndices() const;
 
     bool rowAccepted(int source_row, const QModelIndex& source_parent) const;
@@ -84,7 +87,8 @@ namespace Noggit
       std::string _selected_path;
 
       void updateModelData();
-      void recurseDirectory(Model::TreeManager& tree_mgr, const QString& s_dir, const QString& project_dir);
+      void recurseDirectory(Model::TreeManager& tree_mgr, const QString& s_dir, const QString& project_dir,
+                            QSet<QString>* flat_paths = nullptr);
       bool validateBrowseMode(const QString& wow_file_path);
 
       // commented objects that shouldn't be placed on the map, still accessible through Show all

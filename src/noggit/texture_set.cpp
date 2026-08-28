@@ -13,6 +13,8 @@
 #include <QSettings>
 
 #include <algorithm>    // std::min
+#include <limits>
+#include <numbers>
 #include <sstream>
 
 TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t base
@@ -67,7 +69,10 @@ TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t 
       convertToBigAlpha();
     }
 
-    _chunk->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP); 
+    // loading is not an edit: requeue the upload only. registerChunkUpdate would
+    // flag the doodadMapping for recompute and clobber the stored one we just
+    // read, which is what the client actually renders from
+    _chunk->requeueChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
   }
 }
 
@@ -286,6 +291,887 @@ bool TextureSet::canPaintTexture(scoped_blp_texture_reference const& texture)
   return true;
 }
 
+std::optional<sampled_painted_texture> TextureSet::samplePaintedTexture(float world_x, float world_z) const
+{
+  if (!nTextures)
+  {
+    return std::nullopt;
+  }
+
+  int const center_x = std::clamp(static_cast<int>((world_x - _chunk->xbase) / TEXDETAILSIZE), 0, 63);
+  int const center_z = std::clamp(static_cast<int>((world_z - _chunk->zbase) / TEXDETAILSIZE), 0, 63);
+
+  auto weights_at = [this](int x, int z)
+  {
+    std::array<float, 4> weights{};
+    int const offset = std::clamp(z, 0, 63) * 64 + std::clamp(x, 0, 63);
+
+    if (tmp_edit_values)
+    {
+      for (std::size_t layer = 0; layer < nTextures; ++layer)
+      {
+        weights[layer] = std::clamp((*tmp_edit_values)[layer][offset], 0.0f, 255.0f);
+      }
+      return weights;
+    }
+
+    float base = 255.0f;
+    for (std::size_t layer = 1; layer < nTextures; ++layer)
+    {
+      float const alpha = alphamaps[layer - 1]
+        ? static_cast<float>(alphamaps[layer - 1]->getAlpha(offset))
+        : 0.0f;
+      weights[layer] = alpha;
+      base -= alpha;
+    }
+    weights[0] = std::clamp(base, 0.0f, 255.0f);
+    return weights;
+  };
+
+  // Prefer a coherent painted layer near the click. The base layer commonly
+  // wins at a feathered road edge even though the user's intended target is the
+  // nearby detail layer, so a sufficiently visible non-base layer gets priority.
+  std::array<float, 4> scores{};
+  std::array<float, 4> peaks{};
+  for (int dz = -2; dz <= 2; ++dz)
+  {
+    for (int dx = -2; dx <= 2; ++dx)
+    {
+      auto const weights = weights_at(center_x + dx, center_z + dz);
+      float const proximity = 1.0f / (1.0f + static_cast<float>(dx * dx + dz * dz));
+      for (std::size_t layer = 0; layer < nTextures; ++layer)
+      {
+        scores[layer] += weights[layer] * proximity;
+        peaks[layer] = std::max(peaks[layer], weights[layer]);
+      }
+    }
+  }
+
+  std::size_t selected_layer = 0;
+  for (std::size_t layer = 1; layer < nTextures; ++layer)
+  {
+    if (peaks[layer] >= 48.0f
+        && (selected_layer == 0 || scores[layer] > scores[selected_layer]))
+    {
+      selected_layer = layer;
+    }
+  }
+  if (selected_layer == 0)
+  {
+    selected_layer = static_cast<std::size_t>(std::distance(scores.begin(),
+      std::max_element(scores.begin(), scores.begin() + nTextures)));
+  }
+
+  constexpr float outer_threshold = 24.0f;
+  constexpr float core_threshold = 176.0f;
+  constexpr int max_scan = 48;
+  constexpr int direction_count = 12;
+  float best_outer_span = std::numeric_limits<float>::max();
+  float best_core_span = 0.0f;
+
+  auto scan_side = [&](float dir_x, float dir_z, float threshold)
+  {
+    int last_inside = 0;
+    int consecutive_outside = 0;
+    for (int distance = 1; distance <= max_scan; ++distance)
+    {
+      int const x = static_cast<int>(std::round(center_x + dir_x * distance));
+      int const z = static_cast<int>(std::round(center_z + dir_z * distance));
+      if (x < 0 || x > 63 || z < 0 || z > 63)
+      {
+        return std::pair{last_inside, false};
+      }
+
+      if (weights_at(x, z)[selected_layer] >= threshold)
+      {
+        last_inside = distance;
+        consecutive_outside = 0;
+      }
+      else if (++consecutive_outside >= 2)
+      {
+        return std::pair{last_inside, true};
+      }
+    }
+    return std::pair{last_inside, false};
+  };
+
+  for (int direction = 0; direction < direction_count; ++direction)
+  {
+    float const angle = static_cast<float>(direction) * std::numbers::pi_v<float>
+      / static_cast<float>(direction_count);
+    float const dir_x = std::cos(angle);
+    float const dir_z = std::sin(angle);
+    auto const outer_forward = scan_side(dir_x, dir_z, outer_threshold);
+    auto const outer_back = scan_side(-dir_x, -dir_z, outer_threshold);
+    if (!outer_forward.second || !outer_back.second)
+    {
+      continue;
+    }
+
+    float const outer_span = static_cast<float>(outer_forward.first + outer_back.first + 1);
+    if (outer_span < 3.0f || outer_span >= best_outer_span)
+    {
+      continue;
+    }
+
+    auto const core_forward = scan_side(dir_x, dir_z, core_threshold);
+    auto const core_back = scan_side(-dir_x, -dir_z, core_threshold);
+    best_outer_span = outer_span;
+    best_core_span = static_cast<float>(core_forward.first + core_back.first + 1);
+  }
+
+  float radius = 15.0f;
+  float hardness = 0.5f;
+  if (best_outer_span < std::numeric_limits<float>::max())
+  {
+    radius = std::clamp(best_outer_span * TEXDETAILSIZE * 0.5f, 1.5f, 100.0f);
+    hardness = std::clamp(best_core_span / best_outer_span, 0.15f, 0.90f);
+  }
+
+  float const confidence = std::clamp(peaks[selected_layer] / 255.0f, 0.0f, 1.0f);
+  return sampled_painted_texture{textures[selected_layer], radius, hardness, confidence};
+}
+
+std::vector<sampled_texture_layer> TextureSet::sampleTextureLayersAt(float world_x, float world_z) const
+{
+  std::vector<sampled_texture_layer> result;
+  result.reserve(nTextures);
+  if (!nTextures)
+  {
+    return result;
+  }
+
+  int const x = std::clamp(static_cast<int>((world_x - _chunk->xbase) / TEXDETAILSIZE), 0, 63);
+  int const z = std::clamp(static_cast<int>((world_z - _chunk->zbase) / TEXDETAILSIZE), 0, 63);
+  int const offset = z * 64 + x;
+  std::array<float, 4> weights{};
+
+  if (tmp_edit_values)
+  {
+    for (std::size_t layer = 0; layer < nTextures; ++layer)
+    {
+      weights[layer] = std::clamp((*tmp_edit_values)[layer][offset], 0.0f, 255.0f);
+    }
+  }
+  else
+  {
+    float base = 255.0f;
+    for (std::size_t layer = 1; layer < nTextures; ++layer)
+    {
+      float const alpha = alphamaps[layer - 1]
+        ? static_cast<float>(alphamaps[layer - 1]->getAlpha(offset))
+        : 0.0f;
+      weights[layer] = alpha;
+      base -= alpha;
+    }
+    weights[0] = std::clamp(base, 0.0f, 255.0f);
+  }
+
+  for (std::size_t layer = 0; layer < nTextures; ++layer)
+  {
+    result.push_back(sampled_texture_layer{
+      textures[layer], weights[layer], _layers_info[layer].flags,
+      _layers_info[layer].effectID, layer == 0
+    });
+  }
+  return result;
+}
+
+bool TextureSet::canApplyRoadStyle(sampled_road_style const& style,
+                                   bool replace_conflicting_textures) const
+{
+  bool const has_explicit_required_material = std::any_of(style.materials.begin(),
+    style.materials.end(), [](road_material_profile const& material) { return material.required; });
+  std::size_t missing_required = 0;
+  for (std::size_t material_index = 0; material_index < style.materials.size(); ++material_index)
+  {
+    road_material_profile const& material = style.materials[material_index];
+    bool const required = material.required
+      || (!has_explicit_required_material && material_index == 0);
+    if (!required)
+    {
+      continue;
+    }
+    bool already_present = false;
+    for (auto const& texture : textures)
+    {
+      if (texture == material.texture)
+      {
+        already_present = true;
+        break;
+      }
+    }
+    if (!already_present)
+    {
+      ++missing_required;
+    }
+  }
+  if (nTextures + missing_required <= 4)
+  {
+    return true;
+  }
+  if (!replace_conflicting_textures || style.materials.empty() || missing_required > 4)
+  {
+    return false;
+  }
+
+  std::size_t const slots_needed = nTextures + missing_required - 4;
+  return replaceable_road_layers(style).size() >= slots_needed;
+}
+
+std::vector<std::size_t> TextureSet::replaceable_road_layers(
+  sampled_road_style const& style) const
+{
+  std::vector<std::size_t> candidates;
+  auto const is_road_texture = [&](scoped_blp_texture_reference const& texture)
+  {
+    return std::any_of(style.materials.begin(), style.materials.end(),
+      [&](road_material_profile const& material) { return material.texture == texture; });
+  };
+
+  // Checked conflict replacement is explicit permission to convert populated
+  // terrain layers when the four-slot ADT palette cannot hold the complete
+  // captured road. Preflight only establishes that enough non-road identities
+  // exist; the path-aware commit pass ranks them by outside-corridor and border
+  // impact before changing any chunk.
+  for (std::size_t layer = 0; layer < nTextures; ++layer)
+  {
+    if (!is_road_texture(textures[layer]))
+    {
+      candidates.push_back(layer);
+    }
+  }
+  return candidates;
+}
+
+road_paint_result TextureSet::paintRoadSegment(glm::vec3 const& from, glm::vec3 const& to,
+                                                sampled_road_style const& style,
+                                                float width_scale, float opacity_scale,
+                                                bool replace_conflicting_textures)
+{
+  return paintRoadPath({from, to}, style, width_scale, opacity_scale,
+    replace_conflicting_textures);
+}
+
+road_paint_result TextureSet::paintRoadPath(std::vector<glm::vec3> const& points,
+                                             sampled_road_style const& style,
+                                             float width_scale, float opacity_scale,
+                                             bool replace_conflicting_textures)
+{
+  road_paint_result result;
+  if (points.size() < 2 || style.materials.empty() || width_scale <= 0.0f || opacity_scale <= 0.0f)
+  {
+    return result;
+  }
+  if (!canApplyRoadStyle(style, replace_conflicting_textures))
+  {
+    result.blocked_by_texture_limit = true;
+    return result;
+  }
+
+  float const half_width = std::max(TEXDETAILSIZE, style.half_width * width_scale);
+  float min_x = points.front().x;
+  float max_x = points.front().x;
+  float min_z = points.front().z;
+  float max_z = points.front().z;
+  for (glm::vec3 const& point : points)
+  {
+    min_x = std::min(min_x, point.x);
+    max_x = std::max(max_x, point.x);
+    min_z = std::min(min_z, point.z);
+    max_z = std::max(max_z, point.z);
+  }
+  min_x -= half_width;
+  max_x += half_width;
+  min_z -= half_width;
+  max_z += half_width;
+  if (max_x < _chunk->xbase || min_x > _chunk->xbase + CHUNKSIZE
+      || max_z < _chunk->zbase || min_z > _chunk->zbase + CHUNKSIZE)
+  {
+    return result;
+  }
+
+  auto distance_squared_to_path = [&](glm::vec2 const& pixel)
+  {
+    float closest = std::numeric_limits<float>::max();
+    for (std::size_t index = 0; index + 1 < points.size(); ++index)
+    {
+      glm::vec2 const start{points[index].x, points[index].z};
+      glm::vec2 const end{points[index + 1].x, points[index + 1].z};
+      glm::vec2 const delta = end - start;
+      float const length_squared = glm::dot(delta, delta);
+      if (length_squared <= 0.0001f)
+      {
+        continue;
+      }
+      float const t = std::clamp(glm::dot(pixel - start, delta) / length_squared, 0.0f, 1.0f);
+      glm::vec2 const offset = pixel - (start + delta * t);
+      closest = std::min(closest, glm::dot(offset, offset));
+    }
+    return closest;
+  };
+
+  // Do not evict a chunk-wide texture layer for a conservative bounding-box
+  // hit at a road corner. At least one real alphamap pixel must lie inside the
+  // path corridor before conflict replacement is allowed to mutate the chunk.
+  bool path_affects_chunk = false;
+  for (int z = 0; z < 64 && !path_affects_chunk; ++z)
+  {
+    for (int x = 0; x < 64 && !path_affects_chunk; ++x)
+    {
+      glm::vec2 const pixel{
+        _chunk->xbase + (static_cast<float>(x) + 0.5f) * TEXDETAILSIZE,
+        _chunk->zbase + (static_cast<float>(z) + 0.5f) * TEXDETAILSIZE
+      };
+      if (distance_squared_to_path(pixel) <= half_width * half_width)
+      {
+        path_affects_chunk = true;
+      }
+    }
+  }
+  if (!path_affects_chunk)
+  {
+    return result;
+  }
+
+  bool const has_explicit_required_material = std::any_of(style.materials.begin(),
+    style.materials.end(), [](road_material_profile const& material) { return material.required; });
+  auto material_is_required = [&](std::size_t material_index)
+  {
+    return style.materials[material_index].required
+      || (!has_explicit_required_material && material_index == 0);
+  };
+  bool const has_explicit_structural_material = std::any_of(style.materials.begin(),
+    style.materials.end(), [](road_material_profile const& material) { return material.structural; });
+  auto material_is_structural = [&](std::size_t material_index)
+  {
+    return style.materials[material_index].structural
+      || (!has_explicit_structural_material && material_index == 0);
+  };
+  auto missing_required_count = [&]()
+  {
+    std::size_t missing = 0;
+    for (std::size_t material_index = 0; material_index < style.materials.size(); ++material_index)
+    {
+      if (material_is_required(material_index)
+          && texture_id(style.materials[material_index].texture) < 0)
+      {
+        ++missing;
+      }
+    }
+    return missing;
+  };
+
+  if (nTextures + missing_required_count() > 4)
+  {
+    if (!replace_conflicting_textures)
+    {
+      result.blocked_by_texture_limit = true;
+      return result;
+    }
+    create_temporary_alphamaps_if_needed();
+    if (!tmp_edit_values)
+    {
+      result.blocked_by_texture_limit = true;
+      return result;
+    }
+
+    auto is_road_texture = [&](scoped_blp_texture_reference const& texture)
+    {
+      return std::any_of(style.materials.begin(), style.materials.end(),
+        [&](road_material_profile const& material) { return material.texture == texture; });
+    };
+
+    while (nTextures + missing_required_count() > 4)
+    {
+      std::vector<double> layer_totals(nTextures, 0.0);
+      std::vector<double> protected_totals(nTextures, 0.0);
+      std::vector<double> border_totals(nTextures, 0.0);
+      std::vector<float> border_maxima(nTextures, 0.0f);
+      for (int z = 0; z < 64; ++z)
+      {
+        for (int x = 0; x < 64; ++x)
+        {
+          std::size_t const pixel_index = static_cast<std::size_t>(z * 64 + x);
+          glm::vec2 const pixel{
+            _chunk->xbase + (static_cast<float>(x) + 0.5f) * TEXDETAILSIZE,
+            _chunk->zbase + (static_cast<float>(z) + 0.5f) * TEXDETAILSIZE
+          };
+          float const distance = std::sqrt(distance_squared_to_path(pixel));
+          float const protection_t = std::clamp(
+            (distance - half_width * 0.72f) / std::max(TEXDETAILSIZE, half_width * 0.28f),
+            0.0f, 1.0f);
+          float const outside_protection = protection_t * protection_t
+            * (3.0f - 2.0f * protection_t);
+          bool const border_pixel = x == 0 || x == 63 || z == 0 || z == 63;
+          for (std::size_t layer = 0; layer < nTextures; ++layer)
+          {
+            float const value = tmp_edit_values->map[layer][pixel_index];
+            layer_totals[layer] += value;
+            protected_totals[layer] += value * outside_protection;
+            if (border_pixel)
+            {
+              border_totals[layer] += value;
+              border_maxima[layer] = std::max(border_maxima[layer], value);
+            }
+          }
+        }
+      }
+
+      std::vector<std::size_t> const candidates = replaceable_road_layers(style);
+      int victim = -1;
+      double victim_loss = std::numeric_limits<double>::max();
+      for (std::size_t layer : candidates)
+      {
+        // Converting a visible shared-edge layer is the primary source of
+        // rectangular chunk seams. Keep it possible when the user explicitly
+        // requested replacement, but strongly prefer layers concentrated under
+        // the road and layers with little or no edge contribution.
+        double const loss = protected_totals[layer] * 8.0
+          + border_totals[layer] * 32.0
+          + static_cast<double>(border_maxima[layer]) * 4096.0
+          + layer_totals[layer] * 0.05;
+        if (loss < victim_loss
+            || (loss == victim_loss && victim >= 0
+                && layer_totals[layer] < layer_totals[static_cast<std::size_t>(victim)]))
+        {
+          victim = static_cast<int>(layer);
+          victim_loss = loss;
+        }
+      }
+      if (victim < 0 || nTextures < 2)
+      {
+        result.blocked_by_texture_limit = true;
+        return result;
+      }
+
+      std::vector<int> recipients;
+      for (std::size_t layer = 0; layer < nTextures; ++layer)
+      {
+        if (static_cast<int>(layer) == victim || is_road_texture(textures[layer]))
+        {
+          continue;
+        }
+        recipients.push_back(static_cast<int>(layer));
+      }
+      if (recipients.empty())
+      {
+        for (std::size_t layer = 0; layer < nTextures; ++layer)
+        {
+          if (static_cast<int>(layer) != victim)
+          {
+            recipients.push_back(static_cast<int>(layer));
+          }
+        }
+      }
+      if (recipients.empty())
+      {
+        result.blocked_by_texture_limit = true;
+        return result;
+      }
+
+      int const fallback_recipient = *std::max_element(recipients.begin(), recipients.end(),
+        [&](int lhs, int rhs)
+        {
+          return layer_totals[static_cast<std::size_t>(lhs)]
+            < layer_totals[static_cast<std::size_t>(rhs)];
+        });
+      for (std::size_t pixel = 0; pixel < 4096; ++pixel)
+      {
+        float const victim_weight = tmp_edit_values->map[victim][pixel];
+        float recipient_total = 0.0f;
+        for (int recipient : recipients)
+        {
+          recipient_total += tmp_edit_values->map[recipient][pixel];
+        }
+        if (recipient_total > 0.01f)
+        {
+          for (int recipient : recipients)
+          {
+            tmp_edit_values->map[recipient][pixel] += victim_weight
+              * (tmp_edit_values->map[recipient][pixel] / recipient_total);
+          }
+        }
+        else
+        {
+          tmp_edit_values->map[fallback_recipient][pixel] += victim_weight;
+        }
+      }
+      eraseTexture(static_cast<std::size_t>(victim));
+      ++result.replaced_texture_layers;
+      result.changed = true;
+    }
+  }
+
+  // Install required core materials first. Missing shoulder layers are added
+  // only when the destination chunk has room; otherwise their sampled opacity
+  // remains available to the local terrain background instead of triggering a
+  // destructive grass-layer eviction.
+  for (std::size_t material_index = 0; material_index < style.materials.size(); ++material_index)
+  {
+    road_material_profile const& material = style.materials[material_index];
+    if (!material_is_required(material_index) || texture_id(material.texture) >= 0)
+    {
+      continue;
+    }
+    int const layer = addTexture(material.texture);
+    if (layer < 0)
+    {
+      result.blocked_by_texture_limit = true;
+      return result;
+    }
+    _layers_info[layer].flags = material.flags;
+    _layers_info[layer].effectID = material.effect_id;
+  }
+  for (std::size_t material_index = 0;
+       material_index < style.materials.size() && nTextures < 4; ++material_index)
+  {
+    road_material_profile const& material = style.materials[material_index];
+    if (material_is_required(material_index) || texture_id(material.texture) >= 0)
+    {
+      continue;
+    }
+    int const layer = addTexture(material.texture);
+    if (layer >= 0)
+    {
+      _layers_info[layer].flags = material.flags;
+      _layers_info[layer].effectID = material.effect_id;
+    }
+  }
+
+  struct active_road_material
+  {
+    std::size_t style_index;
+    int layer;
+  };
+  std::vector<active_road_material> active_materials;
+  active_materials.reserve(style.materials.size());
+  for (std::size_t material_index = 0; material_index < style.materials.size(); ++material_index)
+  {
+    int const layer = texture_id(style.materials[material_index].texture);
+    if (layer >= 0)
+    {
+      active_materials.push_back({material_index, layer});
+    }
+    else if (material_is_required(material_index))
+    {
+      result.blocked_by_texture_limit = true;
+      return result;
+    }
+  }
+  if (active_materials.empty())
+  {
+    return result;
+  }
+
+  create_temporary_alphamaps_if_needed();
+  if (!tmp_edit_values)
+  {
+    return result;
+  }
+  auto& values = *tmp_edit_values;
+
+  struct road_segment
+  {
+    glm::vec2 start;
+    glm::vec2 delta;
+    glm::vec2 direction;
+    float length_squared;
+    float length;
+    float path_start;
+  };
+  std::vector<road_segment> segments;
+  segments.reserve(points.size() - 1);
+  float cumulative_path_length = 0.0f;
+  for (std::size_t index = 0; index + 1 < points.size(); ++index)
+  {
+    glm::vec2 const start{points[index].x, points[index].z};
+    glm::vec2 const end{points[index + 1].x, points[index + 1].z};
+    glm::vec2 const delta = end - start;
+    float const length_squared = glm::dot(delta, delta);
+    float const length = std::sqrt(length_squared);
+    bool const may_touch_chunk = std::max(start.x, end.x) + half_width >= _chunk->xbase
+      && std::min(start.x, end.x) - half_width <= _chunk->xbase + CHUNKSIZE
+      && std::max(start.y, end.y) + half_width >= _chunk->zbase
+      && std::min(start.y, end.y) - half_width <= _chunk->zbase + CHUNKSIZE;
+    if (length_squared > 0.0001f && may_touch_chunk)
+    {
+      segments.push_back({start, delta, glm::normalize(delta), length_squared,
+        length, cumulative_path_length});
+    }
+    cumulative_path_length += length;
+  }
+  if (segments.empty())
+  {
+    return result;
+  }
+
+  auto profile_weight = [](std::array<float, ROAD_PROFILE_SAMPLE_COUNT> const& weights,
+                           float normalized_lateral)
+  {
+    float const sample_position = std::clamp((normalized_lateral + 1.0f) * 0.5f, 0.0f, 1.0f)
+      * static_cast<float>(ROAD_PROFILE_SAMPLE_COUNT - 1);
+    std::size_t const lower = static_cast<std::size_t>(std::floor(sample_position));
+    std::size_t const upper = std::min(lower + 1, ROAD_PROFILE_SAMPLE_COUNT - 1);
+    float const fraction = sample_position - static_cast<float>(lower);
+    return weights[lower] * (1.0f - fraction) + weights[upper] * fraction;
+  };
+
+  for (int z = 0; z < 64; ++z)
+  {
+    for (int x = 0; x < 64; ++x)
+    {
+      glm::vec2 const point{
+        _chunk->xbase + (static_cast<float>(x) + 0.5f) * TEXDETAILSIZE,
+        _chunk->zbase + (static_cast<float>(z) + 0.5f) * TEXDETAILSIZE
+      };
+      float closest_distance_squared = std::numeric_limits<float>::max();
+      glm::vec2 closest_offset{};
+      glm::vec2 closest_direction = style.outward_direction;
+      float closest_path_distance = 0.0f;
+      for (road_segment const& segment : segments)
+      {
+        float const t = std::clamp(glm::dot(point - segment.start, segment.delta)
+          / segment.length_squared, 0.0f, 1.0f);
+        glm::vec2 const offset = point - (segment.start + segment.delta * t);
+        float const distance_squared = glm::dot(offset, offset);
+        if (distance_squared < closest_distance_squared)
+        {
+          closest_distance_squared = distance_squared;
+          closest_offset = offset;
+          closest_direction = segment.direction;
+          closest_path_distance = segment.path_start + t * segment.length;
+        }
+      }
+      float const distance = std::sqrt(closest_distance_squared);
+      // At the captured scale, an additional 4x4 box filter washes out the
+      // reference's peak alpha and small longitudinal details. Use one sample
+      // for faithful 1:1 or enlarged replay, and increase integration only as
+      // the road is reduced enough to require anti-aliasing.
+      int const coverage_samples = width_scale >= 0.9f ? 1
+        : width_scale >= 0.6f ? 2 : 4;
+      float const half_sample_span = 0.5f
+        - 0.5f / static_cast<float>(coverage_samples);
+      if (distance > half_width + TEXDETAILSIZE * half_sample_span)
+      {
+        continue;
+      }
+
+      float const cross = closest_direction.x * closest_offset.y
+        - closest_direction.y * closest_offset.x;
+      float const signed_distance = cross < 0.0f ? -distance : distance;
+
+      std::array<float, 4> target_material_weights{};
+      // Integrate the captured road over the alphamap texel instead of taking a
+      // single center sample. This is especially important when a road is
+      // scaled down: its shoulders and opacity details otherwise fall between
+      // texel centers and disappear. Sampling in local tangent space also keeps
+      // the filter stable while the path curves through world-space chunks.
+      for (int along_index = 0; along_index < coverage_samples; ++along_index)
+      {
+        float const along_offset = (static_cast<float>(along_index) + 0.5f)
+          / static_cast<float>(coverage_samples) * TEXDETAILSIZE - TEXDETAILSIZE * 0.5f;
+        float const sample_path_distance = closest_path_distance + along_offset;
+        sampled_road_exemplar_position const exemplar = sampled_road_exemplar_at(
+          style, sample_path_distance, width_scale);
+        bool const uses_world_space_exemplar = style.has_longitudinal_exemplar
+          && style.exemplar_sample_count >= 2 && style.exemplar_lateral_extent > 0.0f;
+        auto const sampled_widths = sampled_road_widths_at(
+          style, sample_path_distance, width_scale);
+        for (int lateral_index = 0; lateral_index < coverage_samples; ++lateral_index)
+        {
+          float const lateral_offset = (static_cast<float>(lateral_index) + 0.5f)
+            / static_cast<float>(coverage_samples) * TEXDETAILSIZE - TEXDETAILSIZE * 0.5f;
+          float const sample_signed_distance = signed_distance + lateral_offset;
+          float normalized_lateral = 0.0f;
+          float edge_fade = 1.0f;
+          float const lateral_width = sample_signed_distance >= 0.0f
+            ? sampled_widths.first : sampled_widths.second;
+          if (lateral_width <= 0.0f || std::abs(sample_signed_distance) > lateral_width)
+          {
+            continue;
+          }
+          if (uses_world_space_exemplar)
+          {
+            float const source_lateral = sample_signed_distance
+              / std::max(width_scale, 0.001f);
+            if (std::abs(source_lateral) > style.exemplar_lateral_extent)
+            {
+              continue;
+            }
+            normalized_lateral = source_lateral / style.exemplar_lateral_extent;
+            // Automatic reference capture includes clean terrain beyond the
+            // road. The captured coverage therefore owns the complete edge;
+            // applying another analytic window fade here would compress that
+            // broad dirt-to-grass transition back into a visible outline.
+          }
+          else
+          {
+            normalized_lateral = sample_signed_distance / lateral_width;
+            float const edge_t = std::clamp(
+              (std::abs(normalized_lateral) - 0.82f) / 0.18f, 0.0f, 1.0f);
+            edge_fade = 1.0f - edge_t * edge_t * (3.0f - 2.0f * edge_t);
+          }
+          std::array<float, 4> sample_weights{};
+          float sample_total = 0.0f;
+          for (std::size_t active_index = 0; active_index < active_materials.size(); ++active_index)
+          {
+            std::size_t const material_index = active_materials[active_index].style_index;
+            road_material_profile const& material = style.materials[material_index];
+            float sampled_weight = profile_weight(material.weights, normalized_lateral);
+            if (style.has_longitudinal_exemplar && style.exemplar_sample_count >= 2)
+            {
+              sampled_weight = profile_weight(
+                  material.exemplar_weights[exemplar.lower], normalized_lateral)
+                  * (1.0f - exemplar.fraction)
+                + profile_weight(material.exemplar_weights[exemplar.upper], normalized_lateral)
+                  * exemplar.fraction;
+            }
+            float const captured_weight = std::max(0.0f, sampled_weight);
+            sample_weights[active_index] = captured_weight;
+            sample_total += captured_weight;
+          }
+          float captured_coverage = std::clamp(sample_total / 255.0f, 0.0f, 1.0f);
+          if (uses_world_space_exemplar)
+          {
+            captured_coverage = std::clamp(
+                profile_weight(style.exemplar_coverage[exemplar.lower], normalized_lateral)
+                  * (1.0f - exemplar.fraction)
+                + profile_weight(style.exemplar_coverage[exemplar.upper], normalized_lateral)
+                  * exemplar.fraction,
+              0.0f, 1.0f);
+          }
+          // Opacity scales how much destination terrain is replaced, not the
+          // relative cobble/dirt mixture. At a faint shoulder this leaves the
+          // existing grass visible in exactly the uncovered proportion.
+          float const target_total = std::clamp(
+            captured_coverage * opacity_scale * edge_fade, 0.0f, 1.0f) * 255.0f;
+          float const sample_scale = sample_total > 0.01f
+            ? target_total / sample_total : 0.0f;
+          for (std::size_t active_index = 0; active_index < active_materials.size(); ++active_index)
+          {
+            target_material_weights[active_index] += sample_weights[active_index] * sample_scale;
+          }
+        }
+      }
+      float const inverse_coverage_sample_count = 1.0f
+        / static_cast<float>(coverage_samples * coverage_samples);
+      float road_total = 0.0f;
+      for (std::size_t active_index = 0; active_index < active_materials.size(); ++active_index)
+      {
+        float& target = target_material_weights[active_index];
+        target *= inverse_coverage_sample_count;
+        road_total += target;
+      }
+      if (road_total <= 0.01f)
+      {
+        continue;
+      }
+
+      int const offset_index = z * 64 + x;
+      std::array<float, 4> output{};
+      float const background_target = 255.0f - road_total;
+      float const background_scale = background_target / 255.0f;
+      // Treat the road as a structural overlay on an immutable snapshot of the
+      // destination alphas. Every local terrain texture, including an already
+      // present dirt or cobble layer, keeps its original proportion in the
+      // remaining opacity. As road opacity fades, the exact local grass mixture
+      // therefore returns continuously.
+      for (std::size_t layer = 0; layer < nTextures; ++layer)
+      {
+        output[layer] = values[layer][offset_index] * background_scale;
+      }
+      for (std::size_t active_index = 0; active_index < active_materials.size(); ++active_index)
+      {
+        output[active_materials[active_index].layer] += target_material_weights[active_index];
+      }
+
+      // A road crossing is not ordinary background. Preserve the destination's
+      // existing structural core before allocating the remaining opacity. This
+      // prevents longitudinal gaps or a low-opacity new section from cutting a
+      // grass-colored notch through an already painted road.
+      std::array<bool, 4> protected_structural_layers{};
+      float protected_structural_total = 0.0f;
+      for (std::size_t active_index = 0; active_index < active_materials.size(); ++active_index)
+      {
+        active_road_material const& active = active_materials[active_index];
+        if (!material_is_structural(active.style_index))
+        {
+          continue;
+        }
+        std::size_t const layer = static_cast<std::size_t>(active.layer);
+        output[layer] = std::max(output[layer], values[layer][offset_index]);
+        protected_structural_layers[layer] = true;
+        protected_structural_total += output[layer];
+      }
+      if (protected_structural_total > 255.0f)
+      {
+        float const scale = 255.0f / protected_structural_total;
+        for (std::size_t layer = 0; layer < nTextures; ++layer)
+        {
+          if (protected_structural_layers[layer])
+          {
+            output[layer] *= scale;
+          }
+        }
+        protected_structural_total = 255.0f;
+      }
+      float non_structural_total = 0.0f;
+      for (std::size_t layer = 0; layer < nTextures; ++layer)
+      {
+        if (!protected_structural_layers[layer])
+        {
+          non_structural_total += output[layer];
+        }
+      }
+      float const non_structural_target = 255.0f - protected_structural_total;
+      if (non_structural_total > 0.01f)
+      {
+        float const scale = non_structural_target / non_structural_total;
+        for (std::size_t layer = 0; layer < nTextures; ++layer)
+        {
+          if (!protected_structural_layers[layer])
+          {
+            output[layer] *= scale;
+          }
+        }
+      }
+
+      // Preserve the hand-painted endpoint and introduce the generated style
+      // gradually. This avoids the circular opacity bulb that otherwise forms
+      // where the new route meets the source road.
+      float const join_length = std::clamp(style.half_width * width_scale * 0.75f,
+        TEXDETAILSIZE * 2.0f, 12.0f);
+      float const join_t = std::clamp(closest_path_distance / join_length, 0.0f, 1.0f);
+      float const join_blend = join_t * join_t * (3.0f - 2.0f * join_t);
+      if (join_blend < 1.0f)
+      {
+        for (std::size_t layer = 0; layer < nTextures; ++layer)
+        {
+          output[layer] = values[layer][offset_index] * (1.0f - join_blend)
+            + output[layer] * join_blend;
+        }
+      }
+
+      for (std::size_t layer = 0; layer < nTextures; ++layer)
+      {
+        if (std::abs(values[layer][offset_index] - output[layer]) > 0.01f)
+        {
+          values[layer][offset_index] = output[layer];
+          result.changed = true;
+        }
+      }
+    }
+  }
+
+  if (result.changed)
+  {
+    _chunk->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+    _need_lod_texture_map_update = true;
+  }
+  return result;
+}
+
 const std::string& TextureSet::filename(size_t id)
 {
   return textures[id]->file_key().filepath();
@@ -452,10 +1338,10 @@ bool const TextureSet::getDoodadDisabledAt(int x, int y)
     if (x >= 8 || y >= 8)
         return true; // not valid. default to enabled
 
-    // X and Y are swapped
-    bool is_enabled = _doodadStencil[y] & (1 << (x));
+    // byte row = unit z (y param), bit = unit x; bit set = doodads disabled
+    bool is_disabled = _doodadStencil[y] & (1 << (x));
 
-    return is_enabled;
+    return is_disabled;
 }
 
 void TextureSet::setDetailDoodadsExclusion(float xbase, float zbase, glm::vec3 const& pos, float radius, bool big, bool add)
@@ -834,7 +1720,21 @@ bool TextureSet::paintTexture(float xbase, float zbase, float x, float z, Brush*
 
   radius = brush->getRadius();
 
-  if (misc::getShortestDist(x, z, xbase, zbase, CHUNKSIZE) > radius)
+  auto const axis_distance = [](float point, float square, float size)
+  {
+    if (point < square)
+      return square - point;
+    if (point > square + size)
+      return point - (square + size);
+    return 0.0f;
+  };
+
+  float const chunk_x_dist = axis_distance(x, xbase, CHUNKSIZE);
+  float const chunk_z_dist = axis_distance(z, zbase, CHUNKSIZE);
+  float const chunk_dist = brush->getShape() == BrushShape::SQUARE
+    ? std::max(chunk_x_dist, chunk_z_dist)
+    : std::sqrt(chunk_x_dist * chunk_x_dist + chunk_z_dist * chunk_z_dist);
+  if (chunk_dist > radius)
   {
     return changed;
   }
@@ -849,7 +1749,11 @@ bool TextureSet::paintTexture(float xbase, float zbase, float x, float z, Brush*
     xPos = xbase;
     for (int i = 0; i < 64; ++i)
     {
-      dist = misc::getShortestDist(x, z, xPos, zPos, TEXDETAILSIZE);
+      float const x_dist = axis_distance(x, xPos, TEXDETAILSIZE);
+      float const z_dist = axis_distance(z, zPos, TEXDETAILSIZE);
+      dist = brush->getShape() == BrushShape::SQUARE
+        ? std::max(x_dist, z_dist)
+        : std::sqrt(x_dist * x_dist + z_dist * z_dist);
 
       if (dist <= radius)
       {
@@ -865,7 +1769,7 @@ bool TextureSet::paintTexture(float xbase, float zbase, float x, float z, Brush*
 
         double current_alpha = alpha_values[tex_layer];
         double sum_other_alphas = (total - current_alpha);
-        double alpha_change = (strength - current_alpha) * pressure * brush->getValue(dist);
+        double alpha_change = (strength - current_alpha) * pressure * brush->getValue(x_dist, z_dist);
 
         // alpha too low, set it to 0 directly
         if (alpha_change < 0. && current_alpha + alpha_change < 1.)
@@ -1348,13 +2252,20 @@ void TextureSet::uploadAlphamapData()
 {
   // This method assumes tile's alphamap storage is currently bound to the current texture unit
 
-  if (!(_chunk->getUpdateFlags() & ChunkUpdateFlags::ALPHAMAP) || !nTextures)
+  std::size_t const render_count = renderTextureCount();
+  if (!(_chunk->getUpdateFlags() & ChunkUpdateFlags::ALPHAMAP) || !render_count)
     return;
 
   static std::array<float, 3 * 64 * 64> amap{};
   std::fill(amap.begin(), amap.end(), 0.0f);
 
-  if (tmp_edit_values)
+  if (_chunk_mover_texture_preview)
+  {
+    for (int i = 0; i < 64 * 64; ++i)
+      for (int alpha_id = 0; alpha_id < 3; ++alpha_id)
+        amap[i * 3 + alpha_id] = _chunk_mover_texture_preview->alphamaps[alpha_id][i];
+  }
+  else if (tmp_edit_values)
   {
     auto& tmp_amaps = *tmp_edit_values;
 
@@ -1397,6 +2308,29 @@ void TextureSet::uploadAlphamapData()
   gl.texSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, _chunk->px * 16 + _chunk->py,
                    64, 64, 1, GL_RGB, GL_FLOAT, amap.data());
 
+}
+
+void TextureSet::setChunkMoverTexturePreview(std::optional<chunk_mover_texture_preview> preview)
+{
+  _chunk_mover_texture_preview = std::move(preview);
+  _chunk->requeueChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+  _chunk->requeueChunkUpdate(ChunkUpdateFlags::FLAGS);
+}
+
+std::size_t TextureSet::renderTextureCount() const
+{
+  return _chunk_mover_texture_preview ? _chunk_mover_texture_preview->textures.size() : nTextures;
+}
+
+std::vector<scoped_blp_texture_reference>& TextureSet::renderTextures()
+{
+  return _chunk_mover_texture_preview ? _chunk_mover_texture_preview->textures : textures;
+}
+
+unsigned int TextureSet::renderTextureFlag(std::size_t id) const
+{
+  return _chunk_mover_texture_preview ? _chunk_mover_texture_preview->flags.at(id)
+                                      : _layers_info[id].flags;
 }
 
 namespace
@@ -1501,13 +2435,7 @@ std::array<float, 4> TextureSet::get_textures_weight_for_unit(unsigned int unit_
 
 void TextureSet::updateDoodadMapping()
 {
-    // NOTE : tempalphamap needs to be applied first with apply_alpha_changes()
-
     std::array<std::uint16_t, 8> new_doodad_mapping{};
-    // std::array<std::array<std::uint8_t, 8>, 8> new_doodad_mapping{};
-    // for (auto& row : new_doodad_mapping) {
-    //     row.fill(nTextures - 1);
-    // }
 
     if (nTextures <= 1)
     {
@@ -1516,33 +2444,48 @@ void TextureSet::updateDoodadMapping()
         return;
     }
 
-    // test comparison variables 
-    int matching_count = 0;
-    int not_matching_count = 0;
-    int very_innacurate_count = 0;
-    int higher_count = 0;
-    int lower_count = 0;
-    std::array<std::array<std::uint8_t, 8>, 8> blizzard_mapping_readable;
-    bool debug_test = false;
-    if (debug_test)
-        blizzard_mapping_readable = getDoodadMappingReadable();
-
     constexpr int TILE_SIZE = 64;
     constexpr int UNIT_SIZE = 8;
     constexpr int NUM_UNITS = TILE_SIZE / UNIT_SIZE; // 8
+    constexpr int STRONG_ALPHA = 192; // 75% of the 0..255 alpha range
+    constexpr int MIN_STRONG_SAMPLES = 8; // 12.5% of a ground-effect unit
+    constexpr int MIN_CONNECTED_SAMPLES = 4;
 
-    // pre load alphamaps data to avoid functions overhead
-    std::array< const unsigned char*, 3> alphamaps_datas;
-    for (int alpha_layer = 0; alpha_layer < nTextures - 1; ++alpha_layer)
+    // Texture painting is rendered from tmp_edit_values until the alpha maps
+    // are committed (usually when the tile is saved). Ground-effect ownership
+    // must use those same live values or the visible texture and its doodads can
+    // disagree for the rest of the editing session.
+    auto sample_weights_at = [&](int offset)
     {
-      alphamaps_datas[alpha_layer] = alphamaps[alpha_layer]->getAlpha();
-    }
+      std::array<int, 4> weights{ 0, 0, 0, 0 };
+      if (tmp_edit_values)
+      {
+        for (int layer = 0; layer < nTextures; ++layer)
+        {
+          weights[layer] = std::clamp(static_cast<int>((*tmp_edit_values)[layer][offset] + 0.5f), 0, 255);
+        }
+      }
+      else
+      {
+        weights[0] = 255;
+        for (int layer = 1; layer < nTextures; ++layer)
+        {
+          weights[layer] = alphamaps[layer - 1]->getAlpha(offset);
+          weights[0] -= weights[layer];
+        }
+        weights[0] = std::max(0, weights[0]);
+      }
+      return weights;
+    };
 
     for (int unit_y = 0; unit_y < NUM_UNITS; unit_y++)
     {
         for (int unit_x = 0; unit_x < NUM_UNITS; unit_x++)
         {
-            unsigned int layer_totals[4]{ 0,0,0,0 };
+            unsigned int layer_totals[4]{ 0, 0, 0, 0 };
+            unsigned int dominant_samples[4]{ 0, 0, 0, 0 };
+            unsigned int strong_samples[4]{ 0, 0, 0, 0 };
+            bool strong_mask[4][UNIT_SIZE][UNIT_SIZE]{};
 
             const int unit_base_y = unit_y * UNIT_SIZE;
             const int unit_base_x = unit_x * UNIT_SIZE;
@@ -1551,111 +2494,115 @@ void TextureSet::updateDoodadMapping()
             {
               const int row_base = (unit_base_y + y) * TILE_SIZE + unit_base_x;
 
-              // row pointers per layer
-              const unsigned char* row_ptrs[3] = { nullptr, nullptr, nullptr };
-              for (int layer = 0; layer < nTextures - 1; ++layer)
-                row_ptrs[layer] = alphamaps_datas[layer] + row_base;
-
-
               for (int x = 0; x < UNIT_SIZE; ++x)
               {
-                int base_alpha = 255;
+                auto const sample_weights = sample_weights_at(row_base + x);
 
-                if (nTextures > 1)
-                  { uint8_t v = *row_ptrs[0]++; layer_totals[1] += v; base_alpha -= v; }
-                if (nTextures > 2)
-                  { uint8_t v = *row_ptrs[1]++; layer_totals[2] += v; base_alpha -= v; }
-                if (nTextures > 3)
-                  { uint8_t v = *row_ptrs[2]++; layer_totals[3] += v; base_alpha -= v; }
+                int dominant_layer = 0;
+                for (int layer = 0; layer < nTextures; ++layer)
+                {
+                  layer_totals[layer] += sample_weights[layer];
+                  // Higher painted layers win an exact per-sample tie.
+                  if (sample_weights[layer] >= sample_weights[dominant_layer])
+                  {
+                    dominant_layer = layer;
+                  }
+                }
+                dominant_samples[dominant_layer]++;
 
-                layer_totals[0] += base_alpha;
+                // Only a layer that is visibly on top at this sample contributes
+                // to the coherent-overlay override. This rejects hidden alpha and
+                // isolated paint noise.
+                if (dominant_layer > 0 && sample_weights[dominant_layer] >= STRONG_ALPHA)
+                {
+                  strong_mask[dominant_layer][y][x] = true;
+                  strong_samples[dominant_layer]++;
+                }
               }
             }
 
-            // 8x8 bits per unit
-            /*
-            for (int y = 0; y < UNIT_SIZE; y++)
+            auto largest_connected_patch = [&](int layer)
             {
-                const int row_base = (unit_base_y + y) * TILE_SIZE + unit_base_x;
+              bool visited[UNIT_SIZE][UNIT_SIZE]{};
+              int largest = 0;
+              constexpr int dx[4]{ -1, 1, 0, 0 };
+              constexpr int dy[4]{ 0, 0, -1, 1 };
 
-                for (int x = 0; x < UNIT_SIZE; x++)
+              for (int start_y = 0; start_y < UNIT_SIZE; ++start_y)
+              {
+                for (int start_x = 0; start_x < UNIT_SIZE; ++start_x)
                 {
-                    int base_alpha = 255;
+                  if (!strong_mask[layer][start_y][start_x] || visited[start_y][start_x])
+                  {
+                    continue;
+                  }
 
-                    const int alpha_pos = row_base + x;
-                    // const int alpha_pos = (unit_y * 8 + y) * 64 + (unit_x * 8 + x);
+                  int queue_x[UNIT_SIZE * UNIT_SIZE];
+                  int queue_y[UNIT_SIZE * UNIT_SIZE];
+                  int queue_begin = 0;
+                  int queue_end = 0;
+                  int patch_size = 0;
+                  queue_x[queue_end] = start_x;
+                  queue_y[queue_end++] = start_y;
+                  visited[start_y][start_x] = true;
 
-                    for (int alpha_layer = 0; alpha_layer < (nTextures - 1); ++alpha_layer)
+                  while (queue_begin < queue_end)
+                  {
+                    int const current_x = queue_x[queue_begin];
+                    int const current_y = queue_y[queue_begin++];
+                    patch_size++;
+
+                    for (int direction = 0; direction < 4; ++direction)
                     {
-                        auto alphamap = alphamaps[alpha_layer]->getAlpha();
-                        int alpha = static_cast<int>(alphamap[alpha_pos]);
-
-                        layer_totals[alpha_layer+1] += alpha;
-
-                        base_alpha -= alpha;
+                      int const next_x = current_x + dx[direction];
+                      int const next_y = current_y + dy[direction];
+                      if (next_x < 0 || next_x >= UNIT_SIZE || next_y < 0 || next_y >= UNIT_SIZE
+                          || visited[next_y][next_x] || !strong_mask[layer][next_y][next_x])
+                      {
+                        continue;
+                      }
+                      visited[next_y][next_x] = true;
+                      queue_x[queue_end] = next_x;
+                      queue_y[queue_end++] = next_y;
                     }
-                    layer_totals[0] += base_alpha;
+                  }
+                  largest = std::max(largest, patch_size);
                 }
-            }*/
+              }
+              return largest;
+            };
 
-            // int sum = layer_totals[0] + layer_totals[1] + layer_totals[2] + layer_totals[3];
-            // std::array<float, 4> percent_weights = { total_layer_0 / sum * 100.f,
-            //     total_layer_1 / sum * 100.f,
-            //     total_layer_2 / sum * 100.f,
-            //     total_layer_3 / sum * 100.f };
-
-            int max = layer_totals[0];
-            int max_layer_index = 0;
-
-            for (int i = 1; i < nTextures; i++)
+            int selected_layer = -1;
+            // A deliberate, opaque upper-layer patch claims the unit before the
+            // broad-coverage fallback. Search top-down to respect paint order.
+            for (int layer = static_cast<int>(nTextures) - 1; layer > 0; --layer)
             {
-                // in old azeroth maps superior layers seems to have higher priority
-                // error margin is ~4% in old azeroth without adjusted weight, 2% with
-                // error margin is < 0.5% in northrend without adjusting
-
-                float adjusted_weight = layer_totals[i] * (1 + 0.01*i); // superior layer seems to have priority, adjust by 1% per layer
-                // if (layer_totals[i] >= max)
-                // if (std::floor(weights[i]) >= max)
-                // if (std::round(weights[i]) >= max)
-                if (adjusted_weight >= max) // this with 5% works the best in old continents
-                {
-                    max = layer_totals[i];
-                    max_layer_index = i;
-                }
+              if (strong_samples[layer] >= MIN_STRONG_SAMPLES
+                  && largest_connected_patch(layer) >= MIN_CONNECTED_SAMPLES)
+              {
+                selected_layer = layer;
+                break;
+              }
             }
+
+            // Otherwise choose the texture that dominates the most individual
+            // alpha samples. Total composited weight and layer order break ties.
+            if (selected_layer < 0)
+            {
+              selected_layer = 0;
+              for (int layer = 1; layer < nTextures; ++layer)
+              {
+                if (dominant_samples[layer] > dominant_samples[selected_layer]
+                    || (dominant_samples[layer] == dominant_samples[selected_layer]
+                        && layer_totals[layer] >= layer_totals[selected_layer]))
+                {
+                  selected_layer = layer;
+                }
+              }
+            }
+
             unsigned int firstbit_pos = unit_x * 2;
-            new_doodad_mapping[unit_y] |= ((max_layer_index & 3) << firstbit_pos);
-            // new_chunk_mapping[y][x] = max_layer_index;
-
-            // debug compare with original data
-            if (debug_test)
-            {
-                uint8_t blizzard_layer_id = blizzard_mapping_readable[unit_y][unit_x];
-                uint8_t blizzard_layer_id2 = getDoodadActiveLayerIdAt(unit_x, unit_y); // make sure both work the same
-                if (blizzard_layer_id != blizzard_layer_id2)
-                    throw;
-                // bool test_doodads_enabled = local_chunk->getTextureSet()->getDoodadDisabledAt(x, y);
-
-                if (max_layer_index < blizzard_layer_id)
-                    lower_count++;
-                if (max_layer_index > blizzard_layer_id)
-                    higher_count++;
-
-                if (max_layer_index != blizzard_layer_id)
-                {
-                    int blizzard_effect_id = getEffectForLayer(blizzard_layer_id);
-                    int found_effect_id = getEffectForLayer(max_layer_index);
-                    not_matching_count++;
-                    /*
-                    float percent_innacuracy = ((layer_totals[max_layer_index] - layer_totals[blizzard_layer_id]) / ((static_cast<float>(layer_totals[max_layer_index]) + layer_totals[blizzard_layer_id]) / 2)) * 100.f;
-
-                    if (percent_innacuracy > 15)
-                        very_innacurate_count++;*/
-
-                }
-                else
-                    matching_count++;
-            }
+            new_doodad_mapping[unit_y] |= ((selected_layer & 3) << firstbit_pos);
         }
     }
 
@@ -1712,15 +2659,14 @@ bool TextureSet::apply_alpha_changes()
     for (int i = 0; i < ALPHA_SIZE; ++i)
     {
       uint8_t new_value = float_alpha_to_uint8(tmp_layer[i]);
-      values[i] = new_value;
-      uint16_t total = totals[i] += new_value;
+      uint16_t const available = static_cast<std::uint16_t>(255 - totals[i]);
 
-      // remove the possible overflow with rounding
-      // max 2 if all 4 values round up so it won't change the layer's alpha much
-      if (total > 255)
-      {
-        new_value -= static_cast<std::uint8_t>(total - 255);
-      }
+      // Independent rounding can make the stored non-base layers sum to 256 or
+      // 257. Clamp before storing so the implicit base weight never becomes
+      // negative in the terrain shader.
+      new_value = static_cast<std::uint8_t>(std::min<std::uint16_t>(new_value, available));
+      values[i] = new_value;
+      totals[i] += new_value;
     }
 
     alphamaps[alpha_layer]->setAlpha(values.data());
@@ -1770,7 +2716,7 @@ void TextureSet::markDirty()
 void TextureSet::setEffect(size_t id, int value)
 {
   _layers_info[id].effectID = value;
-  _chunk->registerChunkUpdate(ChunkUpdateFlags::FLAGS);
+  _chunk->registerChunkUpdate(ChunkUpdateFlags::GROUND_EFFECT);
 }
 
 std::array<std::uint16_t, 8> TextureSet::lod_texture_map()

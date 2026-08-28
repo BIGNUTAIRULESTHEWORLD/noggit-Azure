@@ -180,6 +180,7 @@ public:
   bool hasAGlobalWMO() const;
   bool hasTile(const TileIndex& index) const;
   bool tileAwaitingLoading(const TileIndex& tile) const;
+  bool hasTilesAwaitingLoading() const;
   bool tileLoaded(const TileIndex& tile) const;
 
   void save();

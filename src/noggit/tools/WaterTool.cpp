@@ -3,6 +3,7 @@
 #include "WaterTool.hpp"
 
 #include <noggit/ActionManager.hpp>
+#include <noggit/ChunkWater.hpp>
 #include <noggit/MapView.h>
 #include <noggit/Input.hpp>
 #include <noggit/ui/Water.h>
@@ -80,6 +81,33 @@ namespace Noggit
                 NOGGIT_ACTION_MGR->endAction();
             }
         );
+
+        auto clear_flags = [mv](std::optional<LiquidAttribute> attribute)
+        {
+            NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_WATER);
+            mv->getWorld()->clearLiquidAttributes(mv->getCamera()->position, attribute);
+            NOGGIT_ACTION_MGR->endAction();
+        };
+        QObject::connect(_guiWater, &Noggit::Ui::water::clear_fishable_flags,
+                         [clear_flags] { clear_flags(LiquidAttribute::Fishable); });
+        QObject::connect(_guiWater, &Noggit::Ui::water::clear_fatigue_flags,
+                         [clear_flags] { clear_flags(LiquidAttribute::Fatigue); });
+        QObject::connect(_guiWater, &Noggit::Ui::water::clear_all_liquid_flags,
+                         [clear_flags] { clear_flags(std::nullopt); });
+        QObject::connect(_guiWater, &Noggit::Ui::water::clear_fishing_flags_outside_liquid,
+            [mv]
+            {
+                NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_WATER);
+                mv->getWorld()->clearLiquidFishingFlagsOutsideLiquid(mv->getCamera()->position);
+                NOGGIT_ACTION_MGR->endAction();
+            });
+        QObject::connect(_guiWater, &Noggit::Ui::water::regenerate_liquid_flags,
+            [mv]
+            {
+                NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_WATER);
+                mv->getWorld()->regenerateLiquidAttributes(mv->getCamera()->position);
+                NOGGIT_ACTION_MGR->endAction();
+            });
     }
 
     ToolDrawParameters WaterTool::drawParameters() const
@@ -87,38 +115,60 @@ namespace Noggit
         return
         {
             .radius = _guiWater->brushRadius(),
+            .inner_radius = _guiWater->innerRadius(),
             .angle = _guiWater->angle(),
             .orientation = _guiWater->orientation(),
             .ref_pos = _guiWater->ref_pos(),
             .angled_mode = _guiWater->angled_mode(),
             .use_ref_pos = _guiWater->use_ref_pos(),
+            .project_cursor_on_water = !_guiWater->locked(),
+            .show_liquid_vertices = _guiWater->showLiquidVertices(),
+            .liquid_attribute_overlay = _guiWater->liquidAttributeOverlay(),
+            .liquid_edit_layer = static_cast<int>(_displayedWaterLayer.get()),
+            .liquid_surface_token = _guiWater->surfaceToken(),
+            .liquid_brush_falloff = _guiWater->heightFalloff(),
             .displayed_water_layer = _displayAllWaterLayers.get() ? -1 : static_cast<int>(_displayedWaterLayer.get()),
         };
     }
 
     void WaterTool::onTick(float deltaTime, TickParameters const& params)
     {
-        if (params.underMap || !params.left_mouse)
+      auto mv = mapView();
+      bool liquid_cursor_hit = false;
+      if (params.displayMode == display_mode::in_3D && !_guiWater->locked())
+      {
+        if (auto const liquid_position = mv->getWorld()->intersectLiquid(
+              mv->intersect_ray(), static_cast<int>(_displayedWaterLayer.get()),
+              _guiWater->surfaceToken()))
         {
-            return;
+          mv->cursorPosition(*liquid_position);
+          liquid_cursor_hit = true;
         }
+      }
 
-        auto mv = mapView();
-        if (params.displayMode == display_mode::in_3D && !params.underMap)
+      if (!params.left_mouse || (params.underMap && !liquid_cursor_hit))
+      {
+        _guiWater->endStroke();
+        return;
+      }
+
+        if (params.displayMode == display_mode::in_3D)
         {
             if (params.mod_shift_down)
             {
                 NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_WATER,
                     Noggit::ActionModalityControllers::eSHIFT
                     | Noggit::ActionModalityControllers::eLMB);
-                _guiWater->paintLiquid(mv->getWorld(), mv->cursorPosition(), true);
+                _guiWater->beginStroke(mv->cursorPosition());
+                _guiWater->paintLiquid(mv->getWorld(), mv->cursorPosition(), true, deltaTime);
             }
             else if (params.mod_ctrl_down)
             {
                 NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_WATER,
                     Noggit::ActionModalityControllers::eCTRL
                     | Noggit::ActionModalityControllers::eLMB);
-                _guiWater->paintLiquid(mv->getWorld(), mv->cursorPosition(), false);
+                _guiWater->beginStroke(mv->cursorPosition());
+                _guiWater->paintLiquid(mv->getWorld(), mv->cursorPosition(), false, deltaTime);
             }
         }
 

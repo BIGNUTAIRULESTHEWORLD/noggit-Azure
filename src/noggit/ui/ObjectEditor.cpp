@@ -55,6 +55,7 @@ namespace Noggit
                                  , BoolToggleProperty* move_model_to_cursor_position
                                  , BoolToggleProperty* snap_multi_selection_to_ground
                                  , BoolToggleProperty* use_median_pivot_point
+                                 , BoolToggleProperty* scale_around_pivot_point
                                  , object_paste_params* paste_params
                                  , BoolToggleProperty* rotate_along_ground
                                  , BoolToggleProperty* rotate_along_ground_smooth
@@ -318,9 +319,16 @@ namespace Noggit
                                                    )
                                      );
 
+      auto object_scale_pivot_point (new CheckBox ("Scale positions around\npivot point"
+                                                  , scale_around_pivot_point
+                                                  , this
+                                                  )
+                                    );
+
       
       multi_select_movement_layout->addRow(multi_select_movement_cb);
       multi_select_movement_layout->addRow(object_median_pivot_point);
+      multi_select_movement_layout->addRow(object_scale_pivot_point);
 
       auto *selectionOptionsBox = new ExpanderWidget(this);
       selectionOptionsBox->setExpanderTitle("Movement Options");
@@ -372,7 +380,8 @@ namespace Noggit
       layout->addWidget(importBox);
       // layout->addWidget(_filename);
 
-      rotationEditor->use_median_pivot_point = &_use_median_pivot_point;
+      rotationEditor->use_median_pivot_point = use_median_pivot_point;
+      rotationEditor->scale_around_pivot_point = scale_around_pivot_point;
 
       connect (rotation_group, &QGroupBox::toggled, [&] (int s)
       {
@@ -511,11 +520,6 @@ namespace Noggit
       });
 
       pasteModeGroup->button(pasteMode)->setChecked(true);
-
-      connect (object_median_pivot_point, &QCheckBox::stateChanged, [this](bool b)
-      {
-          _use_median_pivot_point = b;
-      });
 
       paste_override_rotate_cb->setChecked(paste_params->rotate_on_terrain);
       connect(paste_override_rotate_cb, &QCheckBox::stateChanged, [=](int s)

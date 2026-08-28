@@ -9,6 +9,11 @@ class QDoubleSpinBox;
 
 namespace Noggit
 {
+  struct BoolToggleProperty;
+}
+
+namespace Noggit
+{
   namespace Ui
   {
     class rotation_editor : public QWidget
@@ -16,7 +21,8 @@ namespace Noggit
     public:
       rotation_editor(QWidget* parent, World* world);
 
-      bool* use_median_pivot_point;
+      BoolToggleProperty* use_median_pivot_point = nullptr;
+      BoolToggleProperty* scale_around_pivot_point = nullptr;
 
       void updateValues(World* world);
     private:

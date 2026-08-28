@@ -26,6 +26,9 @@ namespace Noggit
         [[nodiscard]]
         virtual Ui::FontNoggit::Icons icon() const override;
 
+        [[nodiscard]]
+        unsigned int actionModality() const override;
+
         void setupUi(Ui::Tools::ToolPanel* toolPanel) override;
 
         [[nodiscard]]
@@ -33,12 +36,26 @@ namespace Noggit
 
         void onSelected() override;
 
+        void onDeselected() override;
+
         void onTick(float deltaTime, TickParameters const& params) override;
+
+        void onMousePress(MousePressParameters const& params) override;
+
+        void onMouseRelease(MouseReleaseParameters const& params) override;
 
         void onMouseMove(MouseMoveParameters const& params) override;
 
+        void onMouseWheel(MouseWheelParameters const& params) override;
+
+        void onFocusLost() override;
+
     private:
         Ui::Tools::BrushStack* _stampTool = nullptr;
+        bool _stamp_rotation_drag_active = false;
+        float _stamp_rotation_drag_remainder = 0.f;
+
+        void endStampRotationDrag();
         void randomizeStampRotation();
     };
 }

@@ -4,18 +4,27 @@
 #define NOGGIT_WORLDRENDER_HPP
 
 #include <noggit/rendering/BaseRender.hpp>
+#include <noggit/TileIndex.hpp>
 
 #include <external/glm/glm.hpp>
 
 #include <noggit/tool_enums.hpp>
 #include <noggit/rendering/CursorRender.hpp>
+#include <noggit/rendering/DetailDoodadRender.hpp>
+#include <noggit/DetailDoodads.hpp>
 #include <noggit/rendering/LiquidTextureManager.hpp>
 #include <noggit/map_horizon.h>
+#include <noggit/ModelManager.h>
 #include <noggit/Sky.h>
 
 #include <noggit/rendering/Primitives.hpp>
 
+#include <algorithm>
 #include <memory>
+#include <map>
+#include <array>
+#include <vector>
+#include <cstdint>
 
 namespace OpenGL
 {
@@ -31,8 +40,18 @@ struct WorldRenderParams
 {
   float cursorRotation;
   CursorType cursor_type;
+  bool project_cursor_on_water = false;
+  bool show_liquid_vertices = false;
+  int liquid_attribute_overlay = 0;
+  int liquid_edit_layer = -1;
+  std::uint64_t liquid_surface_token = 0;
+  int liquid_brush_falloff = 1;
   float brush_radius;
   bool show_unpaintable_chunks;
+  bool show_stamp_protection = false;
+  bool show_painted_stamp_selection = false;
+  glm::vec3 stamp_protection_center{};
+  float stamp_protection_radius = 1.f;
   bool draw_only_inside_light_sphere;
   bool draw_wireframe_light_sphere;
   float alpha_light_sphere;
@@ -67,6 +86,15 @@ struct WorldRenderParams
   bool render_select_m2_collission_bbox;
   bool render_select_wmo_aabb;
   bool render_select_wmo_groups_bounds;
+  std::vector<glm::vec3> road_preview_centerline;
+  std::vector<glm::vec3> road_preview_left_edge;
+  std::vector<glm::vec3> road_preview_right_edge;
+  bool road_preview_blocked = false;
+  std::vector<glm::vec3> road_reference_centerline;
+  std::vector<glm::vec3> road_reference_left_edge;
+  std::vector<glm::vec3> road_reference_right_edge;
+  std::vector<std::vector<glm::vec3>> road_reference_mask_lines;
+  std::vector<std::vector<glm::vec3>> stamp_height_preview_lines;
 };
 
 namespace Noggit::Rendering
@@ -106,10 +134,74 @@ namespace Noggit::Rendering
 
     unsigned int _frame_max_chunk_updates = 256;
 
+    // in-editor preview of ground effect detail doodads (client algorithm)
+    bool _draw_detail_doodads = true;
+    int _detail_doodad_density = 16;         // client CVar groundEffectDensity, 16..256
+    float _detail_doodad_distance = 140.f;
+    void setDetailDoodadPreview(DetailDoodadPreview preview);
+    void clearDetailDoodadPreview();
+
+    void updatePaintedStampSelectionOverlay(std::vector<glm::ivec2> const& cells,
+                                            bool selected);
+    void clearPaintedStampSelectionOverlay();
+    void preparePaintedStampSelectionOverlay();
+
     bool directional_lightning;
     bool local_lightning;
 
   private:
+
+    static constexpr int painted_stamp_selection_resolution = 1024;
+    struct PaintedStampSelectionDirtyRegion
+    {
+      int min_x = painted_stamp_selection_resolution;
+      int min_z = painted_stamp_selection_resolution;
+      int max_x = -1;
+      int max_z = -1;
+
+      [[nodiscard]] bool pending() const
+      {
+        return max_x >= min_x && max_z >= min_z;
+      }
+
+      void include(int x, int z)
+      {
+        min_x = std::min(min_x, x);
+        min_z = std::min(min_z, z);
+        max_x = std::max(max_x, x);
+        max_z = std::max(max_z, z);
+      }
+
+      void includeAll()
+      {
+        min_x = 0;
+        min_z = 0;
+        max_x = painted_stamp_selection_resolution - 1;
+        max_z = painted_stamp_selection_resolution - 1;
+      }
+
+      void clear()
+      {
+        min_x = painted_stamp_selection_resolution;
+        min_z = painted_stamp_selection_resolution;
+        max_x = -1;
+        max_z = -1;
+      }
+    };
+
+    struct PaintedStampSelectionPage
+    {
+      std::vector<std::uint8_t> pixels;
+      std::size_t selected_count = 0;
+      std::array<GLuint, 2> textures{};
+      std::array<bool, 2> uploaded{};
+      std::array<PaintedStampSelectionDirtyRegion, 2> dirty_regions{};
+      int displayed_texture = -1;
+      bool needs_upload = false;
+    };
+
+    bool bindPaintedStampSelectionOverlay(TileIndex const& tile_index);
+    std::map<TileIndex, PaintedStampSelectionPage> _painted_stamp_selection_pages;
 
     void drawMinimap ( MapTile *tile
         , glm::mat4x4 const& model_view
@@ -138,6 +230,9 @@ namespace Noggit::Rendering
     std::unique_ptr<OpenGL::program> _m2_instanced_program;
     std::unique_ptr<OpenGL::program> _m2_particles_program;
     std::unique_ptr<OpenGL::program> _m2_ribbons_program;
+    std::unique_ptr<OpenGL::program> _detail_doodads_program;
+    DetailDoodadRender _detail_doodads;
+    DetailDoodadPreview _detail_doodad_preview;
     std::unique_ptr<OpenGL::program> _m2_box_program;
     std::unique_ptr<OpenGL::program> _wmo_program;
     std::unique_ptr<OpenGL::program> _liquid_program;
@@ -179,6 +274,11 @@ namespace Noggit::Rendering
     GLuint const& _occluder_vao = _vertex_arrays[2];
 
     LiquidTextureManager _liquid_texture_manager;
+
+    // Editor-only display substitutes. The failed placement keeps its original
+    // asset key and is still serialized as that original M2 or WMO.
+    std::optional<scoped_model_reference> _missing_m2_placeholder;
+    std::optional<scoped_model_reference> _missing_wmo_placeholder;
 
     bool _need_terrain_params_ubo_update = false;
   };

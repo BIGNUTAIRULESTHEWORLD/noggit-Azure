@@ -47,6 +47,9 @@ namespace Noggit
         bool useMultiselectionPivot() const override;
 
         [[nodiscard]]
+        bool scaleMultiselectionAroundPivot() const override;
+
+        [[nodiscard]]
         bool useMedianPivotPoint() const override;
 
         void registerMenuItems(QMenu* menu) override;
@@ -78,6 +81,7 @@ namespace Noggit
         BoolToggleProperty _move_model_to_cursor_position = { true };
         BoolToggleProperty _snap_multi_selection_to_ground = { false };
         BoolToggleProperty _use_median_pivot_point = { true };
+        BoolToggleProperty _scale_around_pivot_point = { false };
         BoolToggleProperty _rotate_along_ground = { true };
         BoolToggleProperty _rotate_along_ground_smooth = { true };
         BoolToggleProperty _rotate_along_ground_random = { false };

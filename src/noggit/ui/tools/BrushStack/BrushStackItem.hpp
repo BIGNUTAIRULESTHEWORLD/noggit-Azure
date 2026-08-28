@@ -5,6 +5,7 @@
 
 #include <noggit/ui/tools/UiCommon/ReorderableVerticalBox.hpp>
 #include <noggit/scoped_blp_texture_reference.hpp>
+#include <noggit/tool_enums.hpp>
 
 #include <ui_BrushStackItem.h>
 
@@ -73,6 +74,7 @@ namespace Noggit::Ui
       bool isAffecting() const;;
 
       bool isMaskEnabled();
+      BrushShape brushShape() const;
       void updateMask();
 
 

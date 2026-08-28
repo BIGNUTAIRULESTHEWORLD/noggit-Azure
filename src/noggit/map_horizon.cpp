@@ -14,7 +14,16 @@
 #include <noggit/Misc.h>
 
 #include <bitset>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <limits>
 #include <sstream>
+#include <thread>
+#include <vector>
+
+#include <QSettings>
 
 struct color
 {
@@ -58,6 +67,111 @@ static inline color lerp_color(const color& start, const color& end, float t)
                );
 }
 
+static inline float smooth_step(float t)
+{
+  t = std::clamp(t, 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+static inline float hash_noise(int x, int y, uint32_t seed)
+{
+  uint32_t value = static_cast<uint32_t>(x) * 0x8da6b343u;
+  value ^= static_cast<uint32_t>(y) * 0xd8163841u;
+  value ^= seed * 0xcb1ab31fu;
+  value ^= value >> 13;
+  value *= 0x85ebca6bu;
+  value ^= value >> 16;
+  return static_cast<float>(value & 0xffffu) / 32767.5f - 1.0f;
+}
+
+class noise_lattice
+{
+public:
+  noise_lattice(float scale, uint32_t seed)
+    : _scale(scale)
+    , _size(static_cast<int>(std::ceil((64.0f * 64.0f) / scale)) + 2)
+    , _values(static_cast<std::size_t>(_size) * _size)
+  {
+    for (int y = 0; y < _size; ++y)
+      for (int x = 0; x < _size; ++x)
+        _values[static_cast<std::size_t>(y) * _size + x] = hash_noise(x, y, seed);
+  }
+
+  float sample(float pixel_x, float pixel_y) const
+  {
+    float const x = pixel_x / _scale;
+    float const y = pixel_y / _scale;
+    int const x0 = std::clamp(static_cast<int>(std::floor(x)), 0, _size - 2);
+    int const y0 = std::clamp(static_cast<int>(std::floor(y)), 0, _size - 2);
+    float const tx = smooth_step(x - static_cast<float>(x0));
+    float const ty = smooth_step(y - static_cast<float>(y0));
+    auto at = [this](int px, int py)
+    {
+      return _values[static_cast<std::size_t>(py) * _size + px];
+    };
+
+    float const top = std::lerp(at(x0, y0), at(x0 + 1, y0), tx);
+    float const bottom = std::lerp(at(x0, y0 + 1), at(x0 + 1, y0 + 1), tx);
+    return std::lerp(top, bottom, ty);
+  }
+
+private:
+  float _scale;
+  int _size;
+  std::vector<float> _values;
+};
+
+static float terrain_texture(float x, float y)
+{
+  static const noise_lattice broad(30.0f, 17u);
+  static const noise_lattice medium(12.0f, 43u);
+  static const noise_lattice fine(4.5f, 91u);
+  return broad.sample(x, y) * 0.52f
+       + medium.sample(x, y) * 0.31f
+       + fine.sample(x, y) * 0.17f;
+}
+
+static color to_color(QColor const& value)
+{
+  return color(static_cast<unsigned char>(value.red()),
+               static_cast<unsigned char>(value.green()),
+               static_cast<unsigned char>(value.blue()));
+}
+
+static color detailed_color_for_height(float height, float lighting, float texture,
+                                       Noggit::map_horizon_minimap_palette const& palette)
+{
+  // Closely spaced stops around sea level create the pale shoreline seen on
+  // authored maps. Higher bands deliberately overlap through interpolation so
+  // hills do not form the hard rings produced by the old four-colour ramp.
+  // Let broad texture variation move land between neighbouring elevation
+  // bands. This breaks up uniform green fields and gives mountain/snow edges
+  // the irregular authored-map character of the reference image. Keep water
+  // tied to its real height so coastlines do not drift.
+  float const classified_height = height > palette.stops[4].height ? height + texture * 85.0f : height;
+  color base = to_color(palette.stops.back().color);
+  for (size_t i = 0; i + 1 < palette.stops.size(); ++i)
+  {
+    if (classified_height <= palette.stops[i + 1].height)
+    {
+      float const t = smooth_step((classified_height - palette.stops[i].height)
+                                / static_cast<float>(palette.stops[i + 1].height - palette.stops[i].height));
+      base = lerp_color(to_color(palette.stops[i].color), to_color(palette.stops[i + 1].color), t);
+      break;
+    }
+  }
+
+  float const texture_strength = height < palette.stops[3].height
+                               ? 5.0f
+                               : (classified_height > palette.stops[12].height ? 8.0f : 19.0f);
+  float const brightness = std::clamp(lighting + texture * texture_strength, -42.0f, 42.0f);
+  auto channel = [brightness](unsigned char value)
+  {
+    return static_cast<unsigned char>(std::clamp(static_cast<float>(value) + brightness, 0.0f, 255.0f));
+  };
+  return color(channel(base._r), channel(base._g), channel(base._b));
+}
+
 static inline uint32_t color_for_height (int16_t height)
 {
   static const ranged_color colors[] =
@@ -74,7 +188,7 @@ static inline uint32_t color_for_height (int16_t height)
   }
   else if (height >= colors[num_colors - 1]._stop)
   {
-    return colors[num_colors]._color;
+    return colors[num_colors - 1]._color;
   }
 
   float t (1.0);
@@ -95,7 +209,65 @@ static inline uint32_t color_for_height (int16_t height)
 namespace Noggit
 {
 
+map_horizon_minimap_palette default_map_horizon_minimap_palette()
+{
+  map_horizon_minimap_palette palette;
+  palette.stops = {{
+    { -400, QColor(7, 22, 37) },
+    { -100, QColor(12, 42, 66) },
+    {  -35, QColor(47, 105, 142) },
+    {   -6, QColor(121, 177, 191) },
+    {    8, QColor(53, 103, 56) },
+    {   90, QColor(63, 118, 60) },
+    {  220, QColor(82, 134, 65) },
+    {  350, QColor(102, 143, 71) },
+    {  455, QColor(143, 138, 78) },
+    {  565, QColor(165, 135, 81) },
+    {  650, QColor(151, 108, 73) },
+    {  700, QColor(132, 94, 68) },
+    {  735, QColor(190, 177, 155) },
+    {  800, QColor(239, 236, 224) },
+    {  980, QColor(250, 249, 242) }
+  }};
+  return palette;
+}
+
+map_horizon_minimap_palette load_map_horizon_minimap_palette()
+{
+  auto palette = default_map_horizon_minimap_palette();
+  QSettings settings;
+  for (std::size_t i = 0; i < palette.stops.size(); ++i)
+  {
+    QString const prefix = QStringLiteral("mainMenu/heightmap/stop%1/").arg(i);
+    palette.stops[i].height = settings.value(prefix + QStringLiteral("height"),
+                                              palette.stops[i].height).toInt();
+    QColor const stored(settings.value(prefix + QStringLiteral("color"),
+                                       palette.stops[i].color.name(QColor::HexRgb)).toString());
+    if (stored.isValid())
+      palette.stops[i].color = stored;
+  }
+
+  // Settings can be hand-edited. Preserve a valid interpolation ramp even if
+  // persisted values arrive out of order.
+  for (std::size_t i = 1; i < palette.stops.size(); ++i)
+    palette.stops[i].height = std::max(palette.stops[i].height,
+                                       palette.stops[i - 1].height + 1);
+  return palette;
+}
+
+void save_map_horizon_minimap_palette(map_horizon_minimap_palette const& palette)
+{
+  QSettings settings;
+  for (std::size_t i = 0; i < palette.stops.size(); ++i)
+  {
+    QString const prefix = QStringLiteral("mainMenu/heightmap/stop%1/").arg(i);
+    settings.setValue(prefix + QStringLiteral("height"), palette.stops[i].height);
+    settings.setValue(prefix + QStringLiteral("color"), palette.stops[i].color.name(QColor::HexRgb));
+  }
+}
+
 map_horizon::map_horizon(const std::string& basename, World * const world)
+  : _minimap_palette(load_map_horizon_minimap_palette())
 {
   std::stringstream filename;
   filename << "World\\Maps\\" << basename << "\\" << basename << ".wdl";
@@ -240,61 +412,183 @@ map_horizon::map_horizon(const std::string& basename, World * const world)
   set_minimap(&world->mapIndex);
 }
 
-void map_horizon::update_minimap_tile(int y, int x, bool has_data = false )
+void map_horizon::render_minimap_tile(int y, int x, bool has_data,
+                                      uint32_t* pixels, int stride) const
 {
     if (_tiles[y][x])
     {
-        //! \todo There also is a second heightmap appended which has additional 16*16 pixels.
-        //! \todo There also is MAHO giving holes into this heightmap.
+        constexpr int resolution = minimap_pixels_per_tile;
+        constexpr int cached_side = resolution + 2;
 
-        for (int j(0); j < 16; ++j)
+        auto sample_tile = [this](int tile_x, int tile_y, float local_x, float local_y)
         {
-            for (int i(0); i < 16; ++i)
-            {
-                //! \todo R and B are inverted here
-                _qt_minimap.setPixel(x * 16 + i, y * 16 + j, color_for_height(_tiles[y][x]->height_17[j][i]));
-            }
+          tile_x = std::clamp(tile_x, 0, 63);
+          tile_y = std::clamp(tile_y, 0, 63);
+          auto const* tile = _tiles[tile_y][tile_x].get();
+          if (!tile)
+            return std::numeric_limits<float>::quiet_NaN();
+
+          local_x = std::clamp(local_x, 0.0f, 16.0f);
+          local_y = std::clamp(local_y, 0.0f, 16.0f);
+          int const cell_x = std::min(static_cast<int>(local_x), 15);
+          int const cell_y = std::min(static_cast<int>(local_y), 15);
+          float const fx = local_x - static_cast<float>(cell_x);
+          float const fy = local_y - static_cast<float>(cell_y);
+
+          float const h00 = tile->height_17[cell_y][cell_x];
+          float const h10 = tile->height_17[cell_y][cell_x + 1];
+          float const h01 = tile->height_17[cell_y + 1][cell_x];
+          float const h11 = tile->height_17[cell_y + 1][cell_x + 1];
+          float const bilinear = std::lerp(std::lerp(h00, h10, fx), std::lerp(h01, h11, fx), fy);
+
+          // The 16x16 array stores the centre vertex of each WDL cell. Blend
+          // its deviation from the four corners with a smooth tent function.
+          float const corner_centre = (h00 + h10 + h01 + h11) * 0.25f;
+          float const centre_weight = (1.0f - std::abs(fx * 2.0f - 1.0f))
+                                    * (1.0f - std::abs(fy * 2.0f - 1.0f));
+          return bilinear + centre_weight * (tile->height_16[cell_y][cell_x] - corner_centre);
+        };
+
+        auto sample = [&](float local_x, float local_y)
+        {
+          float const original_x = local_x;
+          float const original_y = local_y;
+          int tile_x = x;
+          int tile_y = y;
+          while (local_x < 0.0f) { local_x += 16.0f; --tile_x; }
+          while (local_y < 0.0f) { local_y += 16.0f; --tile_y; }
+          while (local_x > 16.0f) { local_x -= 16.0f; ++tile_x; }
+          while (local_y > 16.0f) { local_y -= 16.0f; ++tile_y; }
+
+          float result = sample_tile(tile_x, tile_y, local_x, local_y);
+          if (std::isnan(result))
+            result = sample_tile(x, y, std::clamp(original_x, 0.0f, 16.0f),
+                                       std::clamp(original_y, 0.0f, 16.0f));
+          return result;
+        };
+
+        float const sample_step = 16.0f / static_cast<float>(resolution);
+        std::array<float, cached_side * cached_side> heights;
+        for (int cached_y = -1; cached_y <= resolution; ++cached_y)
+        {
+          for (int cached_x = -1; cached_x <= resolution; ++cached_x)
+          {
+            float const local_x = (static_cast<float>(cached_x) + 0.5f) * sample_step;
+            float const local_y = (static_cast<float>(cached_y) + 0.5f) * sample_step;
+            heights[static_cast<std::size_t>(cached_y + 1) * cached_side + cached_x + 1]
+              = sample(local_x, local_y);
+          }
+        }
+
+        for (int pixel_y = 0; pixel_y < resolution; ++pixel_y)
+        {
+          uint32_t* output = pixels + (y * resolution + pixel_y) * stride + x * resolution;
+          for (int pixel_x = 0; pixel_x < resolution; ++pixel_x)
+          {
+            std::size_t const centre = static_cast<std::size_t>(pixel_y + 1) * cached_side + pixel_x + 1;
+            float const height = heights[centre];
+            float const dx = heights[centre + 1] - heights[centre - 1];
+            float const dy = heights[centre + cached_side] - heights[centre - cached_side];
+
+            // A north-west light gives the overview readable relief without
+            // turning it into a literal grayscale height map.
+            float const hill_light = std::clamp((-dx - dy) * 0.16f, -28.0f, 28.0f);
+            float const global_x = static_cast<float>(x * resolution + pixel_x);
+            float const global_y = static_cast<float>(y * resolution + pixel_y);
+            output[pixel_x] = detailed_color_for_height(height, hill_light,
+                                                        terrain_texture(global_x, global_y),
+                                                        _minimap_palette);
+          }
         }
     }
     // the adt exist but there's no data in the wdl
     else if (has_data)
     {
-        for (int j(0); j < 16; ++j)
+        constexpr int resolution = minimap_pixels_per_tile;
+        for (int j(0); j < resolution; ++j)
         {
-            for (int i(0); i < 16; ++i)
-            {
-                _qt_minimap.setPixel(x * 16 + i, y * 16 + j, color(200, 100, 25));
-            }
+          uint32_t* output = pixels + (y * resolution + j) * stride + x * resolution;
+          std::fill_n(output, resolution, color(122, 94, 67).to_int());
         }
     }
 }
 
+void map_horizon::update_minimap_tile(int y, int x, bool has_data)
+{
+  if (_qt_minimap.isNull())
+    return;
+  render_minimap_tile(y, x, has_data,
+                      reinterpret_cast<uint32_t*>(_qt_minimap.bits()),
+                      _qt_minimap.bytesPerLine() / static_cast<int>(sizeof(uint32_t)));
+}
+
 void map_horizon::set_minimap(const MapIndex* const index, bool set_empty)
 {
-    _qt_minimap = QImage(16 * 64, 16 * 64, QImage::Format_ARGB32);
+    auto const render_started = std::chrono::steady_clock::now();
+    _qt_minimap = QImage(minimap_pixels_per_tile * 64, minimap_pixels_per_tile * 64, QImage::Format_ARGB32);
     _qt_minimap.fill(Qt::transparent);
 
     if (set_empty)
         return;
 
+    struct tile_job { int x; int y; bool has_data; };
+    std::vector<tile_job> jobs;
+    jobs.reserve(64 * 64);
     for (int y(0); y < 64; ++y)
     {
         for (int x(0); x < 64; ++x)
         {
-            update_minimap_tile(y, x, index->hasTile(TileIndex(x, y)));
+          bool const has_data = index->hasTile(TileIndex(x, y));
+          if (_tiles[y][x] || has_data)
+            jobs.push_back({x, y, has_data});
         }
     }
+
+    // Force construction of the shared immutable noise lattices before worker
+    // threads begin, then render disjoint ADT rectangles directly into the
+    // detached QImage buffer.
+    (void)terrain_texture(0.0f, 0.0f);
+    uint32_t* pixels = reinterpret_cast<uint32_t*>(_qt_minimap.bits());
+    int const stride = _qt_minimap.bytesPerLine() / static_cast<int>(sizeof(uint32_t));
+    unsigned int const worker_count = std::max(1u, std::min<unsigned int>(
+      std::thread::hardware_concurrency(), static_cast<unsigned int>(jobs.size())));
+    std::atomic_size_t next_job{0};
+    auto worker = [this, &jobs, &next_job, pixels, stride]()
+    {
+      while (true)
+      {
+        std::size_t const job_index = next_job.fetch_add(1, std::memory_order_relaxed);
+        if (job_index >= jobs.size())
+          return;
+        tile_job const& job = jobs[job_index];
+        render_minimap_tile(job.y, job.x, job.has_data, pixels, stride);
+      }
+    };
+
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count > 0 ? worker_count - 1 : 0);
+    for (unsigned int i = 1; i < worker_count; ++i)
+      workers.emplace_back(worker);
+    worker();
+    for (auto& thread : workers)
+      thread.join();
+
+    auto const render_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - render_started).count();
+    LogDebug << "Rendered high-resolution WDL minimap (" << jobs.size() << " ADTs, "
+             << worker_count << " workers) in " << render_ms << " ms." << std::endl;
 }
 
 void map_horizon::remove_horizon_tile(int y, int x)
 {
     _tiles[y][x].reset();
 
-    for (int j(0); j < 16; ++j)
+    for (int j(0); j < minimap_pixels_per_tile; ++j)
     {
-        for (int i(0); i < 16; ++i)
+        for (int i(0); i < minimap_pixels_per_tile; ++i)
         {
-            _qt_minimap.setPixel(x * 16 + i, y * 16 + j, color(255, 25, 25));
+            _qt_minimap.setPixel(x * minimap_pixels_per_tile + i,
+                                 y * minimap_pixels_per_tile + j, color(255, 25, 25));
         }
     }
 }

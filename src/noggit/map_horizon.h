@@ -13,7 +13,9 @@
 #include <opengl/shader.fwd.hpp>
 
 #include <QtGui/QImage>
+#include <QtGui/QColor>
 
+#include <array>
 #include <memory>
 
 class MapIndex;
@@ -23,6 +25,22 @@ class World;
 
 namespace Noggit
 {
+
+struct map_horizon_minimap_palette
+{
+  struct stop
+  {
+    int height;
+    QColor color;
+  };
+
+  static constexpr std::size_t stop_count = 15;
+  std::array<stop, stop_count> stops;
+};
+
+map_horizon_minimap_palette default_map_horizon_minimap_palette();
+map_horizon_minimap_palette load_map_horizon_minimap_palette();
+void save_map_horizon_minimap_palette(map_horizon_minimap_palette const& palette);
 
 struct map_horizon_tile
 {
@@ -50,6 +68,11 @@ struct map_horizon_batch
 class map_horizon
 {
 public:
+  // WDL stores a 17x17 corner grid plus a 16x16 centre grid per ADT.  Render
+  // that data at a higher resolution for the Qt overview instead of exposing
+  // the raw 16-pixel grid directly.
+  static constexpr int minimap_pixels_per_tile = 64;
+
   struct render
   {
     render(const map_horizon& horizon);
@@ -86,6 +109,9 @@ public:
 
   void set_minimap(const MapIndex* const index, bool set_empty = false);
 
+  map_horizon_minimap_palette const& minimap_palette() const { return _minimap_palette; }
+  void minimap_palette(map_horizon_minimap_palette const& palette) { _minimap_palette = palette; }
+
   void remove_horizon_tile(int y, int x);
 
   Noggit::map_horizon_tile* get_horizon_tile(int y, int x);
@@ -107,9 +133,13 @@ public:
   std::vector<scoped_wmo_reference> wmos;
 
 private:
+  void render_minimap_tile(int y, int x, bool has_data, uint32_t* pixels, int stride) const;
+
   int16_t getWdlheight(MapTile* tile, float x, float y);
 
   std::string _filename;
+
+  map_horizon_minimap_palette _minimap_palette;
 
   std::unique_ptr<map_horizon_tile> _tiles[64][64];
 };

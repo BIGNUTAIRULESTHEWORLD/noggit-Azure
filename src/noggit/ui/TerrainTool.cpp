@@ -33,6 +33,7 @@ namespace Noggit
       , _vertex_orientation (0.0f)
       , _cursor_pos(nullptr)
       , _vertex_mode(eVertexMode_Center)
+      , _brush_shape(BrushShape::CIRCLE)
       , _map_view(map_view)
     {
       setMinimumWidth(250);
@@ -91,6 +92,27 @@ namespace Noggit
       }
 
       layout->addWidget(terrain_type_group);
+
+      auto* brush_shape_group = new QGroupBox("Brush Shape", this);
+      auto* brush_shape_layout = new QVBoxLayout(brush_shape_group);
+      auto* brush_shape_buttons = new QHBoxLayout;
+      auto* circle_shape = new QRadioButton("Circle", brush_shape_group);
+      auto* square_shape = new QRadioButton("Square", brush_shape_group);
+      _shape_button_group = new QButtonGroup(brush_shape_group);
+      _shape_button_group->addButton(circle_shape, static_cast<int>(BrushShape::CIRCLE));
+      _shape_button_group->addButton(square_shape, static_cast<int>(BrushShape::SQUARE));
+      brush_shape_buttons->addWidget(circle_shape);
+      brush_shape_buttons->addWidget(square_shape);
+      brush_shape_layout->addLayout(brush_shape_buttons);
+      _brush_opacity_slider = new Noggit::Ui::Tools::UiCommon::ExtendedSlider(brush_shape_group);
+      _brush_opacity_slider->setPrefix("Opacity:");
+      _brush_opacity_slider->setRange(0, 100);
+      _brush_opacity_slider->setDecimals(0);
+      _brush_opacity_slider->setValue(100);
+      _brush_opacity_slider->setToolTip("Controls only the on-screen brush preview opacity.");
+      brush_shape_layout->addWidget(_brush_opacity_slider);
+      circle_shape->setChecked(true);
+      layout->addWidget(brush_shape_group);
 
       _radius_slider = new Noggit::Ui::Tools::UiCommon::ExtendedSlider(this);
       _radius_slider->setRange (0, 1000);
@@ -187,6 +209,12 @@ namespace Noggit
                 }
               );
 
+      connect(_shape_button_group, qOverload<int>(&QButtonGroup::idClicked), this,
+        [this](int id)
+        {
+          _brush_shape = static_cast<BrushShape>(id);
+        });
+
 
       connect ( _vertex_button_group, qOverload<int> (&QButtonGroup::idClicked)
               , [&] (int id)
@@ -260,7 +288,8 @@ namespace Noggit
               , _snap_wmo_objects_chkbox->isChecked(), _snap_m2_objects_chkbox->isChecked());
 
           world->stamp(pos, dt * _speed_slider->value(), &_mask_image, radius,
-                       _inner_radius_slider->value(),  _edit_type, _image_mask_group->getBrushMode());
+                       _inner_radius_slider->value(), _edit_type,
+                       _image_mask_group->getBrushMode(), _brush_shape);
 
           // re apply the ground height diff to the objects
           for (auto pair : objects_ground_distance)
@@ -272,10 +301,12 @@ namespace Noggit
         }
         else
         {
-          world->changeTerrain(pos, dt * _speed_slider->value(), radius, _edit_type, _inner_radius_slider->value());
+          world->changeTerrain(pos, dt * _speed_slider->value(), radius, _edit_type,
+                               _inner_radius_slider->value(), _brush_shape);
 
-          world->changeObjectsWithTerrain(pos, dt * _speed_slider->value(), radius, _edit_type, _inner_radius_slider->value()
-              , _snap_wmo_objects_chkbox->isChecked(), _snap_m2_objects_chkbox->isChecked());
+          world->changeObjectsWithTerrain(pos, dt * _speed_slider->value(), radius, _edit_type,
+              _inner_radius_slider->value(), _snap_wmo_objects_chkbox->isChecked(),
+              _snap_m2_objects_chkbox->isChecked(), _brush_shape);
         }
       }
       else
@@ -419,6 +450,16 @@ namespace Noggit
       return static_cast<float>(_inner_radius_slider->value());
     }
 
+    BrushShape TerrainTool::brushShape() const
+    {
+      return _brush_shape;
+    }
+
+    float TerrainTool::brushOpacity() const
+    {
+      return static_cast<float>(_brush_opacity_slider->value()) / 100.0f;
+    }
+
     void TerrainTool::storeCursorPos(glm::vec3* cursor_pos)
     {
       _cursor_pos = cursor_pos;
@@ -471,6 +512,8 @@ namespace Noggit
       json["inner_radius"] = _inner_radius_slider->rawValue();
       json["speed"] = _speed_slider->rawValue();
       json["edit_type"] = static_cast<int>(_edit_type);
+      json["brush_shape"] = static_cast<int>(_brush_shape);
+      json["brush_opacity"] = _brush_opacity_slider->rawValue();
 
       json["mask_enabled"] = _image_mask_group->isEnabled();
       json["brush_mode"] = _image_mask_group->getBrushMode();
@@ -487,6 +530,14 @@ namespace Noggit
       _inner_radius_slider->setValue(json["inner_radius"].toDouble());
       _speed_slider->setValue(json["speed"].toDouble());
       _edit_type = static_cast<eTerrainType>(json["edit_type"].toInt());
+      _brush_shape = json.contains("brush_shape")
+        ? static_cast<BrushShape>(json["brush_shape"].toInt())
+        : BrushShape::CIRCLE;
+      if (auto* button = _shape_button_group->button(static_cast<int>(_brush_shape)))
+        button->setChecked(true);
+      _brush_opacity_slider->setValue(json.contains("brush_opacity")
+        ? json["brush_opacity"].toDouble()
+        : 100.0);
 
       _image_mask_group->setEnabled(json["mask_enabled"].toBool());
       _image_mask_group->setBrushMode(json["brush_mode"].toInt());

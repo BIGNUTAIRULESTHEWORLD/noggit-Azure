@@ -88,15 +88,13 @@ namespace Noggit
       {
 
         auto const prefix (std::filesystem::path ( Noggit::Project::CurrentProject::get()->ProjectPath ));
-        auto const prefix_size (prefix.string().length());
 
         if (std::filesystem::exists (prefix))
         {
           for ( auto const& entry_abs : std::filesystem::recursive_directory_iterator (prefix))
           {
-            auto entry ( BlizzardArchive::ClientData::normalizeFilenameInternal(
-                entry_abs.path().string().substr(prefix_size))
-                       );
+            auto entry (BlizzardArchive::ClientData::normalizeFilenameInternal(
+                entry_abs.path().lexically_relative(prefix).generic_string()));
 
             if ( entry.find ("tileset") != std::string::npos
               && entry.find (".blp") != std::string::npos

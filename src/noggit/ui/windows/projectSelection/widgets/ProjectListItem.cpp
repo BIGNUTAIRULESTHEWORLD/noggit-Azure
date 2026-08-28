@@ -1,45 +1,44 @@
 #include <noggit/ui/FontAwesome.hpp>
 #include <noggit/ui/windows/projectSelection/widgets/ProjectListItem.hpp>
 
-#include <qgraphicseffect.h>
-#include <QGridLayout>
+#include <QGraphicsColorizeEffect>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QVBoxLayout>
 
 
 namespace Noggit::Ui::Widget
 {
   ProjectListItem::ProjectListItem(const ProjectListItemData& data, QWidget* parent = nullptr) : QWidget(parent)
   {
-    auto layout = QGridLayout();
+    setObjectName("project-list-item");
+    setAttribute(Qt::WA_StyledBackground, false);
+
+    auto layout = new QHBoxLayout(this);
+    layout->setContentsMargins(68, 15, 12, 10);
+    layout->setSpacing(0);
 
     QIcon icon;
     if (data.project_version == Project::ProjectVersion::WOTLK)
       icon = QIcon(":/icon-wrath");
     if (data.project_version == Project::ProjectVersion::SL)
       icon = QIcon(":/icon-shadow");
-    _project_version_icon = new QLabel("", parent);
-    _project_version_icon->setPixmap(icon.pixmap(QSize(48, 48)));
-    _project_version_icon->setGeometry(0, 5, 64, 48);
-
-    auto max_width = parent->sizeHint().width();
+    _project_version_icon = new QLabel(this);
+    _project_version_icon->setFixedSize(0, 0);
+    _project_version_icon->setAlignment(Qt::AlignCenter);
+    _project_version_icon->hide();
 
     auto project_name = toCamelCase(QString(data.project_name));
-    _project_name_label = new QLabel(project_name, parent);
-    _project_name_label->setGeometry(45, 5, max_width, 20);
+    _project_name_label = new QLabel(project_name, this);
     _project_name_label->setObjectName("project-title-label");
-    _project_name_label->setStyleSheet("QLabel#project-title-label { font-size: 15px; }");
+    _project_name_label->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
 
-    _project_directory_label = new QLabel(data.project_directory, parent);
-    _project_directory_label->setGeometry(48, 20, max_width, 20);
+    _project_directory_label = new QLabel(data.project_directory, this);
     _project_directory_label->setObjectName("project-information");
-    _project_directory_label->setStyleSheet("QLabel#project-information { font-size: 10px; }");
     _project_directory_label->setToolTip(data.project_directory);
-
-    auto directory_effect = new QGraphicsOpacityEffect(this);
-    directory_effect->setOpacity(0.5);
-
-    _project_directory_label->setGraphicsEffect(directory_effect);
-    _project_directory_label->setAutoFillBackground(true);
+    _project_directory_label->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+    _project_directory_label->setText(
+        _project_directory_label->fontMetrics().elidedText(data.project_directory, Qt::ElideMiddle, 165));
 
     QString version;
     if (data.project_version == Project::ProjectVersion::WOTLK)
@@ -47,62 +46,58 @@ namespace Noggit::Ui::Widget
     if (data.project_version == Project::ProjectVersion::SL)
       version = "Shadowlands";
 
-    _project_version_label = new QLabel(version, parent);
-    _project_version_label->setGeometry(48, 35, max_width, 20);
+    _project_version_label = new QLabel(version, this);
     _project_version_label->setObjectName("project-information");
-    _project_version_label->setStyleSheet("QLabel#project-information { font-size: 10px; }");
+    _project_version_label->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
 
-    auto version_effect = new QGraphicsOpacityEffect(this);
-    version_effect->setOpacity(0.5);
+    auto information_layout = new QVBoxLayout();
+    information_layout->setContentsMargins(0, 0, 0, 0);
+    information_layout->setSpacing(2);
+    information_layout->setAlignment(Qt::AlignVCenter);
+    information_layout->addWidget(_project_name_label);
+    information_layout->addWidget(_project_directory_label);
+    information_layout->addWidget(_project_version_label);
 
-    _project_version_label->setGraphicsEffect(version_effect);
-    _project_version_label->setAutoFillBackground(true);
+    _project_last_edited_label = new QLabel(data.project_last_edited, this);
+    _project_last_edited_label->setAlignment(Qt::AlignRight | Qt::AlignTop);
+    _project_last_edited_label->setObjectName("project-last-edited");
+    _project_last_edited_label->setToolTip(data.project_last_edited);
+    _project_last_edited_label->hide();
 
-
-    _project_last_edited_label = new QLabel(data.project_last_edited, parent);
-    _project_last_edited_label->setGeometry(max_width, 35, 125, 20);
-    _project_last_edited_label->setAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
-    _project_last_edited_label->setObjectName("project-information");
-    _project_last_edited_label->setStyleSheet("QLabel#project-information { font-size: 10px; }");
-
-    auto last_edited_effect = new QGraphicsOpacityEffect(this);
-    last_edited_effect->setOpacity(0.5);
-
-    _project_last_edited_label->setGraphicsEffect(last_edited_effect);
-    _project_last_edited_label->setAutoFillBackground(true);
+    auto trailing_layout = new QVBoxLayout();
+    trailing_layout->setContentsMargins(0, 0, 0, 0);
+    trailing_layout->setSpacing(2);
 
     if (data.is_favorite)
     {
         _project_favorite_icon = new QLabel("", this);
         _project_favorite_icon->setPixmap(FontAwesomeIcon(FontAwesome::star).pixmap(QSize(16, 16)));
-        _project_favorite_icon->setGeometry(max_width-10, 10, 125, 20);
-        _project_favorite_icon->setAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
+        _project_favorite_icon->setAlignment(Qt::AlignRight | Qt::AlignTop);
         _project_favorite_icon->setObjectName("project-favorite");
-        _project_favorite_icon->setStyleSheet("QLabel#project-information { font-size: 10px; }");
 
         auto colour = new QGraphicsColorizeEffect(this);
         colour->setColor(QColor(255, 204, 0));
         colour->setStrength(1.0f);
 
         _project_favorite_icon->setGraphicsEffect(colour);
-        _project_favorite_icon->setAutoFillBackground(true);
-
-        layout.addWidget(_project_favorite_icon);
+        trailing_layout->addWidget(_project_favorite_icon);
     }
+    else
+    {
+        trailing_layout->addStretch();
+    }
+
+    trailing_layout->addWidget(_project_last_edited_label);
 
     setContextMenuPolicy(Qt::CustomContextMenu);
 
-    layout.addWidget(_project_version_icon);
-    layout.addWidget(_project_name_label);
-    layout.addWidget(_project_directory_label);
-    layout.addWidget(_project_version_label);
-    layout.addWidget(_project_last_edited_label);
-    setLayout(layout.layout());
+    layout->addLayout(information_layout, 1);
+    layout->addLayout(trailing_layout, 0);
   }
 
   QSize ProjectListItem::minimumSizeHint() const
   {
-    return QSize(125, 55);
+    return QSize(250, 108);
   }
 
   QString ProjectListItem::toCamelCase(const QString& s)

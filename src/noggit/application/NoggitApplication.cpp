@@ -78,7 +78,7 @@ namespace Noggit::Application
 	  Log << "Start time : " << dateTimeText.toStdString() << std::endl;
 
 	 //Locate application relative path
-	  Log << "Noggit Studio - " << STRPRODUCTVER << std::endl;
+	  Log << "Noggit Azure - " << STRPRODUCTVER << std::endl;
 	  Log << "Build Date : " << __DATE__ ", " __TIME__ << std::endl;
 
 	  auto applicationLocation = std::filesystem::path(argv[0]);
@@ -163,7 +163,7 @@ namespace Noggit::Application
 	  auto& databaseDefinitionPath = applicationConfiguration.ApplicationDatabaseDefinitionsPath;
 	  if (!std::filesystem::exists(databaseDefinitionPath))
 	  {
-		  LogError << "Unable to find database definitions! please reinstall Noggit Red, or download from wow.tools" << std::endl;
+		  LogError << "Unable to find database definitions! please reinstall Noggit Azure, or download from wow.tools" << std::endl;
 	  }
 		else
 		{

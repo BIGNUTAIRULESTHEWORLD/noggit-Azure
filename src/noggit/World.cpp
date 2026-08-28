@@ -5,6 +5,7 @@
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/Brush.h> // brush
 #include <noggit/ChunkWater.hpp>
+#include <noggit/DBC.h>
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
@@ -24,6 +25,7 @@
 #include <noggit/World.inl>
 
 #include <math/bounding_box.hpp>
+#include <math/ray.hpp>
 
 #include <blizzard-database-library/include/structures/FileStructures.h>
 
@@ -41,11 +43,180 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
+
+namespace
+{
+  struct LiquidVertexKey
+  {
+    std::int64_t x;
+    std::int64_t z;
+
+    bool operator==(LiquidVertexKey const& other) const
+    {
+      return x == other.x && z == other.z;
+    }
+  };
+
+  struct LiquidVertexKeyHash
+  {
+    std::size_t operator()(LiquidVertexKey const& key) const
+    {
+      auto const x_hash = std::hash<std::int64_t>{}(key.x);
+      auto const z_hash = std::hash<std::int64_t>{}(key.z);
+      return x_hash ^ (z_hash + 0x9e3779b9 + (x_hash << 6) + (x_hash >> 2));
+    }
+  };
+
+  struct LiquidVertexGroup
+  {
+    float x = 0.f;
+    float z = 0.f;
+    float height_sum = 0.f;
+    std::size_t height_count = 0;
+    std::vector<glm::vec3*> positions;
+    std::unordered_set<liquid_layer*> layers;
+    std::unordered_set<MapChunk*> chunks;
+
+    float originalHeight() const
+    {
+      return height_sum / static_cast<float>(height_count);
+    }
+  };
+
+  using LiquidVertexGroups = std::unordered_map<LiquidVertexKey, LiquidVertexGroup,
+                                                 LiquidVertexKeyHash>;
+
+  LiquidVertexKey liquidVertexKey(float x, float z)
+  {
+    // Liquid grid positions are shared in world space. Quantizing below a
+    // millimetre makes separately stored chunk-edge copies one logical vertex.
+    return {std::llround(static_cast<double>(x) * 10000.0),
+            std::llround(static_cast<double>(z) * 10000.0)};
+  }
+
+  liquid_layer* selectedLiquidLayer(MapChunk* chunk, int target_layer,
+                                    std::uint64_t surface_token)
+  {
+    auto* layers = chunk->liquid_chunk()->getLayers();
+    if (surface_token)
+    {
+      auto const found = std::find_if(layers->begin(), layers->end(),
+        [surface_token](liquid_layer const& layer)
+        {
+          return layer.surfaceToken() == surface_token;
+        });
+      return found == layers->end() ? nullptr : &*found;
+    }
+
+    return target_layer >= 0 && target_layer < static_cast<int>(layers->size())
+      ? &(*layers)[target_layer] : nullptr;
+  }
+
+  LiquidVertexGroups collectLiquidVertices(std::vector<MapChunk*> const& chunks,
+                                           int target_layer, std::uint64_t surface_token)
+  {
+    LiquidVertexGroups groups;
+    for (MapChunk* chunk : chunks)
+    {
+      liquid_layer* layer = selectedLiquidLayer(chunk, target_layer, surface_token);
+      if (!layer)
+        continue;
+
+      auto& vertices = layer->getVertices();
+      for (int z = 0; z < 9; ++z)
+        for (int x = 0; x < 9; ++x)
+        {
+          if (!layer->usesVertex(x, z))
+            continue;
+
+          glm::vec3& position = vertices[z * 9 + x].position;
+          auto& group = groups[liquidVertexKey(position.x, position.z)];
+          group.x = position.x;
+          group.z = position.z;
+          group.height_sum += position.y;
+          ++group.height_count;
+          group.positions.push_back(&position);
+          group.layers.emplace(layer);
+          group.chunks.emplace(chunk);
+        }
+    }
+    return groups;
+  }
+
+  float liquidBrushWeight(float distance, float radius, float inner_radius, int falloff)
+  {
+    if (distance >= radius)
+      return 0.f;
+    if (falloff == eFlattenType_Flat)
+      return 1.f;
+
+    float const inner = std::clamp(inner_radius, 0.f, 1.f) * radius;
+    if (distance <= inner)
+      return 1.f;
+
+    float const span = std::max(radius - inner, 0.0001f);
+    float const linear = std::clamp(1.f - (distance - inner) / span, 0.f, 1.f);
+    return falloff == eFlattenType_Smooth
+      ? linear * linear * (3.f - 2.f * linear)
+      : linear;
+  }
+
+  template<typename HeightFunction>
+  void editLiquidVertexGroups(LiquidVertexGroups& groups, glm::vec3 const& cursor,
+                              float radius, float inner_radius, int falloff,
+                              HeightFunction&& height_function)
+  {
+    struct Update
+    {
+      LiquidVertexGroup* group;
+      float height;
+    };
+
+    std::vector<Update> updates;
+    std::unordered_set<MapChunk*> changed_chunks;
+    std::unordered_set<liquid_layer*> changed_layers;
+
+    for (auto& [key, group] : groups)
+    {
+      float const dx = group.x - cursor.x;
+      float const dz = group.z - cursor.z;
+      float const distance = std::sqrt(dx * dx + dz * dz);
+      float const weight = liquidBrushWeight(distance, radius, inner_radius, falloff);
+      if (weight <= 0.f)
+        continue;
+
+      std::optional<float> const target = height_function(group, weight);
+      if (!target || misc::float_equals(*target, group.originalHeight()))
+        continue;
+
+      updates.push_back({&group, *target});
+      changed_chunks.insert(group.chunks.begin(), group.chunks.end());
+      changed_layers.insert(group.layers.begin(), group.layers.end());
+    }
+
+    // Undo must snapshot every physical owner before any duplicate is changed.
+    for (MapChunk* chunk : changed_chunks)
+      NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+
+    for (Update const& update : updates)
+      for (glm::vec3* position : update.group->positions)
+        position->y = update.height;
+
+    for (liquid_layer* layer : changed_layers)
+      layer->refresh();
+    for (MapChunk* chunk : changed_chunks)
+      chunk->liquid_chunk()->update_layers();
+  }
+}
 
 
 bool World::IsEditableWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow& record)
@@ -817,7 +988,7 @@ void World::snap_selected_models_to_the_ground()
   update_selected_model_groups();
 }
 
-void World::scale_selected_models(float v, object_scaling_type type)
+void World::scale_selected_models(float v, object_scaling_type type, bool scale_positions_around_pivot)
 {
   ZoneScoped;
   if (!_selected_model_count)
@@ -826,83 +997,94 @@ void World::scale_selected_models(float v, object_scaling_type type)
   v = std::clamp(v, SceneObject::min_scale(), SceneObject::max_scale());
 
   bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
+  bool const scale_around_pivot = scale_positions_around_pivot
+    && type == object_scaling_type::mult
+    && has_multiple_model_selected()
+    && _multi_select_pivot.has_value();
+
+  if (scale_around_pivot)
+  {
+    // A group transform needs one effective multiplier for both object sizes and
+    // their offsets from the pivot. Clamp it once for the whole selection so an
+    // individual object reaching a scale limit cannot distort the arrangement.
+    float min_factor = SceneObject::min_scale();
+    float max_factor = SceneObject::max_scale();
+    bool has_scalable_object = false;
+
+    for (auto const& entry : _current_selection)
+    {
+      if (entry.index() != eEntry_Object)
+        continue;
+
+      auto* obj = std::get<selected_object_type>(entry);
+      if (obj->which() == eWMO && !modern_features)
+        continue;
+
+      has_scalable_object = true;
+      min_factor = std::max(min_factor, SceneObject::min_scale() / obj->scale);
+      max_factor = std::min(max_factor, SceneObject::max_scale() / obj->scale);
+    }
+
+    if (!has_scalable_object)
+      return;
+
+    v = std::clamp(v, min_factor, max_factor);
+  }
+
+  bool positions_changed = false;
 
   for (auto& entry : _current_selection)
   {
-    if (entry.index() == eEntry_Object)
+    if (entry.index() != eEntry_Object)
+      continue;
+
+    auto* obj = std::get<selected_object_type>(entry);
+    bool const can_scale = obj->which() == eMODEL || modern_features;
+    float new_scale = obj->scale;
+
+    if (can_scale)
     {
-      auto obj = std::get<selected_object_type>(entry);
-
-      if (obj->which() != eMODEL)
+      switch (type)
       {
-          // If we are not using modern features, we don't want to scale WMOs
-        if(!modern_features)
-			    continue;
-
-        WMOInstance* wi = static_cast<WMOInstance*>(obj);
-
-        NOGGIT_CUR_ACTION->registerObjectTransformed(wi);
-
-        float scale = wi->scale;
-
-        switch (type)
-        {
-        case World::object_scaling_type::set:
-            scale = v;
-            break;
-        case World::object_scaling_type::add:
-            scale += v;
-            break;
-        case World::object_scaling_type::mult:
-            scale *= v;
-            break;
-        }
-
-        // if the change is too small, do nothing
-        if (std::abs(scale - wi->scale) < ModelInstance::min_scale())
-        {
-            continue;
-        }
-
-        updateTilesWMO(wi, model_update::remove);
-        wi->scale = std::min(ModelInstance::max_scale(), std::max(ModelInstance::min_scale(), scale));
-        wi->recalcExtents();
-        updateTilesWMO(wi, model_update::add);
+      case World::object_scaling_type::set:
+        new_scale = v;
+        break;
+      case World::object_scaling_type::add:
+        new_scale += v;
+        break;
+      case World::object_scaling_type::mult:
+        new_scale *= v;
+        break;
       }
-      else
-      {
-        ModelInstance* mi = static_cast<ModelInstance*>(obj);
-
-        NOGGIT_CUR_ACTION->registerObjectTransformed(mi);
-
-        float scale = mi->scale;
-
-        switch (type)
-        {
-        case World::object_scaling_type::set:
-            scale = v;
-            break;
-        case World::object_scaling_type::add:
-            scale += v;
-            break;
-        case World::object_scaling_type::mult:
-            scale *= v;
-            break;
-        }
-
-        // if the change is too small, do nothing
-        if (std::abs(scale - mi->scale) < ModelInstance::min_scale())
-        {
-            continue;
-        }
-
-        updateTilesModel(mi, model_update::remove);
-        mi->scale = std::min(ModelInstance::max_scale(), std::max(ModelInstance::min_scale(), scale));
-        mi->recalcExtents();
-        updateTilesModel(mi, model_update::add);
-      }
+      new_scale = std::clamp(new_scale, SceneObject::min_scale(), SceneObject::max_scale());
     }
+
+    bool const position_changed = scale_around_pivot && v != 1.f;
+    bool const scale_changed = can_scale && (scale_around_pivot
+      ? new_scale != obj->scale
+      : std::abs(new_scale - obj->scale) >= ModelInstance::min_scale());
+
+    if (!position_changed && !scale_changed)
+      continue;
+
+    NOGGIT_CUR_ACTION->registerObjectTransformed(obj);
+    updateTilesEntry(entry, model_update::remove);
+
+    if (position_changed)
+    {
+      glm::vec3 const& pivot = _multi_select_pivot.value();
+      obj->pos = pivot + (obj->pos - pivot) * v;
+      positions_changed = true;
+    }
+    if (scale_changed)
+      obj->scale = new_scale;
+
+    obj->recalcExtents();
+    updateTilesEntry(entry, model_update::add);
   }
+
+  if (positions_changed)
+    update_selection_pivot();
   update_selected_model_groups();
 }
 
@@ -1467,7 +1649,7 @@ glm::vec3 World::pickShaderColor(glm::vec3 const& pos)
 }
 
 auto World::stamp(glm::vec3 const& pos, float dt, QImage const* img, float radiusOuter
-, float radiusInner, int brushType, bool sculpt) -> void
+, float radiusInner, int brushType, bool sculpt, BrushShape shape) -> void
 {
   ZoneScoped;
   auto action = NOGGIT_CUR_ACTION;
@@ -1480,7 +1662,8 @@ auto World::stamp(glm::vec3 const& pos, float dt, QImage const* img, float radiu
                             auto action = NOGGIT_CUR_ACTION;
                             action->registerChunkTerrainChange(chunk);
                             action->setBlockCursor(!sculpt);
-                            chunk->stamp(pos, dt, img, radiusOuter, radiusInner, brushType, sculpt); return true;
+                            chunk->stamp(pos, dt, img, radiusOuter, radiusInner, brushType, sculpt,
+                                         shape); return true;
                           }
                           , [this](MapChunk* chunk) -> void
                           {
@@ -1539,7 +1722,9 @@ auto World::stamp(glm::vec3 const& pos, float dt, QImage const* img, float radiu
 }
 
 
-void World::changeObjectsWithTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius, bool iter_wmos_, bool iter_m2s)
+void World::changeObjectsWithTerrain(glm::vec3 const& pos, float change, float radius, int BrushType,
+                                     float inner_radius, bool iter_wmos_, bool iter_m2s,
+                                     BrushShape shape)
 {
     // applies the terrain brush to the terrain objects hit
     ZoneScoped;
@@ -1549,7 +1734,10 @@ void World::changeObjectsWithTerrain(glm::vec3 const& pos, float change, float r
 
   // Identical code to chunk->changeTerrain()
   //    if (_snap_m2_objects_chkbox->isChecked() || _snap_wmo_objects_chkbox->isChecked()) {
-  auto objects_hit = getObjectsInRange(pos, radius, true, iter_wmos_, iter_m2s);
+  float const candidate_radius = shape == BrushShape::SQUARE
+    ? radius * std::sqrt(2.0f)
+    : radius;
+  auto objects_hit = getObjectsInRange(pos, candidate_radius, true, iter_wmos_, iter_m2s);
 
   for (auto obj : objects_hit)
   {
@@ -1573,7 +1761,9 @@ void World::changeObjectsWithTerrain(glm::vec3 const& pos, float change, float r
     }
     else
     {
-        dist = std::sqrt(xdiff * xdiff + zdiff * zdiff);
+        dist = shape == BrushShape::SQUARE
+          ? std::max(std::abs(xdiff), std::abs(zdiff))
+          : std::sqrt(xdiff * xdiff + zdiff * zdiff);
         if (dist < radius)
         {
             changed = true;
@@ -1613,22 +1803,22 @@ void World::changeObjectsWithTerrain(glm::vec3 const& pos, float change, float r
   }
 }
 
-void World::changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius)
+void World::changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType,
+                          float inner_radius, BrushShape shape)
 {
   ZoneScoped;
 
-  for_all_chunks_in_range
-    ( pos, radius
-    , [&] (MapChunk* chunk)
-      {
-        NOGGIT_CUR_ACTION->registerChunkTerrainChange(chunk);
-        return chunk->changeTerrain(pos, change, radius, BrushType, inner_radius);
-      }
-    , [this] (MapChunk* chunk)
-      {
-        recalc_norms (chunk);
-      }
-    );
+  auto edit = [&](MapChunk* chunk)
+  {
+    NOGGIT_CUR_ACTION->registerChunkTerrainChange(chunk);
+    return chunk->changeTerrain(pos, change, radius, BrushType, inner_radius, shape);
+  };
+  auto post = [this](MapChunk* chunk) { recalc_norms(chunk); };
+
+  if (shape == BrushShape::SQUARE)
+    for_all_chunks_in_rect(pos, radius, edit, post);
+  else
+    for_all_chunks_in_range(pos, radius, edit, post);
 }
 
 std::vector<selected_object_type> World::getObjectsInRange(glm::vec3 const& pos, float radius, bool ignore_height, bool iter_wmos_, bool iter_m2s)
@@ -1730,29 +1920,188 @@ std::vector<std::pair<SceneObject*, float>> World::getObjectsGroundDistance(glm:
 void World::blurTerrain(glm::vec3 const& pos, float remain, float radius, int BrushType, flatten_mode const& mode)
 {
   ZoneScoped;
-  for_all_chunks_in_range
-    ( pos, radius
-    , [&] (MapChunk* chunk)
+
+  if (BrushType == eFlattenType_Origin || radius <= 0.f)
+  {
+    return;
+  }
+
+  // Preserve the original wide-area cone blur, but evaluate it from an
+  // immutable snapshot. The old per-chunk pass sampled vertices that earlier
+  // chunks had already changed, so duplicate border vertices could receive
+  // different results and split the seam.
+  using grid_key = std::pair<int, int>;
+  struct height_sample
+  {
+    double total = 0.0;
+    int count = 0;
+  };
+  struct blur_sample
+  {
+    float x;
+    float z;
+    float height;
+  };
+
+  float const half_unit = UNITSIZE * 0.5f;
+  auto const key_for = [half_unit](glm::vec3 const& vertex) -> grid_key
+  {
+    return {static_cast<int>(std::lround(vertex.x / half_unit)),
+            static_cast<int>(std::lround(vertex.z / half_unit))};
+  };
+
+  std::map<grid_key, height_sample> snapshot;
+  std::vector<MapChunk*> target_chunks;
+
+  for (MapTile* tile : mapIndex.tiles_in_range(pos, radius))
+  {
+    if (!tile || !tile->finishedLoading())
+    {
+      continue;
+    }
+
+    for (MapChunk* chunk : tile->chunks_in_range(pos, radius))
+    {
+      target_chunks.push_back(chunk);
+
+      for (glm::vec3 const& vertex : chunk->mVertices)
       {
-        NOGGIT_CUR_ACTION->registerChunkTerrainChange(chunk);
-        return chunk->blurTerrain ( pos
-                                  , remain
-                                  , radius
-                                  , BrushType
-                                  , mode
-                                  /*, [this](float x, float z) -> std::optional<float>
-                                    {
-                                      glm::vec3 vec;
-                                      auto res (GetVertex (x, z, &vec));
-                                      return res ? std::optional<float>(vec.y) : std::nullopt;
-                                    }*/
-                                  );
+        auto& sample = snapshot[key_for(vertex)];
+        sample.total += vertex.y;
+        ++sample.count;
       }
-    , [this] (MapChunk* chunk)
+    }
+  }
+
+  auto const snapshot_height = [&snapshot](grid_key const& key) -> std::optional<float>
+  {
+    auto const it = snapshot.find(key);
+    if (it == snapshot.end() || !it->second.count)
+    {
+      return std::nullopt;
+    }
+    return static_cast<float>(it->second.total / it->second.count);
+  };
+
+  // These are the same staggered sample positions and GetVertex lookups used
+  // by the original implementation. Capture them all before mutating terrain.
+  std::vector<blur_sample> blur_samples;
+  int const sample_radius = static_cast<int>(radius / UNITSIZE);
+  blur_samples.reserve((sample_radius * 4 + 1) * (sample_radius * 2 + 1));
+  for (int row = -sample_radius * 2; row <= sample_radius * 2; ++row)
+  {
+    float const sample_z = pos.z + row * half_unit;
+    for (int column = -sample_radius; column <= sample_radius; ++column)
+    {
+      float const sample_x = pos.x + column * UNITSIZE + (row % 2) * half_unit;
+      glm::vec3 vertex;
+      if (GetVertex(sample_x, sample_z, &vertex))
       {
-        recalc_norms (chunk);
+        blur_samples.push_back({sample_x, sample_z, vertex.y});
       }
-    );
+    }
+  }
+
+  std::map<grid_key, float> blurred_heights;
+  for (MapChunk* chunk : target_chunks)
+  {
+    for (glm::vec3 const& vertex : chunk->mVertices)
+    {
+      grid_key const key = key_for(vertex);
+      if (blurred_heights.find(key) != blurred_heights.end())
+      {
+        continue;
+      }
+
+      float const vertex_x = key.first * half_unit;
+      float const vertex_z = key.second * half_unit;
+      auto const center = snapshot_height(key);
+      if (!center)
+      {
+        continue;
+      }
+
+      // The original brush uses the full 3D cursor distance here.
+      float const dist = glm::distance(glm::vec3{vertex_x, *center, vertex_z}, pos);
+      if (dist >= radius)
+      {
+        continue;
+      }
+
+      double total_height = 0.0;
+      double total_weight = 0.0;
+      for (blur_sample const& sample : blur_samples)
+      {
+        float const xdiff = sample.x - vertex_x;
+        float const zdiff = sample.z - vertex_z;
+        float const sample_dist = std::sqrt(xdiff * xdiff + zdiff * zdiff);
+        if (sample_dist > radius)
+        {
+          continue;
+        }
+
+        float const weight = 1.f - sample_dist / radius;
+        total_height += weight * sample.height;
+        total_weight += weight;
+      }
+
+      if (total_weight <= 0.0)
+      {
+        continue;
+      }
+
+      float const target = static_cast<float>(total_height / total_weight);
+      if ((target > *center && !mode.raise) || (target < *center && !mode.lower))
+      {
+        blurred_heights.emplace(key, *center);
+        continue;
+      }
+
+      float const amount = BrushType == eFlattenType_Flat ? remain
+        : BrushType == eFlattenType_Linear ? remain * (1.f - dist / radius)
+        : BrushType == eFlattenType_Smooth ? std::pow(remain, 1.f + dist / radius)
+        : throw std::logic_error("bad brush type");
+      blurred_heights.emplace(key, glm::mix(*center, target, amount));
+    }
+  }
+
+  std::vector<MapChunk*> modified_chunks;
+  for (MapChunk* chunk : target_chunks)
+  {
+    bool changed = false;
+    for (glm::vec3 const& vertex : chunk->mVertices)
+    {
+      auto const height = blurred_heights.find(key_for(vertex));
+      if (height != blurred_heights.end() && vertex.y != height->second)
+      {
+        changed = true;
+        break;
+      }
+    }
+
+    if (!changed)
+    {
+      continue;
+    }
+
+    NOGGIT_CUR_ACTION->registerChunkTerrainChange(chunk);
+    for (glm::vec3& vertex : chunk->mVertices)
+    {
+      auto const height = blurred_heights.find(key_for(vertex));
+      if (height != blurred_heights.end())
+      {
+        vertex.y = height->second;
+      }
+    }
+    chunk->registerChunkUpdate(ChunkUpdateFlags::VERTEX);
+    mapIndex.setChanged(chunk->mt);
+    modified_chunks.push_back(chunk);
+  }
+
+  for (MapChunk* chunk : modified_chunks)
+  {
+    recalc_norms(chunk);
+  }
 }
 
 void World::recalc_norms (MapChunk* chunk) const
@@ -1764,14 +2113,174 @@ void World::recalc_norms (MapChunk* chunk) const
 bool World::paintTexture(glm::vec3 const& pos, Brush* brush, float strength, float pressure, scoped_blp_texture_reference texture)
 {
   ZoneScoped;
+  auto paint = [&] (MapChunk* chunk)
+  {
+    NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+    return chunk->paintTexture(pos, brush, strength, pressure, texture);
+  };
+
+  if (brush->getShape() == BrushShape::SQUARE)
+    return for_all_chunks_in_rect(pos, brush->getRadius(), paint);
+
   return for_all_chunks_in_range
     ( pos, brush->getRadius()
     , [&] (MapChunk* chunk)
       {
-        NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
-        return chunk->paintTexture(pos, brush, strength, pressure, texture);
+        return paint(chunk);
       }
     );
+}
+
+namespace
+{
+  bool road_segment_may_touch_chunk(MapChunk const* chunk, glm::vec3 const& from,
+                                    glm::vec3 const& to, float half_width)
+  {
+    float const min_x = std::min(from.x, to.x) - half_width;
+    float const max_x = std::max(from.x, to.x) + half_width;
+    float const min_z = std::min(from.z, to.z) - half_width;
+    float const max_z = std::max(from.z, to.z) + half_width;
+    return !(max_x < chunk->xbase || min_x > chunk->xbase + CHUNKSIZE
+             || max_z < chunk->zbase || min_z > chunk->zbase + CHUNKSIZE);
+  }
+}
+
+bool World::canPaintRoadSegment(glm::vec3 const& from, glm::vec3 const& to,
+                                sampled_road_style const& style, float width_scale,
+                                bool replace_conflicting_textures)
+{
+  bool can_paint = true;
+  glm::vec3 const midpoint = (from + to) * 0.5f;
+  float const half_width = std::max(TEXDETAILSIZE, style.half_width * width_scale);
+  float const search_radius = glm::distance(glm::vec2(from.x, from.z), glm::vec2(to.x, to.z)) * 0.5f
+    + half_width;
+
+  for_all_chunks_in_rect(midpoint, search_radius, [&](MapChunk* chunk)
+  {
+    if (road_segment_may_touch_chunk(chunk, from, to, half_width)
+        && !chunk->getTextureSet()->canApplyRoadStyle(style, replace_conflicting_textures))
+    {
+      can_paint = false;
+    }
+    return false;
+  });
+  return can_paint;
+}
+
+bool World::canPaintRoadPath(std::vector<glm::vec3> const& points,
+                             sampled_road_style const& style, float width_scale,
+                             bool replace_conflicting_textures)
+{
+  if (points.size() < 2)
+  {
+    return false;
+  }
+  for (std::size_t index = 0; index + 1 < points.size(); ++index)
+  {
+    if (!canPaintRoadSegment(points[index], points[index + 1], style, width_scale,
+        replace_conflicting_textures))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+road_paint_result World::paintRoadSegment(glm::vec3 const& from, glm::vec3 const& to,
+                                          sampled_road_style const& style,
+                                          float width_scale, float opacity_scale,
+                                          bool replace_conflicting_textures)
+{
+  road_paint_result combined;
+  if (!canPaintRoadSegment(from, to, style, width_scale, replace_conflicting_textures))
+  {
+    combined.blocked_by_texture_limit = true;
+    return combined;
+  }
+
+  glm::vec3 const midpoint = (from + to) * 0.5f;
+  float const half_width = std::max(TEXDETAILSIZE, style.half_width * width_scale);
+  float const search_radius = glm::distance(glm::vec2(from.x, from.z), glm::vec2(to.x, to.z)) * 0.5f
+    + half_width;
+  for_all_chunks_in_rect(midpoint, search_radius, [&](MapChunk* chunk)
+  {
+    if (!road_segment_may_touch_chunk(chunk, from, to, half_width))
+    {
+      return false;
+    }
+    NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+    road_paint_result const result = chunk->getTextureSet()->paintRoadSegment(
+      from, to, style, width_scale, opacity_scale, replace_conflicting_textures);
+    combined.changed |= result.changed;
+    combined.blocked_by_texture_limit |= result.blocked_by_texture_limit;
+    combined.replaced_texture_layers += result.replaced_texture_layers;
+    return result.changed;
+  });
+  return combined;
+}
+
+road_paint_result World::paintRoadPath(std::vector<glm::vec3> const& points,
+                                       sampled_road_style const& style,
+                                       float width_scale, float opacity_scale,
+                                       bool replace_conflicting_textures)
+{
+  road_paint_result combined;
+  if (points.size() < 2 || !canPaintRoadPath(points, style, width_scale,
+      replace_conflicting_textures))
+  {
+    combined.blocked_by_texture_limit = true;
+    return combined;
+  }
+
+  float min_x = points.front().x;
+  float max_x = points.front().x;
+  float min_z = points.front().z;
+  float max_z = points.front().z;
+  for (glm::vec3 const& point : points)
+  {
+    min_x = std::min(min_x, point.x);
+    max_x = std::max(max_x, point.x);
+    min_z = std::min(min_z, point.z);
+    max_z = std::max(max_z, point.z);
+  }
+  float const half_width = std::max(TEXDETAILSIZE, style.half_width * width_scale);
+  glm::vec3 const midpoint{(min_x + max_x) * 0.5f, points.front().y, (min_z + max_z) * 0.5f};
+  float const search_radius = glm::length(glm::vec2{max_x - min_x, max_z - min_z}) * 0.5f
+    + half_width;
+  min_x -= half_width;
+  max_x += half_width;
+  min_z -= half_width;
+  max_z += half_width;
+
+  for_all_chunks_in_rect(midpoint, search_radius, [&](MapChunk* chunk)
+  {
+    if (max_x < chunk->xbase || min_x > chunk->xbase + CHUNKSIZE
+        || max_z < chunk->zbase || min_z > chunk->zbase + CHUNKSIZE)
+    {
+      return false;
+    }
+    bool path_may_touch_chunk = false;
+    for (std::size_t index = 0; index + 1 < points.size(); ++index)
+    {
+      if (road_segment_may_touch_chunk(chunk, points[index], points[index + 1], half_width))
+      {
+        path_may_touch_chunk = true;
+        break;
+      }
+    }
+    if (!path_may_touch_chunk)
+    {
+      return false;
+    }
+    NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+    road_paint_result const result = chunk->getTextureSet()->paintRoadPath(
+      points, style, width_scale, opacity_scale, replace_conflicting_textures);
+    combined.changed |= result.changed;
+    combined.blocked_by_texture_limit |= result.blocked_by_texture_limit;
+    combined.replaced_texture_layers += result.replaced_texture_layers;
+    return result.changed;
+  });
+  return combined;
 }
 
 bool World::stampTexture(glm::vec3 const& pos, Brush *brush, float strength, float pressure, scoped_blp_texture_reference texture, QImage* img, bool paint)
@@ -1797,7 +2306,9 @@ bool World::sprayTexture(glm::vec3 const& pos, Brush *brush, float strength, flo
   {
     for (float px = pos.x - spraySize; px < pos.x + spraySize; px += inc)
     {
-      if ((sqrt(pow(px - pos.x, 2) + pow(pz - pos.z, 2)) <= spraySize) && ((rand() % 1000) < sprayPressure))
+      bool const inside_spray = brush->getShape() == BrushShape::SQUARE
+        || std::sqrt(std::pow(px - pos.x, 2) + std::pow(pz - pos.z, 2)) <= spraySize;
+      if (inside_spray && ((rand() % 1000) < sprayPressure))
       {
         succ |= paintTexture({px, pos.y, pz}, brush, strength, pressure, texture);
       }
@@ -1886,6 +2397,209 @@ void World::paintGroundEffectExclusion(glm::vec3 const& pos, float radius, bool 
             return true;
         }
     );
+}
+
+namespace
+{
+    // Assigns effect_id to every layer of the chunk matching the texture
+    // (empty texture matches every layer); returns whether anything changed.
+    bool apply_ground_effect_to_chunk(MapChunk* chunk, std::string const& texture, unsigned int effect_id,
+                                      bool override_existing, bool register_action,
+                                      std::optional<unsigned int> only_effect_id = std::nullopt)
+    {
+        auto texture_set = chunk->getTextureSet();
+        bool changed = false;
+        for (int layer = 0; layer < texture_set->num(); ++layer)
+        {
+            if (!texture.empty() && texture_set->filename(layer) != texture)
+            {
+                continue;
+            }
+            unsigned int const current = texture_set->getEffectForLayer(layer);
+            if (only_effect_id.has_value() && current != only_effect_id.value())
+            {
+                continue;
+            }
+            if (current == effect_id)
+            {
+                continue;
+            }
+            if (!override_existing && current && current != 0xFFFFFFFF)
+            {
+                continue;
+            }
+            if (!changed && register_action)
+            {
+                NOGGIT_CUR_ACTION->registerChunkLayerInfoChange(chunk);
+            }
+            changed = true;
+            texture_set->setEffect(layer, static_cast<int>(effect_id));
+        }
+        return changed;
+    }
+}
+
+void World::paintGroundEffect(glm::vec3 const& pos, float radius, std::string const& texture, unsigned int effect_id)
+{
+    ZoneScoped;
+    for_all_chunks_in_range
+    (pos, radius
+        , [&](MapChunk* chunk)
+        {
+            return apply_ground_effect_to_chunk(chunk, texture, effect_id, true, true);
+        }
+    );
+}
+
+void World::applyGroundEffectToTileAt(glm::vec3 const& pos, std::string const& texture, unsigned int effect_id,
+                                      bool override_existing, std::optional<unsigned int> only_effect_id)
+{
+    ZoneScoped;
+    MapTile* tile(mapIndex.getTile(pos));
+    if (!tile || !tile->finishedLoading())
+    {
+        return;
+    }
+
+    bool tile_changed = false;
+    for (int cx = 0; cx < 16; ++cx)
+    {
+        for (int cz = 0; cz < 16; ++cz)
+        {
+            if (apply_ground_effect_to_chunk(tile->getChunk(cx, cz), texture, effect_id,
+                                             override_existing, true, only_effect_id))
+            {
+                tile_changed = true;
+            }
+        }
+    }
+
+    if (tile_changed)
+    {
+        mapIndex.setChanged(tile);
+    }
+}
+
+void World::applyGroundEffectToArea(int area_id, bool whole_zone, std::string const& texture, unsigned int effect_id,
+                                    bool override_existing, std::optional<unsigned int> only_effect_id)
+{
+    ZoneScoped;
+    for (MapTile* tile : mapIndex.loaded_tiles())
+    {
+        if (!tile->finishedLoading())
+        {
+            continue;
+        }
+
+        bool tile_changed = false;
+        for (int cx = 0; cx < 16; ++cx)
+        {
+            for (int cz = 0; cz < 16; ++cz)
+            {
+                MapChunk* chunk = tile->getChunk(cx, cz);
+
+                int chunk_area = chunk->getAreaID();
+                if (whole_zone)
+                {
+                    chunk_area = AreaDB::resolve_zone_id(chunk_area);
+                }
+                if (chunk_area != area_id)
+                {
+                    continue;
+                }
+
+                if (apply_ground_effect_to_chunk(chunk, texture, effect_id,
+                                                 override_existing, true, only_effect_id))
+                {
+                    tile_changed = true;
+                }
+            }
+        }
+
+        if (tile_changed)
+        {
+            mapIndex.setChanged(tile);
+        }
+    }
+}
+
+void World::applyGroundEffectGlobal(std::string const& texture, unsigned int effect_id, bool override_existing,
+                                    int area_filter, bool whole_zone, QProgressDialog* progress,
+                                    std::optional<unsigned int> only_effect_id)
+{
+    ZoneScoped;
+    int processed = 0;
+    if (progress)
+    {
+        progress->setRange(0, 64 * 64);
+        progress->setValue(0);
+    }
+    for (size_t z = 0; z < 64; z++)
+    {
+        for (size_t x = 0; x < 64; x++)
+        {
+            if (progress && progress->wasCanceled())
+            {
+                return;
+            }
+            TileIndex tile_index(x, z);
+
+            bool unload = !mapIndex.tileLoaded(tile_index) && !mapIndex.tileAwaitingLoading(tile_index);
+            MapTile* tile = mapIndex.loadTile(tile_index);
+
+            if (!tile)
+            {
+                if (progress) progress->setValue(++processed);
+                continue;
+            }
+
+            tile->wait_until_loaded();
+
+            bool tile_changed = false;
+            for (int cx = 0; cx < 16; ++cx)
+            {
+                for (int cz = 0; cz < 16; ++cz)
+                {
+                    MapChunk* chunk = tile->getChunk(cx, cz);
+
+                    if (area_filter >= 0)
+                    {
+                        int chunk_area = chunk->getAreaID();
+                        if (whole_zone)
+                        {
+                            chunk_area = AreaDB::resolve_zone_id(chunk_area);
+                        }
+                        if (chunk_area != area_filter)
+                        {
+                            continue;
+                        }
+                    }
+
+                    // no undo registration: swept tiles unload again below
+                    if (apply_ground_effect_to_chunk(chunk, texture, effect_id,
+                                                     override_existing, false, only_effect_id))
+                    {
+                        tile_changed = true;
+                    }
+                }
+            }
+
+            // only tiles that actually contained the texture get rewritten
+            if (tile_changed)
+            {
+                tile->saveTile(this);
+                mapIndex.markOnDisc(tile_index, true);
+                mapIndex.unsetChanged(tile_index);
+            }
+
+            if (unload)
+            {
+                mapIndex.unloadTile(tile_index);
+            }
+            if (progress) progress->setValue(++processed);
+        }
+    }
+    if (progress) progress->setValue(64 * 64);
 }
 
 void World::setHole(glm::vec3 const& pos, float radius, bool big, bool hole)
@@ -2069,6 +2783,39 @@ void World::deleteInstance(int uid, bool action)
   }
 }
 
+void World::deleteInstances(std::vector<std::uint32_t> const& uids, bool action)
+{
+  bool removed_any = false;
+  for (std::uint32_t uid : uids)
+  {
+    auto instance = _model_instance_storage.get_instance(uid);
+    if (!instance)
+      continue;
+
+    SceneObject* object = std::get<selected_object_type>(*instance);
+    if (object->chunk_mover_preview)
+      continue;
+
+    std::vector<MapTile*> const referenced_tiles = object->getTiles();
+    for (MapTile* tile : referenced_tiles)
+    {
+      if (!tile)
+        continue;
+      tile->remove_model(object);
+      mapIndex.setChanged(tile);
+    }
+
+    _model_instance_storage.delete_instance_without_world_update(uid, action);
+    removed_any = true;
+  }
+
+  if (removed_any)
+  {
+    need_model_updates = true;
+    reset_selection();
+  }
+}
+
 bool World::uid_duplicates_found() const
 {
   ZoneScoped;
@@ -2105,7 +2852,7 @@ void World::addM2 ( BlizzardArchive::Listfile::FileKey const& file_key
   ZoneScoped;
   ModelInstance model_instance = ModelInstance(file_key, _context);
 
-  model_instance.uid = mapIndex.newGUID();
+  model_instance.uid = _model_instance_storage.new_unique_uid();
   model_instance.pos = newPos;
   model_instance.scale = scale;
   model_instance.dir = rotation;
@@ -2156,7 +2903,7 @@ ModelInstance* World::addM2AndGetInstance ( BlizzardArchive::Listfile::FileKey c
   ZoneScoped;
   ModelInstance model_instance = ModelInstance(file_key, _context);
 
-  model_instance.uid = mapIndex.newGUID();
+  model_instance.uid = _model_instance_storage.new_unique_uid();
   model_instance.pos = newPos;
   model_instance.scale = scale;
   model_instance.dir = rotation;
@@ -2198,6 +2945,32 @@ ModelInstance* World::addM2AndGetInstance ( BlizzardArchive::Listfile::FileKey c
   return instance.value();
 }
 
+ModelInstance* World::addChunkMoverPreviewM2(
+    BlizzardArchive::Listfile::FileKey const& file_key, glm::vec3 newPos, float scale,
+    math::degrees::vec3 rotation)
+{
+  ModelInstance model_instance(file_key, _context);
+  model_instance.uid = _model_instance_storage.new_preview_uid();
+  model_instance.pos = newPos;
+  model_instance.scale = scale;
+  model_instance.dir = rotation;
+  model_instance.chunk_mover_preview = true;
+  model_instance.model->wait_until_loaded();
+  model_instance.recalcExtents();
+  std::uint32_t const uid = _model_instance_storage.add_model_instance(
+      std::move(model_instance), false, false);
+  ModelInstance* instance = _model_instance_storage.get_model_instance(uid).value();
+  auto const& extents = instance->getExtents();
+  TileIndex const start(extents[0]);
+  TileIndex const end(extents[1]);
+  if (start.is_valid() && end.is_valid())
+    for (std::size_t z = start.z; z <= end.z; ++z)
+      for (std::size_t x = start.x; x <= end.x; ++x)
+        if (MapTile* tile = mapIndex.getTile(TileIndex{x, z}); tile && tile->finishedLoading())
+          tile->add_model(instance);
+  return instance;
+}
+
 void World::addWMO ( BlizzardArchive::Listfile::FileKey const& file_key
                    , glm::vec3 newPos
                    , float scale
@@ -2209,7 +2982,7 @@ void World::addWMO ( BlizzardArchive::Listfile::FileKey const& file_key
   ZoneScoped;
   WMOInstance wmo_instance(file_key, _context);
 
-  wmo_instance.uid = mapIndex.newGUID();
+  wmo_instance.uid = _model_instance_storage.new_unique_uid();
   wmo_instance.pos = newPos;
   wmo_instance.dir = rotation;
 
@@ -2256,7 +3029,7 @@ WMOInstance* World::addWMOAndGetInstance ( BlizzardArchive::Listfile::FileKey co
   ZoneScoped;
   WMOInstance wmo_instance(file_key, _context);
 
-  wmo_instance.uid = mapIndex.newGUID();
+  wmo_instance.uid = _model_instance_storage.new_unique_uid();
   wmo_instance.pos = newPos;
   wmo_instance.dir = rotation;
   wmo_instance.scale = scale;
@@ -2270,6 +3043,85 @@ WMOInstance* World::addWMOAndGetInstance ( BlizzardArchive::Listfile::FileKey co
   auto instance = _model_instance_storage.get_wmo_instance(uid);
 
   return instance.value();
+}
+
+WMOInstance* World::addChunkMoverPreviewWMO(
+    BlizzardArchive::Listfile::FileKey const& file_key, glm::vec3 newPos,
+    math::degrees::vec3 rotation, float scale)
+{
+  WMOInstance wmo_instance(file_key, _context);
+  wmo_instance.uid = _model_instance_storage.new_preview_uid();
+  wmo_instance.pos = newPos;
+  wmo_instance.dir = rotation;
+  wmo_instance.scale = scale;
+  wmo_instance.chunk_mover_preview = true;
+  wmo_instance.wmo->wait_until_loaded();
+  wmo_instance.recalcExtents();
+  std::uint32_t const uid = _model_instance_storage.add_wmo_instance(
+      std::move(wmo_instance), false, false);
+  WMOInstance* instance = _model_instance_storage.get_wmo_instance(uid).value();
+  auto const& extents = instance->getExtents();
+  TileIndex const start(extents[0]);
+  TileIndex const end(extents[1]);
+  if (start.is_valid() && end.is_valid())
+    for (std::size_t z = start.z; z <= end.z; ++z)
+      for (std::size_t x = start.x; x <= end.x; ++x)
+        if (MapTile* tile = mapIndex.getTile(TileIndex{x, z}); tile && tile->finishedLoading())
+          tile->add_model(instance);
+  return instance;
+}
+
+bool World::updateChunkMoverPreviewInstance(std::uint32_t uid, glm::vec3 new_pos,
+                                            math::degrees::vec3 rotation, float scale)
+{
+  auto instance = _model_instance_storage.get_instance(uid);
+  if (!instance)
+    return false;
+
+  SceneObject* object = std::get<selected_object_type>(*instance);
+  if (!object->chunk_mover_preview)
+    return false;
+
+  // Preview objects are viewport-only, so update their tile references directly
+  // instead of deleting/reconstructing the model and waiting on its asset again.
+  std::vector<MapTile*> const old_tiles = object->getTiles();
+  for (MapTile* tile : old_tiles)
+    if (tile)
+      tile->remove_model(object);
+
+  object->pos = new_pos;
+  object->dir = rotation;
+  object->scale = scale;
+  object->recalcExtents();
+
+  auto const& extents = object->getExtents();
+  TileIndex const start(extents[0]);
+  TileIndex const end(extents[1]);
+  if (start.is_valid() && end.is_valid())
+    for (std::size_t z = start.z; z <= end.z; ++z)
+      for (std::size_t x = start.x; x <= end.x; ++x)
+        if (MapTile* tile = mapIndex.getTile(TileIndex{x, z}); tile && tile->finishedLoading())
+          tile->add_model(object);
+
+  need_model_updates = true;
+  return true;
+}
+
+void World::deleteChunkMoverPreviewInstance(std::uint32_t uid)
+{
+  auto instance = _model_instance_storage.get_instance(uid);
+  if (!instance)
+    return;
+
+  SceneObject* object = std::get<selected_object_type>(*instance);
+  if (!object->chunk_mover_preview)
+    return;
+
+  std::vector<MapTile*> const referenced_tiles = object->getTiles();
+  for (MapTile* tile : referenced_tiles)
+    if (tile)
+      tile->remove_model(object);
+  _model_instance_storage.delete_preview_instance(uid);
 }
 
 
@@ -2322,6 +3174,18 @@ void World::remove_models_if_needed(std::vector<uint32_t> const& uids)
 
   for (uint32_t uid : uids)
   {
+    // Chunk-mover ghosts are owned by ChunkClipboard rather than by an ADT.
+    // A ghost can span several tiles, but it is inserted into storage only
+    // once. Letting the first unloading tile decrement the normal ADT
+    // reference count erases the shared instance while other loaded tiles
+    // still retain its pointer. The clipboard removes the ghost explicitly.
+    if (auto instance = _model_instance_storage.get_instance(uid))
+    {
+      SceneObject* object = std::get<selected_object_type>(*instance);
+      if (object->chunk_mover_preview)
+        continue;
+    }
+
     // it handles the removal from the selection if necessary
     _model_instance_storage.unload_instance_and_remove_from_selection_if_necessary(uid);
   }
@@ -2943,6 +3807,77 @@ void World::change_texture_flags(glm::vec3 const& pos, scoped_blp_texture_refere
   });
 }
 
+std::optional<glm::vec3> World::intersectLiquid(math::ray const& ray, int target_layer,
+                                                std::uint64_t surface_token)
+{
+  std::optional<float> nearest_distance;
+
+  auto test_layer = [&](ChunkWater const* chunk_water, liquid_layer const& layer)
+  {
+    glm::vec3 const bounds_min{chunk_water->xbase, layer.min() - 0.01f,
+                               chunk_water->zbase};
+    glm::vec3 const bounds_max{chunk_water->xbase + CHUNKSIZE, layer.max() + 0.01f,
+                               chunk_water->zbase + CHUNKSIZE};
+    if (!ray.intersect_bounds(bounds_min, bounds_max))
+      return;
+
+    auto const& vertices = layer.getVertices();
+    for (int z = 0; z < 8; ++z)
+      for (int x = 0; x < 8; ++x)
+      {
+        if (!layer.hasSubchunk(x, z))
+          continue;
+
+        int const id = z * 9 + x;
+        for (auto const triangle : {std::array<int, 3>{id, id + 9, id + 1},
+                                    std::array<int, 3>{id + 1, id + 9, id + 10}})
+        {
+          auto const distance = ray.intersect_triangle(vertices[triangle[0]].position,
+                                                       vertices[triangle[1]].position,
+                                                       vertices[triangle[2]].position);
+          if (distance && (!nearest_distance || *distance < *nearest_distance))
+            nearest_distance = *distance;
+        }
+      }
+  };
+
+  for (MapTile* tile : mapIndex.loaded_tiles())
+  {
+    if (!tile || !tile->finishedLoading())
+      continue;
+
+    for (int z = 0; z < 16; ++z)
+      for (int x = 0; x < 16; ++x)
+      {
+        ChunkWater* chunk_water = tile->Water.getChunk(x, z);
+        auto const* layers = chunk_water->getLayers();
+
+        if (surface_token)
+        {
+          auto const found = std::find_if(layers->begin(), layers->end(),
+            [surface_token](liquid_layer const& layer)
+            {
+              return layer.surfaceToken() == surface_token;
+            });
+          if (found != layers->end())
+            test_layer(chunk_water, *found);
+        }
+        else if (target_layer >= 0 && target_layer < static_cast<int>(layers->size()))
+        {
+          test_layer(chunk_water, (*layers)[target_layer]);
+        }
+        else if (target_layer < 0)
+        {
+          for (liquid_layer const& layer : *layers)
+            test_layer(chunk_water, layer);
+        }
+      }
+  }
+
+  return nearest_distance ? std::optional<glm::vec3>{ray.position(*nearest_distance)}
+                          : std::nullopt;
+}
+
 void World::paintLiquid( glm::vec3 const& pos
                        , float radius
                        , int liquid_id
@@ -2954,15 +3889,330 @@ void World::paintLiquid( glm::vec3 const& pos
                        , bool override_height
                        , bool override_liquid_id
                        , float opacity_factor
+                       , int target_layer
+                       , std::uint64_t surface_token
                        )
 {
   ZoneScoped;
+
+  std::vector<MapChunk*> paint_chunks;
+  for_all_chunks_in_range(pos, radius, [&](MapChunk* chunk)
+  {
+    paint_chunks.push_back(chunk);
+    return true;
+  });
+
+  bool effective_lock = lock;
+  glm::vec3 effective_origin = origin;
+  bool const extending_coverage = add && !override_height && !lock && target_layer >= 0;
+  std::unordered_map<LiquidVertexKey, float, LiquidVertexKeyHash> original_heights;
+  std::unordered_map<LiquidVertexKey, float, LiquidVertexKeyHash> edge_plane_heights;
+  std::unordered_map<MapChunk*, std::array<bool, 9 * 9>> vertices_used_before;
+
+  // Coverage extends the selected surface at its existing elevation. Search
+  // one liquid cell beyond the brush so painting across a chunk boundary can
+  // inherit the adjacent chunk's height as well.
+  if (extending_coverage)
+  {
+    std::vector<MapChunk*> sample_chunks;
+    for_all_chunks_in_range(pos, radius + UNITSIZE, [&](MapChunk* chunk)
+    {
+      sample_chunks.push_back(chunk);
+      return true;
+    });
+
+    auto existing_vertices = collectLiquidVertices(sample_chunks, target_layer, surface_token);
+    float closest_distance_squared = std::numeric_limits<float>::max();
+    std::optional<float> inherited_height;
+    for (auto const& [key, group] : existing_vertices)
+    {
+      float const height = group.originalHeight();
+      original_heights.emplace(key, height);
+
+      float const dx = group.x - pos.x;
+      float const dz = group.z - pos.z;
+      float const distance_squared = dx * dx + dz * dz;
+      if (distance_squared < closest_distance_squared)
+      {
+        closest_distance_squared = distance_squared;
+        inherited_height = height;
+      }
+    }
+
+    if (inherited_height)
+    {
+      effective_lock = true;
+      effective_origin = {pos.x, *inherited_height, pos.z};
+
+      // Layer indices are local to each MH2O chunk and are not guaranteed to
+      // identify the same plane on the neighboring chunk. Build a secondary
+      // edge map from every pre-existing plane, selecting the candidate closest
+      // to the inherited surface height at each world-space grid coordinate.
+      std::unordered_map<LiquidVertexKey, float, LiquidVertexKeyHash> best_height_delta;
+      for (MapChunk* chunk : sample_chunks)
+      {
+        for (liquid_layer const& layer : *chunk->liquid_chunk()->getLayers())
+        {
+          auto const& vertices = layer.getVertices();
+          for (int z = 0; z < 9; ++z)
+            for (int x = 0; x < 9; ++x)
+            {
+              if (!layer.usesVertex(x, z))
+                continue;
+
+              glm::vec3 const& vertex = vertices[z * 9 + x].position;
+              LiquidVertexKey const key = liquidVertexKey(vertex.x, vertex.z);
+              float const delta = std::abs(vertex.y - *inherited_height);
+              auto const best = best_height_delta.find(key);
+              if (best == best_height_delta.end() || delta < best->second)
+              {
+                best_height_delta[key] = delta;
+                edge_plane_heights[key] = vertex.y;
+              }
+            }
+        }
+      }
+
+      // A surface token is stable across chunks, so its exact vertices win.
+      // Without one, the local layer index may name a different neighboring
+      // plane and the height-based match above is the safer identity.
+      if (surface_token)
+        for (auto const& [key, height] : original_heights)
+          edge_plane_heights[key] = height;
+    }
+
+    for (MapChunk* chunk : paint_chunks)
+    {
+      auto& used = vertices_used_before[chunk];
+      liquid_layer* layer = selectedLiquidLayer(chunk, target_layer, surface_token);
+      if (!layer)
+        continue;
+
+      for (int z = 0; z < 9; ++z)
+        for (int x = 0; x < 9; ++x)
+          used[z * 9 + x] = layer->usesVertex(x, z);
+    }
+  }
+
+  for (MapChunk* chunk : paint_chunks)
+  {
+    NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+    chunk->liquid_chunk()->paintLiquid(pos, radius, liquid_id, add, angle, orientation,
+                                       effective_lock, effective_origin, override_height,
+                                       override_liquid_id, chunk, opacity_factor, target_layer,
+                                       surface_token);
+  }
+
+  // MH2O chunks duplicate vertices along their borders. Match only newly
+  // activated copies to the exact pre-paint world-space vertex height, leaving
+  // every vertex that already belonged to the surface untouched.
+  if (extending_coverage && !edge_plane_heights.empty())
+  {
+    for (MapChunk* chunk : paint_chunks)
+    {
+      liquid_layer* layer = selectedLiquidLayer(chunk, target_layer, surface_token);
+      if (!layer)
+        continue;
+
+      auto const snapshot = vertices_used_before.find(chunk);
+      if (snapshot == vertices_used_before.end())
+        continue;
+
+      bool changed = false;
+      auto& vertices = layer->getVertices();
+      for (int z = 0; z < 9; ++z)
+        for (int x = 0; x < 9; ++x)
+        {
+          int const index = z * 9 + x;
+          if (snapshot->second[index] || !layer->usesVertex(x, z))
+            continue;
+
+          auto const height = edge_plane_heights.find(
+            liquidVertexKey(vertices[index].position.x, vertices[index].position.z));
+          if (height == edge_plane_heights.end())
+            continue;
+
+          vertices[index].position.y = height->second;
+          changed = true;
+        }
+
+      if (changed)
+      {
+        layer->refresh();
+        chunk->liquid_chunk()->update_layers();
+      }
+    }
+  }
+}
+
+void World::paintLiquidDepth(glm::vec3 const& pos, float radius, float depth, int target_layer,
+                             std::uint64_t surface_token)
+{
   for_all_chunks_in_range(pos, radius, [&](MapChunk* chunk)
   {
     NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
-    chunk->liquid_chunk()->paintLiquid(pos, radius, liquid_id, add, angle, orientation, lock, origin, override_height, override_liquid_id, chunk, opacity_factor);
+    chunk->liquid_chunk()->paintDepth(pos, radius, depth, target_layer, surface_token);
     return true;
   });
+}
+
+void World::projectLiquidUV(glm::vec3 const& pos, float radius, float scale, math::radians rotation,
+                            int target_layer, std::uint64_t surface_token)
+{
+  for_all_chunks_in_range(pos, radius, [&](MapChunk* chunk)
+  {
+    NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+    chunk->liquid_chunk()->projectUV(pos, radius, scale, rotation, target_layer, surface_token);
+    return true;
+  });
+}
+
+void World::paintLiquidAttribute(glm::vec3 const& pos, float radius, LiquidAttribute attribute,
+                                 bool value, int target_layer,
+                                 std::uint64_t surface_token)
+{
+  for_all_chunks_in_range(pos, radius, [&](MapChunk* chunk)
+  {
+    NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+    chunk->liquid_chunk()->paintAttribute(pos, radius, attribute, value, target_layer,
+                                          surface_token);
+    return true;
+  });
+}
+
+void World::clearLiquidAttributes(const TileIndex& pos,
+                                  std::optional<LiquidAttribute> attribute)
+{
+  for_tile_at(pos, [&](MapTile* tile)
+  {
+    for (int x = 0; x < 16; ++x)
+      for (int z = 0; z < 16; ++z)
+      {
+        MapChunk* chunk = tile->getChunk(x, z);
+        NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+        if (attribute)
+          chunk->liquid_chunk()->clearAttribute(*attribute);
+        else
+          chunk->liquid_chunk()->clearAttributes();
+      }
+  });
+}
+
+void World::regenerateLiquidAttributes(const TileIndex& pos)
+{
+  for_tile_at(pos, [&](MapTile* tile)
+  {
+    for (int x = 0; x < 16; ++x)
+      for (int z = 0; z < 16; ++z)
+      {
+        MapChunk* chunk = tile->getChunk(x, z);
+        NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+        chunk->liquid_chunk()->regenerateAttributes();
+      }
+  });
+}
+
+void World::clearLiquidFishingFlagsOutsideLiquid(const TileIndex& pos)
+{
+  for_tile_at(pos, [&](MapTile* tile)
+  {
+    for (int x = 0; x < 16; ++x)
+      for (int z = 0; z < 16; ++z)
+      {
+        MapChunk* chunk = tile->getChunk(x, z);
+        NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+        chunk->liquid_chunk()->clearFishableAttributesOutsideLiquid();
+      }
+  });
+}
+
+void World::raiseLowerLiquid(glm::vec3 const& pos, float radius, float change,
+                             float inner_radius, int falloff, int target_layer,
+                             std::uint64_t surface_token)
+{
+  std::vector<MapChunk*> chunks;
+  for_all_chunks_in_range(pos, radius + UNITSIZE, [&](MapChunk* chunk)
+  {
+    chunks.push_back(chunk);
+    return true;
+  });
+
+  auto groups = collectLiquidVertices(chunks, target_layer, surface_token);
+  editLiquidVertexGroups(groups, pos, radius, inner_radius, falloff,
+    [change](LiquidVertexGroup const& group, float weight) -> std::optional<float>
+    {
+      return group.originalHeight() + change * weight;
+    });
+}
+
+void World::flattenLiquid(glm::vec3 const& pos, float radius, float strength,
+                          float inner_radius, int falloff, glm::vec3 const& origin,
+                          math::radians angle, math::radians orientation, int target_layer,
+                          std::uint64_t surface_token)
+{
+  std::vector<MapChunk*> chunks;
+  for_all_chunks_in_range(pos, radius + UNITSIZE, [&](MapChunk* chunk)
+  {
+    chunks.push_back(chunk);
+    return true;
+  });
+
+  auto groups = collectLiquidVertices(chunks, target_layer, surface_token);
+  editLiquidVertexGroups(groups, pos, radius, inner_radius, falloff,
+    [&](LiquidVertexGroup const& group, float weight) -> std::optional<float>
+    {
+      glm::vec3 const vertex{group.x, group.originalHeight(), group.z};
+      float const target = misc::angledHeight(origin, vertex, angle, orientation);
+      return glm::mix(group.originalHeight(), target, std::clamp(strength * weight, 0.f, 1.f));
+    });
+}
+
+void World::smoothLiquid(glm::vec3 const& pos, float radius, float strength,
+                         float inner_radius, int falloff, int target_layer,
+                         std::uint64_t surface_token)
+{
+  std::vector<MapChunk*> chunks;
+  // Terrain blur samples a square neighborhood around the cursor before
+  // applying a radial weight around each edited vertex. Include its corners.
+  for_all_chunks_in_range(pos, radius * 1.5f + UNITSIZE, [&](MapChunk* chunk)
+  {
+    chunks.push_back(chunk);
+    return true;
+  });
+
+  auto groups = collectLiquidVertices(chunks, target_layer, surface_token);
+  editLiquidVertexGroups(groups, pos, radius, inner_radius, falloff,
+    [&](LiquidVertexGroup const& group, float weight) -> std::optional<float>
+    {
+      float total = 0.f;
+      float total_weight = 0.f;
+
+      // Match terrain blur: each edited vertex averages the full liquid
+      // neighborhood covered by the brush, weighted by distance from that
+      // vertex. The previous 3x3 kernel could only round the lip of a height
+      // step; it could not spread the transition across the brush radius.
+      for (auto const& [sample_key, sample] : groups)
+      {
+        if (std::abs(sample.x - pos.x) > radius || std::abs(sample.z - pos.z) > radius)
+          continue;
+
+        float const dx = sample.x - group.x;
+        float const dz = sample.z - group.z;
+        float const sample_distance = std::sqrt(dx * dx + dz * dz);
+        if (sample_distance > radius)
+          continue;
+
+        float const sample_weight = 1.f - sample_distance / radius;
+        total += sample.originalHeight() * sample_weight;
+        total_weight += sample_weight;
+      }
+
+      if (total_weight <= 0.f)
+        return std::nullopt;
+
+      float const target = total / total_weight;
+      return glm::mix(group.originalHeight(), target, std::clamp(strength * weight, 0.f, 1.f));
+    });
 }
 
 void World::setWaterType(const TileIndex& pos, int type, int layer)

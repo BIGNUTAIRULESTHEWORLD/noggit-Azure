@@ -75,6 +75,7 @@ namespace Noggit
             , &_move_model_to_cursor_position
             , &_snap_multi_selection_to_ground
             , &_use_median_pivot_point
+            , &_scale_around_pivot_point
             , &_object_paste_params
             , &_rotate_along_ground
             , &_rotate_along_ground_smooth
@@ -154,6 +155,11 @@ namespace Noggit
     bool ObjectTool::useMultiselectionPivot() const
     {
         return _use_median_pivot_point.get();
+    }
+
+    bool ObjectTool::scaleMultiselectionAroundPivot() const
+    {
+        return _scale_around_pivot_point.get();
     }
 
     bool ObjectTool::useMedianPivotPoint() const
@@ -528,7 +534,15 @@ namespace Noggit
             {
                 NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eOBJECTS_TRANSFORMED,
                     Noggit::ActionModalityControllers::eSCALE);
-                world->scale_selected_models(_keys * numpad_moveratio / 50.f, World::object_scaling_type::add);
+                float const scale_delta = _keys * numpad_moveratio / 50.f;
+                if (_scale_around_pivot_point.get() && world->has_multiple_model_selected())
+                {
+                    world->scale_selected_models(1.f + scale_delta, World::object_scaling_type::mult, true);
+                }
+                else
+                {
+                    world->scale_selected_models(scale_delta, World::object_scaling_type::add);
+                }
                 updateRotationEditor();
             }
             if (_keyr != 0.f)
@@ -550,7 +564,8 @@ namespace Noggit
                     NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eOBJECTS_TRANSFORMED,
                         Noggit::ActionModalityControllers::eALT
                         | Noggit::ActionModalityControllers::eMMB);
-                    world->scale_selected_models(std::pow(2.f, _mv * 4.f), World::object_scaling_type::mult);
+                    world->scale_selected_models(std::pow(2.f, _mv * 4.f), World::object_scaling_type::mult,
+                                                 _scale_around_pivot_point.get());
                 }
                 else if (params.mod_shift_down)
                 {

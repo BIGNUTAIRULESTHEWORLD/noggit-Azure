@@ -100,7 +100,7 @@
           </font>
          </property>
          <property name="text">
-          <string>Noggit Studio Red</string>
+          <string>Noggit Azure</string>
          </property>
          <property name="alignment">
           <set>Qt::AlignCenter</set>

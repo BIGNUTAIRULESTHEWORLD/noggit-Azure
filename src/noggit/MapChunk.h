@@ -14,6 +14,7 @@
 #include <array>
 #include <map>
 #include <memory>
+#include <optional>
 #include <unordered_set>
 
 namespace BlizzardArchive
@@ -31,6 +32,11 @@ namespace math
 namespace util
 {
   class sExtendableArray;
+}
+
+namespace Noggit
+{
+  struct ChunkDetailDoodads;
 }
 
 class Brush;
@@ -75,6 +81,7 @@ private:
 public:
   MapChunk(MapTile* mt, BlizzardArchive::ClientFile* f, bool bigAlpha, tile_mode mode, Noggit::NoggitRenderContext context
            , bool init_empty = false, int chunk_idx = 0, bool load_textures = true);
+  ~MapChunk();
 
   auto getHoleMask(void) const -> unsigned;
   MapTile *mt;
@@ -93,6 +100,13 @@ public:
 
   int holes;
   bool currently_paintable = true;
+
+  // Transient viewport-only marker used by the Chunk Mover. It is never
+  // serialized to the ADT. 0 = none, 2 = source, 3 = destination preview.
+  int chunk_mover_overlay = 0;
+  void setChunkMoverOverlay(int value, bool force_upload = false);
+  void setChunkMoverPreviewHeights(std::optional<std::array<float, mapbufsize>> heights);
+  void setChunkMoverPreviewNormals(std::optional<std::array<glm::vec3, mapbufsize>> normals);
 
   unsigned int areaID;
 
@@ -113,13 +127,37 @@ public:
 
 private:
 
+  std::optional<std::array<float, mapbufsize>> _chunk_mover_preview_heights;
+  // Packed exactly like the tile heightmap texture: (-normal.z, normal.y, -normal.x).
+  // Noggit3 previews the copied chunk vertices, including their normals; keeping a
+  // separate transient array gives the modern renderer the same result without
+  // mutating the ADT data.
+  std::optional<std::array<glm::vec3, mapbufsize>> _chunk_mover_preview_normals;
+  std::optional<std::array<glm::vec3, mapbufsize>> _chunk_mover_preview_original_normals;
+
   unsigned _chunk_update_flags;
 
   Noggit::NoggitRenderContext _context;
 
+  // client-matching ground effect doodad placements, cached per chunk;
+  // the stamp advances on edits that can change them
+  std::unique_ptr<Noggit::ChunkDetailDoodads> _detail_doodads;
+  std::uint32_t _detail_doodad_stamp = 1;
+  // only alpha edits invalidate the stored doodadMapping; untouched chunks
+  // keep the mapping Blizzard saved, which is what the client renders from
+  bool _doodad_mapping_needs_update = false;
+
 public:
 
     TextureSet* getTextureSet() const;
+
+  Noggit::ChunkDetailDoodads* getDetailDoodads();
+  std::uint32_t detailDoodadStamp() const;
+  bool doodadMappingNeedsUpdate() const;
+  void clearDoodadMappingNeedsUpdate();
+  // upload bookkeeping only: re-queues renderer work without the edit side
+  // effects of registerChunkUpdate
+  void requeueChunkUpdate(unsigned flags);
 
   void draw ( math::frustum const& frustum
             , OpenGL::Scoped::use_program& mcnk_shader
@@ -156,15 +194,19 @@ public:
   glm::uvec2 getUnitIndextAt(glm::vec3 pos);
 
   //! \todo implement Action stack for these
-  bool changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius);
+  bool changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType,
+                     float inner_radius, BrushShape shape = BrushShape::CIRCLE);
   bool flattenTerrain(glm::vec3 const& pos, float remain, float radius, int BrushType, flatten_mode const& mode, const glm::vec3& origin, math::degrees angle, math::degrees orientation);
   bool blurTerrain ( glm::vec3 const& pos, float remain, float radius, int BrushType, flatten_mode const& mode
                    /*, std::function<std::optional<float>(float, float)> height*/
                    );
 
-  bool changeTerrainProcessVertex(glm::vec3 const& pos, glm::vec3 const& vertex, float& dt, float radiusOuter, float radiusInner, int brushType);
+  bool changeTerrainProcessVertex(glm::vec3 const& pos, glm::vec3 const& vertex, float& dt,
+                                  float radiusOuter, float radiusInner, int brushType,
+                                  BrushShape shape = BrushShape::CIRCLE);
   auto stamp(glm::vec3 const& pos, float dt, QImage const* img, float radiusOuter
-  , float radiusInner, int brushType, bool sculpt) -> void;
+  , float radiusInner, int brushType, bool sculpt,
+             BrushShape shape = BrushShape::CIRCLE) -> void;
   void selectVertex(glm::vec3 const& pos, float radius, std::unordered_set<glm::vec3*>& vertices);
   void fixVertices(std::unordered_set<glm::vec3*>& selected);
   // for the vertex tool

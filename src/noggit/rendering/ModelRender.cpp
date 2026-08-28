@@ -801,7 +801,7 @@ ModelRenderPass::ModelRenderPass(ModelTexUnit const& tex_unit, Model* m)
 
 bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model *m, OpenGL::M2RenderState& model_render_state)
 {
-  if (!m->showGeosets[submesh] || !pixel_shader)
+  if (invalid_texture_binding || !m->showGeosets[submesh] || !pixel_shader)
   {
     return false;
   }
@@ -921,10 +921,12 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
 
   if (texture_count > 1)
   {
-    bindTexture(1, m, model_render_state, m2_shader);
+    if (!bindTexture(1, m, model_render_state, m2_shader))
+      return false;
   }
 
-  bindTexture(0, m, model_render_state, m2_shader);
+  if (!bindTexture(0, m, model_render_state, m2_shader))
+    return false;
 
   GLint tu1 = static_cast<GLint>(tu_lookups[0]), tu2 = static_cast<GLint>(tu_lookups[1]);
 
@@ -983,13 +985,37 @@ void ModelRenderPass::afterDraw()
   gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
-void ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState& model_render_state, OpenGL::Scoped::use_program& m2_shader)
+bool ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState& model_render_state, OpenGL::Scoped::use_program& m2_shader)
 {
+  auto fail = [&](char const* reason)
+  {
+    if (!invalid_texture_binding)
+    {
+      LogError << "model: disabling render pass with invalid texture binding ("
+               << reason << ") " << m->file_key().stringRepr() << std::endl;
+    }
+    invalid_texture_binding = true;
+    return false;
+  };
 
-  uint16_t tex = m->_texture_lookup[textures[index]];
+  if (invalid_texture_binding)
+    return false;
+  if (index >= 2)
+    return fail("texture slot out of range");
+
+  std::size_t const lookup_index = textures[index];
+  if (lookup_index >= m->_texture_lookup.size())
+    return fail("texture lookup out of range");
+
+  uint16_t const tex = m->_texture_lookup[lookup_index];
+  if (tex >= m->_specialTextures.size())
+    return fail("texture index out of range");
 
   if (m->_specialTextures[tex] == -1)
   {
+    if (tex >= m->_textures.size())
+      return fail("texture reference out of range");
+
     auto& texture = m->_textures[tex];
     texture->upload();
     GLuint tex_array = texture->texture_array();
@@ -1017,16 +1043,19 @@ void ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState&
     m2_shader.uniform(index ? "tex2_index" : "tex1_index", tex_index);
     model_render_state.tex_indices[index] = tex_index;
 
+    return true;
   }
   else
   {
-    if (m->_specialTextures[tex] >= m->_replaceTextures.size())
-	{
-	  LogError << "model: special texture index out of range " << m->file_key().stringRepr() << std::endl;
-	  return;
-	}
+    int const special_texture = m->_specialTextures[tex];
+    if (special_texture < 0)
+      return fail("special texture index is invalid");
 
-    auto& texture = m->_replaceTextures.at (m->_specialTextures[tex]);
+    auto const replacement = m->_replaceTextures.find(static_cast<std::size_t>(special_texture));
+    if (replacement == m->_replaceTextures.end())
+      return fail("special texture is unavailable");
+
+    auto& texture = replacement->second;
     texture->upload();
     GLuint tex_array = texture->texture_array();
     int tex_index = texture->array_index();
@@ -1053,6 +1082,7 @@ void ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState&
     m2_shader.uniform(index ? "tex2_index" : "tex1_index", tex_index);
     model_render_state.tex_indices[index] = tex_index;
 
+    return true;
   }
 }
 

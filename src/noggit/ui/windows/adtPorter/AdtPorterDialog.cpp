@@ -67,6 +67,14 @@ namespace Noggit::Ui::Windows
       update();
     }
 
+    void setAdtSquaresVisible(bool visible)
+    {
+      if (_adt_squares_visible == visible)
+        return;
+      _adt_squares_visible = visible;
+      update();
+    }
+
     std::set<QPoint, bool(*)(QPoint const&, QPoint const&)> const& selection() const
     {
       return _selection;
@@ -111,7 +119,8 @@ namespace Noggit::Ui::Windows
           if (!_occupancy[z * 64 + x])
           {
             QRectF const tile(x * cell, z * cell, cell, cell);
-            painter.fillRect(tile.adjusted(.5, .5, -.5, -.5), QColor(54, 56, 62, 235));
+            painter.fillRect(_adt_squares_visible ? tile.adjusted(.5, .5, -.5, -.5) : tile,
+                             QColor(54, 56, 62, 235));
           }
 
       if (!_source && !_overlay_image.isNull() && !_overlay_source_tiles.empty()
@@ -141,14 +150,14 @@ namespace Noggit::Ui::Windows
         {
           QRectF const tile(x * cell, z * cell, cell, cell);
           QPoint const point(x, z);
-          if (_footprint.contains(point))
+          if (_adt_squares_visible && _footprint.contains(point))
           {
             painter.setBrush(Qt::NoBrush);
             painter.setPen(QPen(_occupancy[z * 64 + x] ? QColor(245, 139, 45)
                                                        : QColor(55, 180, 245), 1.5));
             painter.drawRect(tile.adjusted(.5, .5, -.5, -.5));
           }
-          if (_source && _selection.contains(point))
+          if (_adt_squares_visible && _source && _selection.contains(point))
           {
             painter.fillRect(tile.adjusted(1, 1, -1, -1), QColor(45, 170, 235, 75));
             painter.setPen(QPen(QColor(125, 215, 255), 1));
@@ -163,11 +172,14 @@ namespace Noggit::Ui::Windows
           }
         }
       }
-      painter.setPen(QColor(75, 78, 85));
-      for (int i = 0; i <= 64; i += 4)
+      if (_adt_squares_visible)
       {
-        painter.drawLine(QPointF(i * cell, 0), QPointF(i * cell, height()));
-        painter.drawLine(QPointF(0, i * cell), QPointF(width(), i * cell));
+        painter.setPen(QColor(75, 78, 85));
+        for (int i = 0; i <= 64; i += 4)
+        {
+          painter.drawLine(QPointF(i * cell, 0), QPointF(i * cell, height()));
+          painter.drawLine(QPointF(0, i * cell), QPointF(width(), i * cell));
+        }
       }
     }
 
@@ -268,6 +280,7 @@ namespace Noggit::Ui::Windows
     bool _painting = false;
     bool _paint_add = true;
     bool _placing = false;
+    bool _adt_squares_visible = true;
     QPoint _last_painted{-1, -1};
   };
 }
@@ -507,6 +520,10 @@ AdtPorterDialog::AdtPorterDialog(std::shared_ptr<Project::NoggitProject> project
   _same_map = new QCheckBox("Use the same map as destination", this);
   _same_map->setToolTip("Move the painted ADTs within the source map and clear their original tile flags.");
   root->addWidget(_same_map);
+  _hide_adt_squares = new QCheckBox("Hide ADT squares", this);
+  _hide_adt_squares->setToolTip(
+      "Hide the ADT grid, selection, and destination footprint overlays while keeping the landmass preview visible.");
+  root->addWidget(_hide_adt_squares);
   auto* transform_controls = new QFormLayout();
   _preview_opacity = new QSlider(Qt::Horizontal, this);
   _preview_opacity->setRange(10, 100);
@@ -566,6 +583,11 @@ AdtPorterDialog::AdtPorterDialog(std::shared_ptr<Project::NoggitProject> project
         reloadDestinationGrid();
     }
     updateSummary();
+  });
+  connect(_hide_adt_squares, &QCheckBox::toggled, this, [this](bool hidden)
+  {
+    _source_grid->setAdtSquaresVisible(!hidden);
+    _destination_grid->setAdtSquaresVisible(!hidden);
   });
   connect(_preview_opacity, &QSlider::valueChanged, this,
           [this](int) { updateSummary(); });

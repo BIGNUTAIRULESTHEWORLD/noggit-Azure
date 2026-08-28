@@ -50,6 +50,7 @@ namespace Noggit::Rendering
 
     void setChunkDetaildoodadsExclusionData(MapChunk* chunk);
     void setChunkGroundEffectActiveData(MapChunk* chunk);
+    void setChunkGroundEffectColorFromData(MapChunk* chunk);
     void setActiveRenderGEffectTexture(std::string active_texture);
 
     [[nodiscard]]

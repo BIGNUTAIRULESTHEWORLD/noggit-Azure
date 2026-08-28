@@ -14,6 +14,25 @@ namespace Noggit
 
   }
 
+  std::uint32_t world_model_instances_storage::new_unique_uid()
+  {
+    for (;;)
+    {
+      std::uint32_t const candidate = _world->mapIndex.newGUID();
+      std::lock_guard<std::mutex> const lock(_mutex);
+      if (!unsafe_uid_is_used(candidate))
+        return candidate;
+    }
+  }
+
+  std::uint32_t world_model_instances_storage::new_preview_uid()
+  {
+    std::lock_guard<std::mutex> const lock(_mutex);
+    while (_next_preview_uid != 0 && unsafe_uid_is_used(_next_preview_uid))
+      --_next_preview_uid;
+    return _next_preview_uid--;
+  }
+
   std::uint32_t world_model_instances_storage::add_model_instance(ModelInstance instance, bool from_reloading, bool action)
   {
     std::uint32_t uid = instance.uid;
@@ -176,24 +195,48 @@ namespace Noggit
     if (auto instance = get_instance(uid, false))
     {
       _world->updateTilesEntry(instance.value(), model_update::remove);
-      auto obj = std::get<selected_object_type>(instance.value());
+    }
 
+    unsafe_delete_instance_without_world_update(uid, action);
+  }
+
+  void world_model_instances_storage::delete_instance_without_world_update(std::uint32_t uid, bool action)
+  {
+    std::unique_lock<std::mutex> const lock(_mutex);
+    unsafe_delete_instance_without_world_update(uid, action);
+  }
+
+  void world_model_instances_storage::unsafe_delete_instance_without_world_update(
+      std::uint32_t uid, bool action)
+  {
+    if (auto instance = get_instance(uid, false))
+    {
+      auto* object = std::get<selected_object_type>(*instance);
       for (auto& selection_group : _world->_selection_groups)
-      {
-          if (selection_group.contains_object(obj))
-          {
-              selection_group.remove_member(obj->uid);
-          }
-      }
+        if (selection_group.contains_object(object))
+          selection_group.remove_member(object->uid);
+
       if (action && NOGGIT_CUR_ACTION)
-      {
-        NOGGIT_CUR_ACTION->registerObjectRemoved(obj);
-      }
+        NOGGIT_CUR_ACTION->registerObjectRemoved(object);
     }
 
     _instance_count_per_uid.erase(uid);
     _m2s.erase(uid);
     _wmos.erase(uid);
+  }
+
+  void world_model_instances_storage::delete_preview_instance(std::uint32_t uid)
+  {
+    std::unique_lock<std::mutex> const lock(_mutex);
+    auto instance = get_instance(uid, false);
+    if (!instance)
+      return;
+
+    SceneObject* object = std::get<selected_object_type>(*instance);
+    if (!object->chunk_mover_preview)
+      return;
+
+    unsafe_delete_instance_without_world_update(uid, false);
   }
 
   void world_model_instances_storage::unload_instance_and_remove_from_selection_if_necessary(std::uint32_t uid)

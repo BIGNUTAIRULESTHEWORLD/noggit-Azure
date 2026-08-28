@@ -5,6 +5,7 @@
 #include <math/trig.hpp>
 #include <noggit/MapHeaders.h>
 #include <array>
+#include <cstdint>
 #include <glm/vec2.hpp>
 
 class MapChunk;
@@ -31,6 +32,21 @@ enum LiquidVertexFormats
     LVF_DEPTH = 2,
     LVF_HEIGHT_DEPTH_UV = 3
 };
+
+inline constexpr bool liquid_format_has_height(int format)
+{
+  return format == LVF_HEIGHT_DEPTH || format == LVF_HEIGHT_UV || format == LVF_HEIGHT_DEPTH_UV;
+}
+
+inline constexpr bool liquid_format_has_depth(int format)
+{
+  return format == LVF_HEIGHT_DEPTH || format == LVF_DEPTH || format == LVF_HEIGHT_DEPTH_UV;
+}
+
+inline constexpr bool liquid_format_has_uv(int format)
+{
+  return format == LVF_HEIGHT_UV || format == LVF_HEIGHT_DEPTH_UV;
+}
 
 namespace BlizzardArchive
 {
@@ -73,12 +89,17 @@ public:
   void update_underground_vertices_depth(MapChunk* chunk);
 
   std::array<liquid_vertex, 9 * 9>& getVertices();
+  std::array<liquid_vertex, 9 * 9> const& getVertices() const;
   // std::array<float, 9 * 9>& getDepth() { return _depth; };
   // std::array<glm::vec2, 9 * 9>& getTexCoords() { return _tex_coords; };
 
   float min() const;
   float max() const;
   int liquidID() const;
+  liquid_basic_types liquidType() const;
+  int vertexFormat() const;
+  std::uint64_t surfaceToken() const;
+  void setSurfaceToken(std::uint64_t token);
   int mclq_liquid_type() const;
   // order of the flag corresponding to the liquid type in the mcnk header
   int mclq_flag_ordering() const;
@@ -87,9 +108,10 @@ public:
   bool subchunk_at_max_depth(int x, int z) const;
 
   bool hasSubchunk(int x, int z, int size = 1) const;
+  bool usesVertex(int x, int z) const;
   void setSubchunk(int x, int z, bool water);
 
-  std::uint64_t getSubchunks();
+  std::uint64_t getSubchunks() const;
 
   bool empty() const;
   bool full() const;
@@ -109,9 +131,16 @@ public:
 
   void copy_subchunk_height(int x, int z, liquid_layer const& from);
 
+  void paintDepth(glm::vec3 const& pos, float radius, float depth);
+  void projectUV(glm::vec3 const& pos, float radius, float scale, math::radians rotation);
+
   ChunkWater* getChunk();
 
   bool has_fatigue() const;
+  void disableFatigueOptimization();
+
+  // Recalculate cached min/max and fatigue after bulk tools edit vertices.
+  void refresh();
 
 private:
   void create_vertices(float height);
@@ -129,6 +158,7 @@ private:
   int _liquid_type;
   int _liquid_vertex_format;
   int _mclq_liquid_type;
+  std::uint64_t _surface_token = 0;
   float _minimum;
   float _maximum;
 

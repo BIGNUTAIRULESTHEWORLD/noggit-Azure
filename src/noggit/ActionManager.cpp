@@ -161,6 +161,7 @@ void ActionManager::undo()
 
   _undo_index++;
   emit currentActionChanged(_undo_index);
+  emit historyNavigated();
 }
 
 void ActionManager::redo()
@@ -180,6 +181,21 @@ void ActionManager::redo()
 
   _undo_index--;
   emit currentActionChanged(_undo_index);
+  emit historyNavigated();
+}
+
+void ActionManager::remapObjectUID(unsigned old_uid, unsigned new_uid,
+                                   Action const* source_action)
+{
+  if (old_uid == new_uid)
+    return;
+
+  // Recreated objects receive a fresh UID. Every other action in the history
+  // that refers to the same logical object must follow that UID, otherwise an
+  // older overlapping paste can no longer remove it when subsequently undone.
+  for (Action* action : _action_stack)
+    if (action != source_action)
+      action->remapObjectUID(old_uid, new_uid);
 }
 
 ActionManager::~ActionManager()

@@ -4,10 +4,13 @@
 
 #include <noggit/Alphamap.hpp>
 #include <noggit/ContextObject.hpp>
+#include <noggit/RoadStyle.hpp>
 #include <noggit/TextureManager.h>
 
 #include <cstdint>
 #include <array>
+#include <optional>
+#include <vector>
 
 class Brush;
 class MapTile;
@@ -39,6 +42,21 @@ struct layer_info
     uint32_t  effectID = 0xFFFFFFFF; // default value, see https://wowdev.wiki/ADT/v18#MCLY_sub-chunk
 };
 
+struct chunk_mover_texture_preview
+{
+  std::vector<scoped_blp_texture_reference> textures;
+  std::array<std::array<float, 64 * 64>, 3> alphamaps{};
+  std::array<std::uint32_t, 4> flags{};
+};
+
+struct sampled_painted_texture
+{
+  scoped_blp_texture_reference texture;
+  float brush_radius;
+  float brush_hardness;
+  float confidence;
+};
+
 class TextureSet
 {
 public:
@@ -66,6 +84,16 @@ public:
                       , bool entire_chunk = false
                       );
   bool canPaintTexture(scoped_blp_texture_reference const& texture);
+  [[nodiscard]] std::optional<sampled_painted_texture> samplePaintedTexture(float world_x, float world_z) const;
+  [[nodiscard]] std::vector<sampled_texture_layer> sampleTextureLayersAt(float world_x, float world_z) const;
+  [[nodiscard]] bool canApplyRoadStyle(sampled_road_style const& style,
+                                       bool replace_conflicting_textures = false) const;
+  road_paint_result paintRoadSegment(glm::vec3 const& from, glm::vec3 const& to,
+                                     sampled_road_style const& style, float width_scale,
+                                     float opacity_scale, bool replace_conflicting_textures);
+  road_paint_result paintRoadPath(std::vector<glm::vec3> const& points,
+                                  sampled_road_style const& style, float width_scale,
+                                  float opacity_scale, bool replace_conflicting_textures);
 
   const std::string& filename(size_t id);
 
@@ -88,6 +116,10 @@ public:
   int texture_id(scoped_blp_texture_reference const& texture);
 
   void uploadAlphamapData();
+  void setChunkMoverTexturePreview(std::optional<chunk_mover_texture_preview> preview);
+  [[nodiscard]] std::size_t renderTextureCount() const;
+  std::vector<scoped_blp_texture_reference>& renderTextures();
+  [[nodiscard]] unsigned int renderTextureFlag(std::size_t id) const;
 
   bool apply_alpha_changes();
 
@@ -129,6 +161,9 @@ public:
 
 private:
 
+  [[nodiscard]] std::vector<std::size_t> replaceable_road_layers(
+    sampled_road_style const& style) const;
+
   uint8_t sum_alpha(size_t offset) const;
 
   void alphas_to_big_alpha(uint8_t* dest);
@@ -166,4 +201,5 @@ private:
   static std::array<std::uint8_t, 256 * 256> alpha_convertion_lookup;
 
   Noggit::NoggitRenderContext _context;
+  std::optional<chunk_mover_texture_preview> _chunk_mover_texture_preview;
 };

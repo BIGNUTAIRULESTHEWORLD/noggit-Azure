@@ -514,6 +514,21 @@ bool BrushStackItem::isMaskEnabled()
   }
 }
 
+BrushShape BrushStackItem::brushShape() const
+{
+  switch (_tool_widget.index())
+  {
+    case eRaiseLower:
+      return std::get<Noggit::Ui::TerrainTool*>(_tool_widget)->brushShape();
+    case eTexturing:
+      return std::get<Noggit::Ui::texturing_tool*>(_tool_widget)->brushShape();
+    case eFlattenBlur:
+    case eShader:
+    default:
+      return BrushShape::CIRCLE;
+  }
+}
+
 void BrushStackItem::updateMask()
 {
   switch(_tool_widget.index())

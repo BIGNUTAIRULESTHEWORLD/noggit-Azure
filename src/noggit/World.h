@@ -4,6 +4,7 @@
 
 #include <math/trig.hpp>
 #include <noggit/Selection.h>
+#include <noggit/RoadStyle.hpp>
 #include <noggit/map_horizon.h>
 #include <noggit/map_index.hpp>
 #include <noggit/world_tile_update_queue.hpp>
@@ -16,11 +17,17 @@
 #include <array>
 #include <noggit/rendering/WorldRender.hpp>
 #include <noggit/Occluders.h>
+#include <noggit/tool_enums.hpp>
 
 namespace Noggit
 {
   struct object_paste_params;
   struct VertexSelectionCache;
+}
+
+namespace math
+{
+  struct ray;
 }
 
 namespace BlizzardDatabaseLib::Structures
@@ -32,6 +39,7 @@ struct TileIndex;
 struct flatten_mode;
 
 class Brush;
+enum class LiquidAttribute;
 class MapTile;
 class QPixmap;
 class QProgressDialog;
@@ -150,7 +158,7 @@ public:
   };
 
   void snap_selected_models_to_the_ground();
-  void scale_selected_models(float v, object_scaling_type type);
+  void scale_selected_models(float v, object_scaling_type type, bool scale_positions_around_pivot = false);
   void move_selected_models(float dx, float dy, float dz);
   void move_model(selection_type entry, float dx, float dy, float dz);
   void move_selected_models(glm::vec3 const& delta);
@@ -214,8 +222,11 @@ public:
   template<typename Fun>
     void for_tile_at_force(const TileIndex& pos, Fun&&);
 
-  void changeObjectsWithTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius, bool iter_wmos_ = true, bool iter_m2s = true);
-  void changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius);
+  void changeObjectsWithTerrain(glm::vec3 const& pos, float change, float radius, int BrushType,
+                                float inner_radius, bool iter_wmos_ = true, bool iter_m2s = true,
+                                BrushShape shape = BrushShape::CIRCLE);
+  void changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType,
+                     float inner_radius, BrushShape shape = BrushShape::CIRCLE);
   std::vector<selected_object_type> getObjectsInRange(glm::vec3 const& pos, float radius, bool ignore_height = true, bool iter_wmos_ = true, bool iter_m2s = true);
   void changeShader(glm::vec3 const& pos, glm::vec4 const& color, float change, float radius, bool editMode);
   void stampShader(glm::vec3 const& pos, glm::vec4 const& color, float change, float radius, bool editMode, QImage* img, bool paint, bool use_image_colors);
@@ -226,11 +237,37 @@ public:
   bool paintTexture(glm::vec3 const& pos, Brush *brush, float strength, float pressure, scoped_blp_texture_reference texture);
   bool stampTexture(glm::vec3 const& pos, Brush *brush, float strength, float pressure, scoped_blp_texture_reference texture, QImage* img, bool paint);
   bool sprayTexture(glm::vec3 const& pos, Brush *brush, float strength, float pressure, float spraySize, float sprayPressure, scoped_blp_texture_reference texture);
+  road_paint_result paintRoadSegment(glm::vec3 const& from, glm::vec3 const& to,
+                                     sampled_road_style const& style, float width_scale = 1.0f,
+                                     float opacity_scale = 1.0f,
+                                     bool replace_conflicting_textures = false);
+  road_paint_result paintRoadPath(std::vector<glm::vec3> const& points,
+                                  sampled_road_style const& style, float width_scale = 1.0f,
+                                  float opacity_scale = 1.0f,
+                                  bool replace_conflicting_textures = false);
+  bool canPaintRoadSegment(glm::vec3 const& from, glm::vec3 const& to,
+                           sampled_road_style const& style, float width_scale = 1.0f,
+                           bool replace_conflicting_textures = false);
+  bool canPaintRoadPath(std::vector<glm::vec3> const& points,
+                        sampled_road_style const& style, float width_scale = 1.0f,
+                        bool replace_conflicting_textures = false);
   bool replaceTexture(glm::vec3 const& pos, float radius, scoped_blp_texture_reference const& old_texture, scoped_blp_texture_reference new_texture, bool entire_chunk = false, bool entire_tile = false);
 
   void eraseTextures(glm::vec3 const& pos);
   void overwriteTextureAtCurrentChunk(glm::vec3 const& pos, scoped_blp_texture_reference const& oldTexture, scoped_blp_texture_reference newTexture);
   void paintGroundEffectExclusion(glm::vec3 const& pos, float radius, bool exclusion);
+  void paintGroundEffect(glm::vec3 const& pos, float radius, std::string const& texture, unsigned int effect_id);
+  void applyGroundEffectToTileAt(glm::vec3 const& pos, std::string const& texture, unsigned int effect_id,
+                                 bool override_existing, std::optional<unsigned int> only_effect_id = std::nullopt);
+  // area_id is an exact area match, or a zone id matched against each chunk's parent zone
+  void applyGroundEffectToArea(int area_id, bool whole_zone, std::string const& texture, unsigned int effect_id,
+                               bool override_existing, std::optional<unsigned int> only_effect_id = std::nullopt);
+  // writes every affected ADT straight to disk, not undoable. area_filter >= 0
+  // restricts to chunks of that area (or zone when whole_zone, like
+  // applyGroundEffectToArea)
+  void applyGroundEffectGlobal(std::string const& texture, unsigned int effect_id, bool override_existing,
+                               int area_filter = -1, bool whole_zone = false, QProgressDialog* progress = nullptr,
+                               std::optional<unsigned int> only_effect_id = std::nullopt);
   void setBaseTexture(glm::vec3 const& pos);
   void clear_shadows(glm::vec3 const& pos);
   void bake_shadows(glm::vec3 const& pos, int mode, const glm::mat4x4& view);
@@ -291,6 +328,9 @@ public:
       , bool ignore_params
       , bool action
   );
+  ModelInstance* addChunkMoverPreviewM2(BlizzardArchive::Listfile::FileKey const& file_key,
+                                       glm::vec3 newPos, float scale,
+                                       math::degrees::vec3 rotation);
 
   WMOInstance* addWMOAndGetInstance ( BlizzardArchive::Listfile::FileKey const& file_key
       , glm::vec3 newPos
@@ -298,9 +338,16 @@ public:
       , float scale
       , bool action
   );
+  WMOInstance* addChunkMoverPreviewWMO(BlizzardArchive::Listfile::FileKey const& file_key,
+                                       glm::vec3 newPos, math::degrees::vec3 rotation,
+                                       float scale);
+  bool updateChunkMoverPreviewInstance(std::uint32_t uid, glm::vec3 new_pos,
+                                       math::degrees::vec3 rotation, float scale);
+  void deleteChunkMoverPreviewInstance(std::uint32_t uid);
 
   auto stamp(glm::vec3 const& pos, float dt, QImage const* img, float radiusOuter
-  , float radiusInner, int BrushType, bool sculpt) -> void;
+  , float radiusInner, int BrushType, bool sculpt,
+             BrushShape shape = BrushShape::CIRCLE) -> void;
 
   // add a m2 instance to the world (needs to be positioned already), return the uid
   std::uint32_t add_model_instance(ModelInstance model_instance, bool from_reloading, bool action);
@@ -321,6 +368,7 @@ public:
   void deleteModelInstance(int uid, bool action);
   void deleteWMOInstance(int uid, bool action);
   void deleteInstance(int uid, bool action);
+  void deleteInstances(std::vector<std::uint32_t> const& uids, bool action);
 
   bool uid_duplicates_found() const;
   void delete_duplicate_model_and_wmo_instances();
@@ -335,6 +383,8 @@ public:
   void clearAllModelsOnADT(TileIndex const& tile, bool action);
 
   // liquids
+  std::optional<glm::vec3> intersectLiquid(math::ray const& ray, int target_layer,
+                                           std::uint64_t surface_token = 0);
   void paintLiquid( glm::vec3 const& pos
                   , float radius
                   , int liquid_id
@@ -346,7 +396,27 @@ public:
                   , bool override_height
                   , bool override_liquid_id
                   , float opacity_factor
+                  , int target_layer = -1
+                  , std::uint64_t surface_token = 0
                   );
+  void paintLiquidDepth(glm::vec3 const& pos, float radius, float depth, int target_layer,
+                        std::uint64_t surface_token = 0);
+  void projectLiquidUV(glm::vec3 const& pos, float radius, float scale, math::radians rotation,
+                       int target_layer, std::uint64_t surface_token = 0);
+  void paintLiquidAttribute(glm::vec3 const& pos, float radius, LiquidAttribute attribute,
+                            bool value, int target_layer,
+                            std::uint64_t surface_token = 0);
+  void clearLiquidAttributes(const TileIndex& pos, std::optional<LiquidAttribute> attribute);
+  void clearLiquidFishingFlagsOutsideLiquid(const TileIndex& pos);
+  void regenerateLiquidAttributes(const TileIndex& pos);
+  void raiseLowerLiquid(glm::vec3 const& pos, float radius, float change, float inner_radius,
+                        int falloff, int target_layer, std::uint64_t surface_token = 0);
+  void flattenLiquid(glm::vec3 const& pos, float radius, float strength, float inner_radius,
+                     int falloff, glm::vec3 const& origin, math::radians angle,
+                     math::radians orientation, int target_layer,
+                     std::uint64_t surface_token = 0);
+  void smoothLiquid(glm::vec3 const& pos, float radius, float strength, float inner_radius,
+                    int falloff, int target_layer, std::uint64_t surface_token = 0);
   void CropWaterADT(const TileIndex& pos);
   void setWaterType(const TileIndex& pos, int type, int layer);
   int getWaterType(const TileIndex& tile, int layer) const;

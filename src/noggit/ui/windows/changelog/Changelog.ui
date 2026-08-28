@@ -29,7 +29,7 @@
    </size>
   </property>
   <property name="windowTitle">
-   <string>ChangeLog Noggit Red</string>
+   <string>Changelog - Noggit Azure</string>
   </property>
   <layout class="QHBoxLayout" name="horizontalLayout">
    <item>

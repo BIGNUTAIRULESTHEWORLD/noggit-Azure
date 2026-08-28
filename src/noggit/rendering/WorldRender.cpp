@@ -7,10 +7,12 @@
 #include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/DBC.h>
+#include <noggit/DetailDoodads.hpp>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/TileIndex.hpp>
 #include <noggit/MinimapRenderSettings.hpp>
+#include <noggit/MissingObjectPlaceholder.hpp>
 #include <noggit/Misc.h>
 #include <noggit/Model.h>
 #include <noggit/ModelInstance.h>
@@ -31,6 +33,7 @@
 #include <QSettings>
 
 #include <algorithm>
+#include <chrono>
 
 using namespace Noggit::Rendering;
 
@@ -77,6 +80,151 @@ WorldRender::WorldRender(World* world)
 , directional_lightning(world->_settings->value("directional_lightning", true).toBool())
 , local_lightning(world->_settings->value("local_lightning", true).toBool())
 {
+}
+
+void WorldRender::updatePaintedStampSelectionOverlay(
+    std::vector<glm::ivec2> const& cells, bool selected)
+{
+  auto floor_divide = [](int value, int divisor)
+  {
+    int quotient = value / divisor;
+    if (value % divisor < 0)
+      --quotient;
+    return quotient;
+  };
+
+  for (glm::ivec2 const& cell : cells)
+  {
+    int const tile_x = floor_divide(cell.x, painted_stamp_selection_resolution);
+    int const tile_z = floor_divide(cell.y, painted_stamp_selection_resolution);
+    if (tile_x < 0 || tile_x >= 64 || tile_z < 0 || tile_z >= 64)
+      continue;
+
+    int const local_x = cell.x - tile_x * painted_stamp_selection_resolution;
+    int const local_z = cell.y - tile_z * painted_stamp_selection_resolution;
+    TileIndex const tile_index(static_cast<std::size_t>(tile_x),
+                               static_cast<std::size_t>(tile_z));
+    PaintedStampSelectionPage& page = _painted_stamp_selection_pages[tile_index];
+    if (page.pixels.empty())
+    {
+      page.pixels.resize(static_cast<std::size_t>(painted_stamp_selection_resolution)
+                         * painted_stamp_selection_resolution, 0);
+    }
+
+    std::uint8_t& pixel = page.pixels[static_cast<std::size_t>(local_z)
+        * painted_stamp_selection_resolution + local_x];
+    std::uint8_t const new_value = selected ? 255 : 0;
+    if (pixel == new_value)
+      continue;
+    pixel = new_value;
+    if (selected)
+      ++page.selected_count;
+    else if (page.selected_count)
+      --page.selected_count;
+    for (auto& dirty_region : page.dirty_regions)
+      dirty_region.include(local_x, local_z);
+    page.needs_upload = true;
+  }
+}
+
+void WorldRender::clearPaintedStampSelectionOverlay()
+{
+  for (auto& [tile_index, page] : _painted_stamp_selection_pages)
+  {
+    if (!page.selected_count)
+      continue;
+    std::fill(page.pixels.begin(), page.pixels.end(), 0);
+    page.selected_count = 0;
+    for (auto& dirty_region : page.dirty_regions)
+      dirty_region.includeAll();
+    page.needs_upload = true;
+  }
+}
+
+void WorldRender::preparePaintedStampSelectionOverlay()
+{
+  bool const upload_pending = std::any_of(
+      _painted_stamp_selection_pages.begin(), _painted_stamp_selection_pages.end(),
+      [](auto const& entry)
+      {
+        auto const& page = entry.second;
+        return page.selected_count && page.needs_upload;
+      });
+  if (!upload_pending)
+    return;
+
+  GLint previous_active_texture = GL_TEXTURE0;
+  gl.getIntegerv(GL_ACTIVE_TEXTURE, &previous_active_texture);
+  gl.activeTexture(GL_TEXTURE0 + 4);
+
+  GLint previous_texture = 0;
+  gl.getIntegerv(GL_TEXTURE_BINDING_2D, &previous_texture);
+
+  for (auto& [tile_index, page] : _painted_stamp_selection_pages)
+  {
+    if (!page.selected_count || !page.needs_upload)
+      continue;
+
+    int const upload_index = page.displayed_texture < 0
+        ? 0 : 1 - page.displayed_texture;
+    GLuint& texture = page.textures[upload_index];
+    if (!texture)
+      gl.genTextures(1, &texture);
+    gl.bindTexture(GL_TEXTURE_2D, texture);
+
+    auto& dirty_region = page.dirty_regions[upload_index];
+    if (!page.uploaded[upload_index])
+    {
+      gl.texImage2D(GL_TEXTURE_2D, 0, GL_R8, painted_stamp_selection_resolution,
+                    painted_stamp_selection_resolution, 0, GL_RED, GL_UNSIGNED_BYTE,
+                    page.pixels.data());
+      gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      page.uploaded[upload_index] = true;
+    }
+    else if (dirty_region.pending())
+    {
+      int const width = dirty_region.max_x - dirty_region.min_x + 1;
+      int const height = dirty_region.max_z - dirty_region.min_z + 1;
+      int const padded_width = (width + 3) & ~3;
+      std::vector<std::uint8_t> patch(static_cast<std::size_t>(padded_width) * height, 0);
+      for (int row = 0; row < height; ++row)
+      {
+        auto const source = page.pixels.begin()
+            + static_cast<std::size_t>(dirty_region.min_z + row)
+                * painted_stamp_selection_resolution + dirty_region.min_x;
+        std::copy_n(source, width,
+                    patch.begin() + static_cast<std::size_t>(row) * padded_width);
+      }
+      gl.texSubImage2D(GL_TEXTURE_2D, 0, dirty_region.min_x, dirty_region.min_z,
+                       width, height, GL_RED, GL_UNSIGNED_BYTE, patch.data());
+    }
+
+    dirty_region.clear();
+    page.displayed_texture = upload_index;
+    page.needs_upload = false;
+  }
+
+  gl.bindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previous_texture));
+  gl.activeTexture(static_cast<GLenum>(previous_active_texture));
+  OpenGL::texture::current_active_texture =
+      static_cast<std::size_t>(previous_active_texture - GL_TEXTURE0);
+}
+
+bool WorldRender::bindPaintedStampSelectionOverlay(TileIndex const& tile_index)
+{
+  auto found = _painted_stamp_selection_pages.find(tile_index);
+  if (found == _painted_stamp_selection_pages.end() || !found->second.selected_count
+      || found->second.displayed_texture < 0)
+    return false;
+
+  PaintedStampSelectionPage& page = found->second;
+  gl.activeTexture(GL_TEXTURE0 + 4);
+  OpenGL::texture::current_active_texture = 4;
+  gl.bindTexture(GL_TEXTURE_2D, page.textures[page.displayed_texture]);
+  return true;
 }
 
 void WorldRender::draw (glm::mat4x4 const& model_view
@@ -309,6 +457,16 @@ void WorldRender::draw (glm::mat4x4 const& model_view
   {
     ZoneScopedN("World::draw() : Draw terrain");
 
+    GLint previous_active_texture = GL_TEXTURE0;
+    GLint previous_stamp_texture = 0;
+    if (render_settings.show_painted_stamp_selection)
+    {
+      gl.getIntegerv(GL_ACTIVE_TEXTURE, &previous_active_texture);
+      gl.activeTexture(GL_TEXTURE0 + 4);
+      gl.getIntegerv(GL_TEXTURE_BINDING_2D, &previous_stamp_texture);
+      gl.activeTexture(static_cast<GLenum>(previous_active_texture));
+    }
+
     gl.disable(GL_BLEND);
 
     {
@@ -317,8 +475,12 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       mcnk_shader.uniform("enable_mists_heightmapping", modern_features);
       mcnk_shader.uniform("camera", glm::vec3(camera_pos.x, camera_pos.y, camera_pos.z));
       mcnk_shader.uniform("animtime", static_cast<int>(_world->animtime));
+      mcnk_shader.uniform("draw_stamp_protection", render_settings.show_stamp_protection);
+      mcnk_shader.uniform("stamp_protection_center", render_settings.stamp_protection_center);
+      mcnk_shader.uniform("stamp_protection_radius", render_settings.stamp_protection_radius);
 
-      if (render_settings.cursor_type != CursorType::NONE)
+      if (render_settings.cursor_type != CursorType::NONE
+          && !render_settings.project_cursor_on_water)
       {
         mcnk_shader.uniform("draw_cursor_circle", static_cast<int>(render_settings.cursor_type));
         mcnk_shader.uniform("cursor_position", glm::vec3(cursor_pos.x, cursor_pos.y, cursor_pos.z));
@@ -362,6 +524,15 @@ void WorldRender::draw (glm::mat4x4 const& model_view
         if (num_chunks_uploaded_alphamap > _frame_max_chunk_updates)
           skip_updates = true;
 
+        bool const show_painted_selection = render_settings.show_painted_stamp_selection
+            && bindPaintedStampSelectionOverlay(tile->index);
+        mcnk_shader.uniform("draw_painted_stamp_selection", show_painted_selection);
+        if (show_painted_selection)
+        {
+          mcnk_shader.uniform("painted_stamp_selection_origin",
+                              glm::vec2(tile->xbase, tile->zbase));
+        }
+
         tile->renderer()->draw(
             mcnk_shader
             , camera_pos
@@ -384,6 +555,15 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
       gl.bindVertexArray(0);
       gl.bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    }
+
+    if (render_settings.show_painted_stamp_selection)
+    {
+      gl.activeTexture(GL_TEXTURE0 + 4);
+      gl.bindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previous_stamp_texture));
+      gl.activeTexture(static_cast<GLenum>(previous_active_texture));
+      OpenGL::texture::current_active_texture =
+          static_cast<std::size_t>(previous_active_texture - GL_TEXTURE0);
     }
   }
 
@@ -427,6 +607,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
   tsl::robin_map<Model*, std::vector<glm::mat4x4>> models_to_draw;
   std::vector<WMOInstance*> wmos_to_draw;
+  std::vector<WMOInstance*> missing_wmos_to_draw;
   std::unordered_map<Model*, std::size_t> model_boxes_to_draw;
 
   // frame counter loop. pretty hacky but works
@@ -468,6 +649,70 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     {
       if (!pair.first->finishedLoading())
         continue;
+
+      if (pair.first->loading_failed())
+      {
+        // Missing-object substitutes are viewport diagnostics only. In
+        // particular, do not bake them into generated minimaps.
+        if (render_settings.minimap_render)
+          continue;
+
+        SceneObjectTypes const object_type = pair.second[0]->which();
+        bool const draw_placeholder = object_type == eMODEL
+            ? render_settings.draw_models
+            : render_settings.draw_wmo;
+
+        if (!draw_placeholder)
+          continue;
+
+        std::optional<scoped_model_reference>& placeholder = object_type == eMODEL
+            ? _missing_m2_placeholder
+            : _missing_wmo_placeholder;
+        char const* placeholder_path = object_type == eMODEL
+            ? Noggit::MissingObjectPlaceholder::m2_model_path
+            : Noggit::MissingObjectPlaceholder::wmo_model_path;
+        float const placeholder_scale = object_type == eMODEL
+            ? Noggit::MissingObjectPlaceholder::m2_display_scale
+            : Noggit::MissingObjectPlaceholder::wmo_display_scale;
+
+        if (!placeholder.has_value())
+          placeholder.emplace(placeholder_path, _world->_context);
+
+        Model* placeholder_model = placeholder->get();
+
+        for (SceneObject* instance : pair.second)
+        {
+          instance->_rendered_last_frame = false;
+
+          // Placements may be referenced by several tiles.
+          if (instance->frame == frame)
+          {
+            instance->_rendered_last_frame = true;
+            continue;
+          }
+
+          instance->frame = frame;
+
+          glm::vec3 const proxy_radius{placeholder_scale};
+          if (glm::distance(camera_pos, instance->pos) - placeholder_scale >= _cull_distance
+              || !frustum.intersects(instance->pos + proxy_radius, instance->pos - proxy_radius))
+          {
+            continue;
+          }
+
+          if (object_type == eWMO)
+            missing_wmos_to_draw.push_back(static_cast<WMOInstance*>(instance));
+
+          if (!placeholder_model->finishedLoading() || placeholder_model->loading_failed())
+            continue;
+
+          models_to_draw[placeholder_model].emplace_back(
+              Noggit::MissingObjectPlaceholder::transform(instance->pos, instance->dir, placeholder_scale));
+          instance->_rendered_last_frame = true;
+        }
+
+        continue;
+      }
 
       if (pair.second[0]->which() == eMODEL)
       {
@@ -636,6 +881,34 @@ void WorldRender::draw (glm::mat4x4 const& model_view
                         continue;
                     doodad.frame = frame;
 
+                    if (!doodad.model->finishedLoading())
+                      continue;
+
+                    if (doodad.model->loading_failed())
+                    {
+                      // WMO doodads are embedded M2 placements rather than entries
+                      // in the world's normal model-instance storage. They still
+                      // need the same error-cube diagnostic at their computed world
+                      // position.
+                      if (render_settings.minimap_render)
+                        continue;
+
+                      if (!_missing_m2_placeholder.has_value())
+                        _missing_m2_placeholder.emplace(
+                          Noggit::MissingObjectPlaceholder::m2_model_path, _world->_context);
+
+                      Model* placeholder_model = _missing_m2_placeholder->get();
+                      if (placeholder_model->finishedLoading() && !placeholder_model->loading_failed())
+                      {
+                        models_to_draw[placeholder_model].emplace_back(
+                          Noggit::MissingObjectPlaceholder::transform(
+                            doodad.world_pos,
+                            doodad.dir,
+                            Noggit::MissingObjectPlaceholder::m2_display_scale));
+                      }
+                      continue;
+                    }
+
                     // skip no geometry boxes for WMO doodads
                     if (doodad.model->use_fake_geometry())
                       continue;
@@ -658,6 +931,77 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       }
     }
   }
+
+  // ground effect detail doodads: client-matching placements per chunk, drawn
+  // like the client (merged buffers, terrain normal, MCCV/MCSH colour, fade)
+  if (_draw_detail_doodads && render_settings.draw_models && !render_settings.minimap_render)
+  {
+    ZoneScopedN("World::draw() : Detail doodads");
+
+    if (!_detail_doodads_program)
+    {
+      _detail_doodads_program.reset
+          ( new OpenGL::program
+                { { GL_VERTEX_SHADER,   OpenGL::shader::src_from_qrc("detail_doodad_vs") }
+                    , { GL_FRAGMENT_SHADER, OpenGL::shader::src_from_qrc("detail_doodad_fs") }
+                }
+          );
+      OpenGL::Scoped::use_program shader {*_detail_doodads_program.get()};
+      shader.bind_uniform_block("matrices", 0);
+      shader.bind_uniform_block("lighting", 1);
+      shader.uniform("tex", 0);
+    }
+
+    OpenGL::Scoped::use_program shader {*_detail_doodads_program.get()};
+    shader.uniform("fade_dist", _detail_doodad_distance);
+
+    // the client draws these without backface culling, depth-writing, alpha-keyed
+    OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
+    OpenGL::Scoped::bool_setter<GL_BLEND, GL_FALSE> const blend;
+    OpenGL::Scoped::depth_mask_setter<GL_TRUE> const depth_mask;
+
+    for (auto const& pair : _world->_loaded_tiles_buffer)
+    {
+      MapTile* tile = pair.second;
+
+      if (!tile)
+      {
+        break;
+      }
+
+      if (!tile->finishedLoading()
+        || tile->camDist() - static_cast<float>(TILE_RADIUS) / 2.f > _detail_doodad_distance)
+      {
+        continue;
+      }
+
+      for (int cx = 0; cx < 16; ++cx)
+      {
+        for (int cz = 0; cz < 16; ++cz)
+        {
+          MapChunk* chunk = tile->getChunk(cx, cz);
+
+          if (glm::distance(chunk->vcenter, camera_pos) > _detail_doodad_distance)
+          {
+            continue;
+          }
+
+          Noggit::ChunkDetailDoodads* cache = chunk->getDetailDoodads();
+
+          if (cache->chunk_stamp != chunk->detailDoodadStamp()
+            || cache->dbc_stamp != Noggit::DetailDoodads::dbcStamp()
+            || cache->density != _detail_doodad_density)
+          {
+            Noggit::DetailDoodads::generate(chunk, _detail_doodad_density, _world->_context, *cache,
+              _detail_doodad_preview.enabled ? &_detail_doodad_preview : nullptr);
+          }
+
+          _detail_doodads.drawChunk(shader, chunk, cache, frame);
+        }
+      }
+    }
+  }
+  _detail_doodads.endFrame(frame);
 
   // WMOs / map objects
   if (render_settings.draw_wmo || _world->mapIndex.hasAGlobalWMO())
@@ -906,7 +1250,8 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
   bool draw_doodads_wmo = render_settings.draw_wmo && render_settings.draw_wmo_doodads;
   // M2s / models
-  if (render_settings.draw_models || draw_doodads_wmo || (render_settings.minimap_render && minimap_render_settings->use_filters))
+  if (render_settings.draw_models || draw_doodads_wmo || !models_to_draw.empty()
+      || (render_settings.minimap_render && minimap_render_settings->use_filters))
   {
     ZoneScopedN("World::draw() : Draw M2s");
 
@@ -921,7 +1266,8 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }*/
 
     {
-      if (render_settings.draw_models || draw_doodads_wmo || (render_settings.minimap_render && minimap_render_settings->use_filters))
+      if (render_settings.draw_models || draw_doodads_wmo || !models_to_draw.empty()
+          || (render_settings.minimap_render && minimap_render_settings->use_filters))
       {
         OpenGL::Scoped::use_program m2_shader {*_m2_instanced_program.get()};
 
@@ -1011,6 +1357,25 @@ void WorldRender::draw (glm::mat4x4 const& model_view
             }
           }
 
+        }
+
+        // A WMO fallback is deliberately an M2 marker at the placement
+        // origin. Its saved MODF box remains the best available description
+        // of the missing WMO's footprint.
+        for (WMOInstance* instance : missing_wmos_to_draw)
+        {
+          auto const& bounds = instance->getExtents();
+          if (!Noggit::MissingObjectPlaceholder::valid_bounds(bounds[0], bounds[1]))
+            continue;
+
+          bool const selected = _world->selected_uids.contains(instance->uid);
+          Noggit::Rendering::Primitives::WireBox::getInstance(_world->_context).draw(
+              model_view,
+              projection,
+              glm::mat4x4{1.0f},
+              selected ? glm::vec4{1.0f} : glm::vec4{1.0f, 0.25f, 0.0f, 1.0f},
+              bounds[0],
+              bounds[1]);
         }
 
         /*
@@ -1191,6 +1556,66 @@ void WorldRender::draw (glm::mat4x4 const& model_view
   gl.enable(GL_BLEND);
   gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+  if (render_settings.road_preview_centerline.size() >= 2)
+  {
+    glm::vec4 const center_color = render_settings.road_preview_blocked
+      ? glm::vec4(1.0f, 0.1f, 0.1f, 1.0f)
+      : glm::vec4(1.0f, 0.82f, 0.12f, 1.0f);
+    glm::vec4 const edge_color = render_settings.road_preview_blocked
+      ? glm::vec4(1.0f, 0.15f, 0.15f, 0.9f)
+      : glm::vec4(0.15f, 1.0f, 0.35f, 0.9f);
+    _line_render.draw(mvp, render_settings.road_preview_centerline, center_color, false);
+    _line_render.draw(mvp, render_settings.road_preview_left_edge, edge_color, false);
+    _line_render.draw(mvp, render_settings.road_preview_right_edge, edge_color, false);
+  }
+
+  if (!render_settings.road_reference_mask_lines.empty())
+  {
+    glm::vec4 const mask_color{0.03f, 0.16f, 1.0f, 0.58f};
+    for (std::vector<glm::vec3> const& mask_line : render_settings.road_reference_mask_lines)
+    {
+      _line_render.draw(mvp, mask_line, mask_color, false);
+    }
+  }
+
+  if (!render_settings.stamp_height_preview_lines.empty())
+  {
+    glm::vec4 const preview_color{0.25f, 1.0f, 0.72f, 0.82f};
+    OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
+    for (std::vector<glm::vec3> const& line : render_settings.stamp_height_preview_lines)
+      _line_render.draw(mvp, line, preview_color, false);
+  }
+
+  if (!render_settings.road_reference_centerline.empty())
+  {
+    glm::vec4 const selection_color{0.08f, 0.35f, 1.0f, 1.0f};
+    glm::vec4 const selection_edge_color{0.05f, 0.2f, 1.0f, 0.95f};
+    if (render_settings.road_reference_left_edge.size()
+          == render_settings.road_reference_right_edge.size()
+        && render_settings.road_reference_left_edge.size() >= 2)
+    {
+      std::vector<glm::vec3> selection_band;
+      selection_band.reserve(render_settings.road_reference_left_edge.size());
+      // Closely spaced translucent strips read as a painted selection mask
+      // while keeping the overlay viewport-only and independent of ADT data.
+      for (int stripe = 1; stripe < 32; ++stripe)
+      {
+        selection_band.clear();
+        float const fraction = static_cast<float>(stripe) / 32.0f;
+        for (std::size_t index = 0;
+             index < render_settings.road_reference_left_edge.size(); ++index)
+        {
+          selection_band.push_back(render_settings.road_reference_left_edge[index]
+            * (1.0f - fraction) + render_settings.road_reference_right_edge[index] * fraction);
+        }
+        _line_render.draw(mvp, selection_band, glm::vec4(0.03f, 0.12f, 1.0f, 0.5f), false);
+      }
+    }
+    _line_render.draw(mvp, render_settings.road_reference_centerline, selection_color, false);
+    _line_render.draw(mvp, render_settings.road_reference_left_edge, selection_edge_color, false);
+    _line_render.draw(mvp, render_settings.road_reference_right_edge, selection_edge_color, false);
+  }
+
   // render before the water and enable depth right 
   // so it's visible under water
   // the checker board pattern is used to see the water under it
@@ -1262,6 +1687,19 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     gl.bindVertexArray(_liquid_chunk_vao);
 
     water_shader.uniform ("use_transform", 0);
+    water_shader.uniform("draw_cursor_circle",
+                         render_settings.project_cursor_on_water
+                           ? static_cast<int>(render_settings.cursor_type) : 0);
+    water_shader.uniform("cursor_position", cursor_pos);
+    water_shader.uniform("outer_cursor_radius", render_settings.brush_radius);
+    water_shader.uniform("inner_cursor_ratio", render_settings.inner_radius_ratio);
+    water_shader.uniform("cursor_color", cursor_color);
+    water_shader.uniform("liquid_brush_falloff", render_settings.liquid_brush_falloff);
+    water_shader.uniform("liquid_attribute_overlay", render_settings.liquid_attribute_overlay);
+    water_shader.uniform("selected_surface_token_low",
+                         static_cast<int>(render_settings.liquid_surface_token & 0xFFFF'FFFFull));
+    water_shader.uniform("selected_surface_token_high",
+                         static_cast<int>(render_settings.liquid_surface_token >> 32));
 
     for (auto& pair : _world->_loaded_tiles_buffer)
     {
@@ -1282,6 +1720,9 @@ void WorldRender::draw (glm::mat4x4 const& model_view
           , render_settings.water_layer
           , render_settings.display_mode
           , &_liquid_texture_manager
+          , render_settings.show_liquid_vertices
+          , render_settings.liquid_edit_layer
+          , render_settings.liquid_surface_token
       );
     }
 
@@ -1335,8 +1776,26 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       }
   }
 
-  if (render_settings.editing_mode == editing_mode::light && render_settings.alpha_light_sphere > 0.0f)
+  if (render_settings.editing_mode == editing_mode::light)
   {
+    // Local Light.dbc records are the persistent, movable owners of skyboxes.
+    // Draw a camera-distance-scaled handle even when volume rendering is hidden.
+    for (Sky const& sky : skies()->skies)
+    {
+      if (sky.global || sky.zone_light)
+        continue;
+
+      float distance = glm::distance(sky.pos, camera_pos);
+      if (distance > _cull_distance + sky.r2)
+        continue;
+
+      float handle_radius = glm::clamp(distance * 0.012f, 5.0f, 30.0f);
+      glm::vec4 handle_color = sky.selected()
+        ? glm::vec4(1.0f, 0.85f, 0.1f, 1.0f)
+        : glm::vec4(1.0f, 0.1f, 0.1f, 1.0f);
+      _sphere_render.draw(mvp, sky.pos, handle_color, handle_radius, 16, 10, 1.0f, false, false);
+    }
+
     // Sky* CurrentSky = skies()->findClosestSkyByDistance(camera_pos);
     // Sky* CurrentSky = skies()->findClosestSkyByWeight();
     // if (!CurrentSky)
@@ -1463,6 +1922,22 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       }
     }
   }
+}
+
+void WorldRender::setDetailDoodadPreview(DetailDoodadPreview preview)
+{
+  _detail_doodad_preview = std::move(preview);
+  DetailDoodads::bumpDbcStamp();
+}
+
+void WorldRender::clearDetailDoodadPreview()
+{
+  if (!_detail_doodad_preview.enabled)
+  {
+    return;
+  }
+  _detail_doodad_preview = {};
+  DetailDoodads::bumpDbcStamp();
 }
 
 void WorldRender::upload()
@@ -1686,7 +2161,9 @@ void WorldRender::unload()
   _m2_box_program.reset();
   _wmo_program.reset();
   _liquid_program.reset();
+  _detail_doodads_program.reset();
 
+  _detail_doodads.unload();
   _cursor_render.unload();
   _sphere_render.unload();
   _square_render.unload();
@@ -1696,6 +2173,16 @@ void WorldRender::unload()
   _horizon_render.reset();
 
   _liquid_texture_manager.unload();
+
+  for (auto& [tile_index, page] : _painted_stamp_selection_pages)
+  {
+    for (GLuint& texture : page.textures)
+    {
+      if (texture)
+        gl.deleteTextures(1, &texture);
+    }
+  }
+  _painted_stamp_selection_pages.clear();
 
   _skies->unload();
 
@@ -2054,6 +2541,11 @@ void WorldRender::drawMinimap ( MapTile *tile
 {
   ZoneScoped;
 
+  // Minimap rendering temporarily replaces nearly every terrain-overlay
+  // uniform. Preserve the editor viewport's state so F7 and the other view
+  // overlays are not silently left with the minimap's values afterward.
+  OpenGL::TerrainParamsUniformBlock const editor_terrain_params = _terrain_params_ubo_data;
+
   // Also load a tile above the current one to correct the lookat approximation
   TileIndex m_tile = TileIndex(camera_pos);
   m_tile.z -= 1;
@@ -2107,6 +2599,9 @@ void WorldRender::drawMinimap ( MapTile *tile
 
   draw(model_view, projection, glm::vec3(), glm::vec4(),
   glm::vec3(), camera_pos, settings, renderParams);
+
+  _terrain_params_ubo_data = editor_terrain_params;
+  updateTerrainParamsUniformBlock();
 
 
   if (unload)

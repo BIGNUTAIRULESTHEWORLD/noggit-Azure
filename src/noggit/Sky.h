@@ -238,7 +238,10 @@ public:
   bool operator<(const Sky& s) const;
 
   bool selected() const;
+  void setSelected(bool selected);
+  void setMapId(int map_id);
 
+  void save_light_record();
   void save_to_dbc();
 
 private:
@@ -301,6 +304,9 @@ public:
   explicit Skies(unsigned int mapid, Noggit::NoggitRenderContext context);
 
   Sky* createNewSky(Sky* old_sky, unsigned int new_id, glm::vec3& pos);
+  Sky* restoreSky(Sky const& sky);
+  bool deleteSkyById(int sky_id);
+  void selectSkyById(int sky_id);
 
   Sky* findSkyWeights(glm::vec3 pos);
 

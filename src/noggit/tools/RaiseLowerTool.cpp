@@ -98,13 +98,19 @@ namespace Noggit
         CursorType cursorType = CursorType::CIRCLE;
         if ((_terrainTool->_edit_type != eTerrainType_Vertex && _terrainTool->_edit_type != eTerrainType_Script) && _terrainTool->getImageMaskSelector()->isEnabled())
             cursorType = CursorType::STAMP;
+        else if (_terrainTool->brushShape() == BrushShape::SQUARE
+                 || _terrainTool->_edit_type == eTerrainType_Quadra)
+            cursorType = CursorType::SQUARE;
 
         return ToolDrawParameters
         {
-            .radius = _terrainTool->brushRadius(),
+            .radius = _terrainTool->_edit_type == eTerrainType_Quadra
+                ? _terrainTool->brushRadius() * 0.5f
+                : _terrainTool->brushRadius(),
             .inner_radius = _terrainTool->innerRadius(),
             .cursor_type = cursorType,
             .terrain_type = _terrainTool->_edit_type,
+            .cursor_color = {1.f, 1.f, 1.f, _terrainTool->brushOpacity()},
         };
     }
 

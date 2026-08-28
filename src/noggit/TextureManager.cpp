@@ -292,6 +292,11 @@ bool blp_texture::is_uploaded() const
   return _uploaded;
 }
 
+bool blp_texture::source_missing() const
+{
+  return _source_missing;
+}
+
 GLuint blp_texture::texture_array() const
 {
   return _texture_array;
@@ -482,6 +487,7 @@ blp_texture::blp_texture(BlizzardArchive::Listfile::FileKey const& file_key, Nog
 void blp_texture::finishLoading()
 {
   bool exists = Noggit::Application::NoggitApplication::instance()->clientData()->exists( _file_key.filepath());
+  _source_missing = !exists;
   if (!exists)
   {
     LogError << "file not found: '" <<  _file_key.stringRepr() << "'" << std::endl;

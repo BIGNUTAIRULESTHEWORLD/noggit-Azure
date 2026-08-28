@@ -48,6 +48,7 @@ namespace Noggit
             bool isOver() const;;
             bool isUsing() const;;
             void setUseMultiselectionPivot(bool use_pivot);;
+            void setScaleMultiselectionAroundPivot(bool scale_around_pivot);
             void setMultiselectionPivot(glm::vec3 const& pivot);;
             void setWorld(World* world);
 
@@ -57,7 +58,8 @@ namespace Noggit
             ImGuizmo::OPERATION _gizmo_operation;
             ImGuizmo::MODE _gizmo_mode;
             GizmoContext _gizmo_context;
-            bool _use_multiselection_pivot;
+            bool _use_multiselection_pivot = false;
+            bool _scale_multiselection_around_pivot = false;
             glm::vec3 _multiselection_pivot;
             float _last_pivot_scale;
         };

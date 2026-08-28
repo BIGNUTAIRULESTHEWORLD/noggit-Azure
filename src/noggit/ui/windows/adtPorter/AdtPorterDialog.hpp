@@ -33,6 +33,7 @@ namespace Noggit::Ui::Windows
     QComboBox* _source_map = nullptr;
     QComboBox* _destination_map = nullptr;
     QCheckBox* _same_map = nullptr;
+    QCheckBox* _hide_adt_squares = nullptr;
     QSlider* _preview_opacity = nullptr;
     AdtGridWidget* _source_grid = nullptr;
     AdtGridWidget* _destination_grid = nullptr;

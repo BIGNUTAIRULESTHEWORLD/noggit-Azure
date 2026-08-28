@@ -49,6 +49,7 @@ namespace Noggit
 
         void undo();
         void redo();
+        void remapObjectUID(unsigned old_uid, unsigned new_uid, Action const* source_action);
 
         ~ActionManager() override;
 
@@ -58,6 +59,7 @@ namespace Noggit
       void addedAction(Action* action);
       void purged();
       void currentActionChanged(unsigned index);
+      void historyNavigated();
       void onActionBegin(Action* action);
       void onActionEnd(Action* action);
 
