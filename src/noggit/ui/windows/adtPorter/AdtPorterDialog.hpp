@@ -2,6 +2,7 @@
 
 #include <QDialog>
 #include <memory>
+#include <optional>
 
 class QComboBox;
 class QCheckBox;
@@ -26,6 +27,7 @@ namespace Noggit::Ui::Windows
   private:
     void portAdt();
     void updateSummary();
+    void updateMoveOption();
     void reloadSourceGrid();
     void reloadDestinationGrid();
 
@@ -33,12 +35,16 @@ namespace Noggit::Ui::Windows
     QComboBox* _source_map = nullptr;
     QComboBox* _destination_map = nullptr;
     QCheckBox* _same_map = nullptr;
+    QCheckBox* _move_source = nullptr;
+    QCheckBox* _rectangular_selection = nullptr;
     QCheckBox* _hide_adt_squares = nullptr;
     QSlider* _preview_opacity = nullptr;
     AdtGridWidget* _source_grid = nullptr;
     AdtGridWidget* _destination_grid = nullptr;
     QLabel* _summary = nullptr;
     QLabel* _status = nullptr;
+    std::optional<bool> _source_big_alpha;
+    std::optional<bool> _destination_big_alpha;
     std::unique_ptr<World> _source_preview_world;
     std::unique_ptr<World> _destination_preview_world;
   };

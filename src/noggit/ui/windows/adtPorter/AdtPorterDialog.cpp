@@ -1,4 +1,5 @@
 #include "AdtPorterDialog.hpp"
+#include "AdtAlphaConverter.hpp"
 
 #include <noggit/MapHeaders.h>
 #include <noggit/database/ClientDatabase.h>
@@ -29,8 +30,10 @@
 #include <QSettings>
 #include <QSlider>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <set>
@@ -46,6 +49,7 @@ namespace Noggit::Ui::Windows
     {
       setFixedSize(448, 448);
       setMouseTracking(true);
+      setToolTip("Scroll to zoom toward the cursor.");
     }
 
     void setOccupancy(std::array<bool, 4096> occupancy)
@@ -58,6 +62,8 @@ namespace Noggit::Ui::Windows
       _overlay_source_pivot = {-1, -1};
       _overlay_destination_anchor = {-1, -1};
       _anchor = {-1, -1};
+      _zoom = 1.f;
+      _view_origin = {};
       update();
     }
 
@@ -73,6 +79,15 @@ namespace Noggit::Ui::Windows
         return;
       _adt_squares_visible = visible;
       update();
+    }
+
+    void setRectangularSelection(bool enabled)
+    {
+      _rectangular_selection = enabled;
+      _painting = false;
+      _last_painted = {-1, -1};
+      _drag_start = {-1, -1};
+      _selection_before_drag.clear();
     }
 
     std::set<QPoint, bool(*)(QPoint const&, QPoint const&)> const& selection() const
@@ -111,9 +126,12 @@ namespace Noggit::Ui::Windows
     {
       QPainter painter(this);
       painter.fillRect(rect(), QColor(38, 40, 45));
+      painter.save();
+      painter.setClipRect(rect());
+      float const cell = cellSize();
+      painter.translate(-_view_origin.x() * cell, -_view_origin.y() * cell);
       if (!_map_image.isNull())
-        painter.drawImage(rect(), _map_image);
-      float const cell = width() / 64.f;
+        painter.drawImage(QRectF(0, 0, 64.f * cell, 64.f * cell), _map_image);
       for (int z = 0; z < 64; ++z)
         for (int x = 0; x < 64; ++x)
           if (!_occupancy[z * 64 + x])
@@ -172,15 +190,41 @@ namespace Noggit::Ui::Windows
           }
         }
       }
+      if (_adt_squares_visible && _source && !_selection.empty())
+      {
+        int min_x = 63;
+        int max_x = 0;
+        int min_z = 63;
+        int max_z = 0;
+        for (QPoint const& point : _selection)
+        {
+          min_x = std::min(min_x, point.x());
+          max_x = std::max(max_x, point.x());
+          min_z = std::min(min_z, point.y());
+          max_z = std::max(max_z, point.y());
+        }
+        painter.setPen(QPen(QColor(245, 90, 80), 1));
+        for (int z = min_z; z <= max_z; ++z)
+          for (int x = min_x; x <= max_x; ++x)
+          {
+            QPoint const point(x, z);
+            if (_selection.contains(point))
+              continue;
+            QRectF const tile(x * cell, z * cell, cell, cell);
+            painter.fillRect(tile.adjusted(1, 1, -1, -1), QColor(230, 60, 55, 70));
+            painter.drawRect(tile.adjusted(.5, .5, -.5, -.5));
+          }
+      }
       if (_adt_squares_visible)
       {
         painter.setPen(QColor(75, 78, 85));
         for (int i = 0; i <= 64; i += 4)
         {
-          painter.drawLine(QPointF(i * cell, 0), QPointF(i * cell, height()));
-          painter.drawLine(QPointF(0, i * cell), QPointF(width(), i * cell));
+          painter.drawLine(QPointF(i * cell, 0), QPointF(i * cell, 64.f * cell));
+          painter.drawLine(QPointF(0, i * cell), QPointF(64.f * cell, i * cell));
         }
       }
+      painter.restore();
     }
 
     void mousePressEvent(QMouseEvent* event) override
@@ -192,7 +236,14 @@ namespace Noggit::Ui::Windows
         _painting = true;
         _paint_add = event->button() == Qt::LeftButton;
         _last_painted = {-1, -1};
-        paintSelectionAt(event->localPos());
+        if (_rectangular_selection)
+        {
+          _drag_start = gridPointAt(event->localPos());
+          _selection_before_drag = _selection;
+          paintRectangleTo(_drag_start);
+        }
+        else
+          paintSelectionAt(event->localPos());
       }
       else
       {
@@ -206,7 +257,12 @@ namespace Noggit::Ui::Windows
     void mouseMoveEvent(QMouseEvent* event) override
     {
       if (_source && _painting)
-        paintSelectionAt(event->localPos());
+      {
+        if (_rectangular_selection)
+          paintRectangleTo(gridPointAt(event->localPos()));
+        else
+          paintSelectionAt(event->localPos());
+      }
       else if (!_source && _placing)
         placeAt(event->localPos());
     }
@@ -216,6 +272,40 @@ namespace Noggit::Ui::Windows
       _painting = false;
       _placing = false;
       _last_painted = {-1, -1};
+      _drag_start = {-1, -1};
+      _selection_before_drag.clear();
+    }
+
+    void wheelEvent(QWheelEvent* event) override
+    {
+      int const delta = event->angleDelta().y();
+      if (!delta)
+      {
+        event->ignore();
+        return;
+      }
+
+      QPointF const cursor = event->position();
+      float const old_cell = cellSize();
+      QPointF const grid_under_cursor(
+        _view_origin.x() + cursor.x() / old_cell,
+        _view_origin.y() + cursor.y() / old_cell);
+      float const steps = static_cast<float>(delta) / 120.f;
+      float const new_zoom = std::clamp(_zoom * std::pow(1.25f, steps), 1.f, 16.f);
+      if (qFuzzyCompare(new_zoom, _zoom))
+      {
+        event->accept();
+        return;
+      }
+
+      _zoom = new_zoom;
+      float const new_cell = cellSize();
+      _view_origin = QPointF(
+        grid_under_cursor.x() - cursor.x() / new_cell,
+        grid_under_cursor.y() - cursor.y() / new_cell);
+      clampViewOrigin();
+      update();
+      event->accept();
     }
 
   private:
@@ -223,11 +313,30 @@ namespace Noggit::Ui::Windows
     {
       return lhs.y() == rhs.y() ? lhs.x() < rhs.x() : lhs.y() < rhs.y();
     }
+    float cellSize() const
+    {
+      return width() / 64.f * _zoom;
+    }
+    void clampViewOrigin()
+    {
+      float const visible_x = width() / cellSize();
+      float const visible_y = height() / cellSize();
+      double const max_x = std::max(0.0, 64.0 - visible_x);
+      double const max_y = std::max(0.0, 64.0 - visible_y);
+      _view_origin.setX(std::clamp(_view_origin.x(), 0.0, max_x));
+      _view_origin.setY(std::clamp(_view_origin.y(), 0.0, max_y));
+    }
+    QPoint gridPointAt(QPointF const& position) const
+    {
+      float const cell = cellSize();
+      return {
+        std::clamp(static_cast<int>(std::floor(_view_origin.x() + position.x() / cell)), 0, 63),
+        std::clamp(static_cast<int>(std::floor(_view_origin.y() + position.y() / cell)), 0, 63)
+      };
+    }
     void paintSelectionAt(QPointF const& position)
     {
-      int const x = std::clamp(static_cast<int>(position.x() / width() * 64), 0, 63);
-      int const z = std::clamp(static_cast<int>(position.y() / height() * 64), 0, 63);
-      QPoint const point(x, z);
+      QPoint const point = gridPointAt(position);
       bool changed_selection = false;
       int const steps = _last_painted.x() < 0 ? 0
         : std::max(std::abs(point.x() - _last_painted.x()), std::abs(point.y() - _last_painted.y()));
@@ -254,11 +363,38 @@ namespace Noggit::Ui::Windows
       if (changed)
         changed();
     }
+    void paintRectangleTo(QPoint const& point)
+    {
+      if (_drag_start.x() < 0)
+        return;
+      auto next_selection = _selection_before_drag;
+      int const min_x = std::min(_drag_start.x(), point.x());
+      int const max_x = std::max(_drag_start.x(), point.x());
+      int const min_z = std::min(_drag_start.y(), point.y());
+      int const max_z = std::max(_drag_start.y(), point.y());
+      for (int z = min_z; z <= max_z; ++z)
+        for (int x = min_x; x <= max_x; ++x)
+        {
+          QPoint const sample(x, z);
+          if (_paint_add)
+          {
+            if (_occupancy[z * 64 + x])
+              next_selection.insert(sample);
+          }
+          else
+            next_selection.erase(sample);
+        }
+      if (next_selection == _selection)
+        return;
+      _selection = std::move(next_selection);
+      _anchor = point;
+      update();
+      if (changed)
+        changed();
+    }
     void placeAt(QPointF const& position)
     {
-      QPoint const point(
-        std::clamp(static_cast<int>(position.x() / width() * 64), 0, 63),
-        std::clamp(static_cast<int>(position.y() / height() * 64), 0, 63));
+      QPoint const point = gridPointAt(position);
       if (point == _anchor)
         return;
       _anchor = point;
@@ -279,9 +415,14 @@ namespace Noggit::Ui::Windows
     QPoint _anchor{-1, -1};
     bool _painting = false;
     bool _paint_add = true;
+    bool _rectangular_selection = true;
     bool _placing = false;
     bool _adt_squares_visible = true;
     QPoint _last_painted{-1, -1};
+    QPoint _drag_start{-1, -1};
+    std::set<QPoint, bool(*)(QPoint const&, QPoint const&)> _selection_before_drag{pointLess};
+    float _zoom = 1.f;
+    QPointF _view_origin;
   };
 }
 
@@ -509,8 +650,8 @@ AdtPorterDialog::AdtPorterDialog(std::shared_ptr<Project::NoggitProject> project
     layout->addWidget(map);
     layout->addWidget(grid);
     auto* instructions = new QLabel(source
-      ? "Paint with left-click and drag. Erase with right-click and drag."
-      : "Click or drag to position the selection's center. The source terrain appears as a ghost.", box);
+      ? "Drag to select a filled rectangle. Right-drag erases. Disable rectangle mode for freehand painting. Scroll to zoom."
+      : "Click or drag to position the selection's center. The source terrain appears as a ghost. Scroll to zoom.", box);
     instructions->setWordWrap(true);
     layout->addWidget(instructions);
     maps->addWidget(box);
@@ -518,8 +659,18 @@ AdtPorterDialog::AdtPorterDialog(std::shared_ptr<Project::NoggitProject> project
   create_side("1. Select source ADTs", true, _source_map, _source_grid);
   create_side("2. Choose destination", false, _destination_map, _destination_grid);
   _same_map = new QCheckBox("Use the same map as destination", this);
-  _same_map->setToolTip("Move the painted ADTs within the source map and clear their original tile flags.");
+  _same_map->setToolTip("Use the source map as the destination. This does not remove the originals unless Move is enabled.");
   root->addWidget(_same_map);
+  _move_source = new QCheckBox("Move instead of copy (clear original ADT flags)", this);
+  _move_source->setToolTip(
+      "Only available when source and destination are the same map. Copy is the safe default.");
+  _move_source->setChecked(false);
+  root->addWidget(_move_source);
+  _rectangular_selection = new QCheckBox("Filled rectangle selection", this);
+  _rectangular_selection->setToolTip(
+      "Select every existing source ADT inside the dragged rectangle. Missing source ADTs are highlighted red.");
+  _rectangular_selection->setChecked(true);
+  root->addWidget(_rectangular_selection);
   _hide_adt_squares = new QCheckBox("Hide ADT squares", this);
   _hide_adt_squares->setToolTip(
       "Hide the ADT grid, selection, and destination footprint overlays while keeping the landmass preview visible.");
@@ -569,9 +720,13 @@ AdtPorterDialog::AdtPorterDialog(std::shared_ptr<Project::NoggitProject> project
       else
         reloadDestinationGrid();
     }
+    updateMoveOption();
   });
-  connect(_destination_map, qOverload<int>(&QComboBox::currentIndexChanged),
-          this, &AdtPorterDialog::reloadDestinationGrid);
+  connect(_destination_map, qOverload<int>(&QComboBox::currentIndexChanged), this, [this]
+  {
+    reloadDestinationGrid();
+    updateMoveOption();
+  });
   connect(_same_map, &QCheckBox::toggled, this, [this](bool enabled)
   {
     _destination_map->setEnabled(!enabled);
@@ -582,7 +737,13 @@ AdtPorterDialog::AdtPorterDialog(std::shared_ptr<Project::NoggitProject> project
       else
         reloadDestinationGrid();
     }
+    updateMoveOption();
     updateSummary();
+  });
+  connect(_move_source, &QCheckBox::toggled, this, [this] { updateSummary(); });
+  connect(_rectangular_selection, &QCheckBox::toggled, this, [this](bool enabled)
+  {
+    _source_grid->setRectangularSelection(enabled);
   });
   connect(_hide_adt_squares, &QCheckBox::toggled, this, [this](bool hidden)
   {
@@ -595,10 +756,21 @@ AdtPorterDialog::AdtPorterDialog(std::shared_ptr<Project::NoggitProject> project
   _destination_grid->changed = [this] { updateSummary(); };
   reloadSourceGrid();
   reloadDestinationGrid();
+  updateMoveOption();
   updateSummary();
 }
 
 AdtPorterDialog::~AdtPorterDialog() = default;
+
+void AdtPorterDialog::updateMoveOption()
+{
+  QString const source_dir = _source_map->currentData().toMap().value("directory").toString();
+  QString const destination_dir = _destination_map->currentData().toMap().value("directory").toString();
+  bool const same_map = !source_dir.isEmpty() && source_dir == destination_dir;
+  _move_source->setEnabled(same_map);
+  if (!same_map)
+    _move_source->setChecked(false);
+}
 
 void AdtPorterDialog::updateSummary()
 {
@@ -608,10 +780,27 @@ void AdtPorterDialog::updateSummary()
   QPoint const anchor = _destination_grid->anchor();
   auto footprint = selection;
   footprint.clear();
+  QString alpha_summary = "Alpha maps: unable to determine source or destination format.";
+  if (_source_big_alpha && _destination_big_alpha)
+  {
+    auto const source_format = *_source_big_alpha
+      ? AdtAlphaConverter::Format::Big : AdtAlphaConverter::Format::Old;
+    auto const destination_format = *_destination_big_alpha
+      ? AdtAlphaConverter::Format::Big : AdtAlphaConverter::Format::Old;
+    alpha_summary = QString("Alpha maps: %1 → %2.%3")
+      .arg(AdtAlphaConverter::formatName(source_format),
+           AdtAlphaConverter::formatName(destination_format),
+           source_format == destination_format
+             ? " No conversion is needed."
+             : destination_format == AdtAlphaConverter::Format::Old
+                 ? " Selected ADTs will be converted; Big → Old reduces blend precision."
+                 : " Selected ADTs will be converted automatically.");
+  }
   if (selection.empty() || anchor.x() < 0)
   {
     _destination_grid->setFootprint(std::move(footprint));
-    _summary->setText("Select one or more source ADTs, then click a destination square.");
+    _summary->setText(alpha_summary
+      + "\nSelect one or more source ADTs, then click a destination square.");
     return;
   }
   int min_x = 63;
@@ -627,6 +816,8 @@ void AdtPorterDialog::updateSummary()
   }
   QPoint const source_pivot(min_x + (max_x - min_x + 1) / 2,
                             min_z + (max_z - min_z + 1) / 2);
+  int const bounding_tiles = (max_x - min_x + 1) * (max_z - min_z + 1);
+  int const holes = bounding_tiles - static_cast<int>(selection.size());
   int collisions = 0;
   bool outside = false;
   for (QPoint const& source_tile : selection)
@@ -645,26 +836,36 @@ void AdtPorterDialog::updateSummary()
                                   QPointF(source_pivot.x() + .5, source_pivot.y() + .5),
                                   anchor, selection,
                                   _preview_opacity->value() / 100.f);
-  _summary->setText(QString("%1 selected source ADT%2 from %3 → %4, centered at %5_%6. %7")
+  _summary->setText(alpha_summary + "\n"
+    + QString("%1 selected source ADT%2 from %3 → %4, centered at %5_%6. %7%8 %9")
       .arg(selection.size()).arg(selection.size() == 1 ? "" : "s")
       .arg(source.value("directory").toString(), destination.value("directory").toString())
       .arg(anchor.x()).arg(anchor.y())
+      .arg(holes ? QString(" %1 unselected or missing ADT square%2 inside the selection bounds will remain a gap.")
+                       .arg(holes).arg(holes == 1 ? "" : "s")
+                 : " The selection bounds contain no gaps.")
+      .arg(_move_source->isChecked() ? " Move mode will clear non-overlapping originals."
+                                     : " Copy mode will keep the originals.")
       .arg(outside ? "The destination footprint extends outside the map."
                    : collisions ? QString("%1 existing destination ADT%2 will be modified.")
-                                      .arg(collisions).arg(collisions == 1 ? "" : "s")
+                                       .arg(collisions).arg(collisions == 1 ? "" : "s")
                                 : "The destination footprint is clear."));
 }
 
 void AdtPorterDialog::reloadSourceGrid()
 {
+  _source_big_alpha.reset();
   std::array<bool, 4096> occupancy{};
   QVariantMap const map = _source_map->currentData().toMap();
   std::vector<char> wdt;
   QString error;
+  AdtAlphaConverter::Format alpha_format{};
   if (!map.value("directory").toString().isEmpty()
       && readClientFile(_project, logicalWdtPath(map.value("directory").toString()), wdt, error)
-      && wdtOccupancy(std::move(wdt), occupancy, error))
+      && AdtAlphaConverter::readWdtFormat(wdt, alpha_format, error)
+      && wdtOccupancy(wdt, occupancy, error))
   {
+    _source_big_alpha = alpha_format == AdtAlphaConverter::Format::Big;
     try
     {
       _source_preview_world = std::make_unique<World>(
@@ -692,14 +893,18 @@ void AdtPorterDialog::reloadSourceGrid()
 
 void AdtPorterDialog::reloadDestinationGrid()
 {
+  _destination_big_alpha.reset();
   std::array<bool, 4096> occupancy{};
   QVariantMap const map = _destination_map->currentData().toMap();
   std::vector<char> wdt;
   QString error;
+  AdtAlphaConverter::Format alpha_format{};
   if (!map.value("directory").toString().isEmpty()
       && readClientFile(_project, logicalWdtPath(map.value("directory").toString()), wdt, error)
-      && wdtOccupancy(std::move(wdt), occupancy, error))
+      && AdtAlphaConverter::readWdtFormat(wdt, alpha_format, error)
+      && wdtOccupancy(wdt, occupancy, error))
   {
+    _destination_big_alpha = alpha_format == AdtAlphaConverter::Format::Big;
     try
     {
       _destination_preview_world = std::make_unique<World>(
@@ -732,7 +937,8 @@ void AdtPorterDialog::portAdt()
   QString const source_dir = source.value("directory").toString();
   QString const destination_dir = destination.value("directory").toString();
   int const destination_id = destination.value("id").toInt();
-  bool const relocating_on_same_map = source_dir == destination_dir;
+  bool const same_map_destination = source_dir == destination_dir;
+  bool const moving_source = same_map_destination && _move_source->isChecked();
   auto const& selection = _source_grid->selection();
   QPoint const anchor = _destination_grid->anchor();
   if (source_dir.isEmpty() || destination_dir.isEmpty() || selection.empty() || anchor.x() < 0)
@@ -753,6 +959,8 @@ void AdtPorterDialog::portAdt()
   }
   QPoint const source_pivot(min_x + (max_x - min_x + 1) / 2,
                             min_z + (max_z - min_z + 1) / 2);
+  int const bounding_tiles = (max_x - min_x + 1) * (max_z - min_z + 1);
+  int const holes = bounding_tiles - static_cast<int>(selection.size());
   for (QPoint const& point : selection)
   {
     QPoint const target = anchor + point - source_pivot;
@@ -762,25 +970,62 @@ void AdtPorterDialog::portAdt()
       return;
     }
   }
-  if (QMessageBox::warning(this, relocating_on_same_map ? "Shift ADTs" : "Port ADTs",
-      QString("%1 %2 selected ADT%3 from %4 %5 %6, centered at %7_%8?\n\n"
-              "Existing ADTs inside the destination footprint will be replaced. A backup will be created first. "
-              "The destination WDL is not regenerated in this test build.")
-        .arg(relocating_on_same_map ? "Move" : "Port")
-        .arg(selection.size()).arg(selection.size() == 1 ? "" : "s")
-        .arg(source_dir).arg(relocating_on_same_map ? "within" : "into").arg(destination_dir)
-        .arg(anchor.x()).arg(anchor.y()),
-      QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
-    return;
-
   QString error;
+  std::vector<char> source_wdt_bytes;
   std::vector<char> wdt;
+  QString const source_wdt = logicalWdtPath(source_dir);
   QString const destination_wdt = logicalWdtPath(destination_dir);
-  if (!readClientFile(_project, destination_wdt, wdt, error))
+  if (!readClientFile(_project, source_wdt, source_wdt_bytes, error))
   {
     _status->setText(error);
     return;
   }
+  if (same_map_destination)
+    wdt = source_wdt_bytes;
+  else if (!readClientFile(_project, destination_wdt, wdt, error))
+  {
+    _status->setText(error);
+    return;
+  }
+  AdtAlphaConverter::Format source_alpha_format{};
+  AdtAlphaConverter::Format destination_alpha_format{};
+  if (!AdtAlphaConverter::readWdtFormat(source_wdt_bytes, source_alpha_format, error)
+      || !AdtAlphaConverter::readWdtFormat(wdt, destination_alpha_format, error))
+  {
+    _status->setText(error);
+    return;
+  }
+  bool const alpha_conversion_required = source_alpha_format != destination_alpha_format;
+  QString confirmation = QString(
+      "%1 %2 selected ADT%3 from %4 %5 %6, centered at %7_%8?\n\n"
+      "Existing ADTs inside the destination footprint will be replaced. A backup will be created first. "
+      "The destination WDL preview is not regenerated automatically.")
+    .arg(moving_source ? "Move" : "Copy")
+    .arg(selection.size()).arg(selection.size() == 1 ? "" : "s")
+    .arg(source_dir).arg(same_map_destination ? "within" : "into").arg(destination_dir)
+    .arg(anchor.x()).arg(anchor.y());
+  if (holes)
+  {
+    confirmation += QString(
+        "\n\nWarning: %1 unselected or missing source ADT square%2 inside the selection bounds "
+        "will remain a gap at the destination. These squares are highlighted red in the source grid.")
+      .arg(holes).arg(holes == 1 ? "" : "s");
+  }
+  if (moving_source)
+    confirmation += "\n\nMove mode will clear the original WDT tile flags after copying.";
+  else
+    confirmation += "\n\nCopy mode will keep all original WDT tile flags.";
+  if (alpha_conversion_required)
+  {
+    confirmation += QString("\n\nAlpha maps will be converted automatically: %1 → %2.")
+      .arg(AdtAlphaConverter::formatName(source_alpha_format),
+           AdtAlphaConverter::formatName(destination_alpha_format));
+    if (destination_alpha_format == AdtAlphaConverter::Format::Old)
+      confirmation += " Big → Old conversion reduces blend precision from 8 bits to 4 bits and is lossy.";
+  }
+  if (QMessageBox::warning(this, moving_source ? "Move ADTs" : "Copy ADTs",
+      confirmation, QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+    return;
 
   QSettings settings;
   if (settings.value("project/mysql/enabled", false).toBool())
@@ -822,6 +1067,9 @@ void AdtPorterDialog::portAdt()
     int tile_models = 0;
     int tile_wmos = 0;
     if (!readClientFile(_project, source_path, transfer.transformed, error)
+        || (alpha_conversion_required
+            && !AdtAlphaConverter::convert(transfer.transformed, source_alpha_format,
+                                           destination_alpha_format, error))
         || !transformAdt(transfer.transformed, source_tile.x(), source_tile.y(),
                         destination_tile.x(), destination_tile.y(), next_uid,
                         tile_models, tile_wmos, error)
@@ -836,7 +1084,7 @@ void AdtPorterDialog::portAdt()
     transfer.had_original = readClientFile(_project, transfer.logical_path, transfer.original, ignored);
     transfers.emplace_back(std::move(transfer));
   }
-  if (relocating_on_same_map)
+  if (moving_source)
   {
     for (QPoint const& source_tile : selection)
     {
@@ -902,9 +1150,16 @@ void AdtPorterDialog::portAdt()
     return;
   }
   uid_storage::saveMaxUID(destination_id, next_uid);
-  _status->setStyleSheet("color: #5cb85c;");
-  _status->setText(QString("Port complete: %1 ADTs (%2 chunks), %3 M2 records, %4 WMO records. Backup: %5")
-                       .arg(transfers.size()).arg(transfers.size() * 256)
-                       .arg(models).arg(wmos).arg(backup_dir));
+  QString const conversion_result = alpha_conversion_required
+    ? QString(" Alpha maps converted: %1 → %2.")
+        .arg(AdtAlphaConverter::formatName(source_alpha_format),
+             AdtAlphaConverter::formatName(destination_alpha_format))
+    : QString();
+  QString const success_message = QString(
+      "Port complete: %1 ADTs (%2 chunks), %3 M2 records, %4 WMO records.%5 Backup: %6")
+    .arg(transfers.size()).arg(transfers.size() * 256)
+    .arg(models).arg(wmos).arg(conversion_result, backup_dir);
   reloadDestinationGrid();
+  _status->setStyleSheet("color: #5cb85c;");
+  _status->setText(success_message);
 }
