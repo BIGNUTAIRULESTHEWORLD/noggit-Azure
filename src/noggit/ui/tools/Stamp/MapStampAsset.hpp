@@ -58,6 +58,13 @@ namespace Noggit::Ui::Tools::Stamp
     ConformToTerrain
   };
 
+  struct MapStampTransform
+  {
+    float rotation_degrees = 0.f;
+    bool flip_x = false;
+    bool flip_z = false;
+  };
+
   struct MapStampTexture
   {
     std::string filename;
@@ -82,14 +89,16 @@ namespace Noggit::Ui::Tools::Stamp
                  MapStampShape shape = MapStampShape::Circle, QString* error = nullptr);
     bool capture(World* world, MapStampPaintedSelection const& selection,
                  QString* error = nullptr);
-    bool apply(World* world, glm::vec3 const& center, float radius, float rotation_degrees,
+    bool apply(World* world, glm::vec3 const& center, float radius,
+               MapStampTransform const& transform,
                float hardness, float height_scale, float height_offset, float opacity,
                MapStampHeightMode height_mode = MapStampHeightMode::ExactFeature);
-    bool apply(World* world, glm::vec3 const& center, float radius, float rotation_degrees,
+    bool apply(World* world, glm::vec3 const& center, float radius,
+               MapStampTransform const& transform,
                float hardness, float height_scale, float height_offset, float opacity,
                MapStampProtectionSettings const& protection, MapStampHeightMode height_mode);
     bool previewTerrain(World* world, glm::vec3 const& center, float radius,
-                         float rotation_degrees, float hardness, float height_scale,
+                         MapStampTransform const& transform, float hardness, float height_scale,
                          float height_offset, float opacity,
                          MapStampProtectionSettings const& protection, MapStampHeightMode height_mode,
                          bool update_textures,
@@ -106,13 +115,15 @@ namespace Noggit::Ui::Tools::Stamp
     [[nodiscard]] std::size_t textureCount() const;
     [[nodiscard]] bool supportsExactHeight() const;
     [[nodiscard]] QImage previewImage() const;
-    [[nodiscard]] float footprintBoundingRadius(float radius, float rotation_degrees,
+    [[nodiscard]] float footprintBoundingRadius(float radius,
+                                                MapStampTransform const& transform,
                                                 float hardness,
                                                 MapStampHeightMode height_mode) const;
 
   private:
     bool visitTerrainPlacement(
-        World* world, glm::vec3 const& center, float radius, float rotation_degrees,
+        World* world, glm::vec3 const& center, float radius,
+        MapStampTransform const& transform,
         float hardness, float height_scale, float height_offset, float opacity,
         MapStampProtectionSettings const& protection, MapStampHeightMode height_mode,
         bool mark_tiles_changed,

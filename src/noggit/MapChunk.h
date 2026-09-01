@@ -16,6 +16,8 @@
 #include <memory>
 #include <optional>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace BlizzardArchive
 {
@@ -219,6 +221,8 @@ public:
   bool canPaintTexture(scoped_blp_texture_reference texture);
   int addTexture(scoped_blp_texture_reference texture);
   bool switchTexture(scoped_blp_texture_reference const& oldTexture, scoped_blp_texture_reference newTexture);
+  bool switchTextures(
+      std::vector<std::pair<scoped_blp_texture_reference, scoped_blp_texture_reference>> const& replacements);
   void eraseTextures();
   void eraseTexture(scoped_blp_texture_reference const& tex);
   void change_texture_flags(scoped_blp_texture_reference const& tex, std::size_t flags);

@@ -144,6 +144,7 @@ ViewToolbar::ViewToolbar(MapView *mapView, ViewToolbar *tb)
     setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
 
     add_tool_icon(mapView, &mapView->_draw_models, tr("Doodads"), FontNoggit::VISIBILITY_DOODADS, tb);
+    add_tool_icon(mapView, &mapView->_draw_ground_effects, tr("Ground Effects"), FontNoggit::VISIBILITY_GROUNDEFFECTS, tb);
     add_tool_icon(mapView, &mapView->_draw_wmo, tr("WMOs"), FontNoggit::VISIBILITY_WMO, tb);
     add_tool_icon(mapView, &mapView->_draw_wmo_doodads, tr("WMO doodads"), FontNoggit::VISIBILITY_WMO_DOODADS, tb);
     add_tool_icon(mapView, &mapView->_draw_wmo_exterior, tr("WMO exterior"), FontNoggit::UI_TOGGLE, tb);
@@ -153,6 +154,7 @@ ViewToolbar::ViewToolbar(MapView *mapView, ViewToolbar *tb)
     addSeparator();
 
     add_tool_icon(mapView, &mapView->_draw_lines, tr("Lines"), FontNoggit::VISIBILITY_LINES, tb);
+    add_tool_icon(mapView, &mapView->_draw_texture_conflict_seams, tr("Texture conflict seams"), FontNoggit::VISIBILITY_UNUSED, tb);
     add_tool_icon(mapView, &mapView->_draw_hole_lines, tr("Hole lines"), FontNoggit::VISIBILITY_HOLE_LINES, tb);
     add_tool_icon(mapView, &mapView->_draw_wireframe, tr("Wireframe"), FontNoggit::VISIBILITY_WIREFRAME, tb);
     add_tool_icon(mapView, &mapView->_draw_contour, tr("Contours"), FontNoggit::VISIBILITY_CONTOURS, tb);

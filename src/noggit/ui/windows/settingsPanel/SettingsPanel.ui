@@ -408,6 +408,16 @@
                       </layout>
                      </item>
                      <item>
+                      <widget class="QCheckBox" name="_current_adt_only">
+                       <property name="toolTip">
+                        <string>Load only the ADT under the camera. Clean ADTs are unloaded one per frame; ADTs with unsaved changes remain loaded until saved.</string>
+                       </property>
+                       <property name="text">
+                        <string>Load current ADT only</string>
+                       </property>
+                      </widget>
+                     </item>
+                     <item>
                       <layout class="QHBoxLayout" name="horizontalLayout_55">
                        <item>
                         <widget class="QLabel" name="label_37">

@@ -150,6 +150,13 @@ namespace Noggit
               ui->_adt_unload_dist->setMinimum(v + 1);
           });
 
+      connect(ui->_current_adt_only, &QCheckBox::toggled, this, [this](bool enabled)
+          {
+              ui->_adt_loading_radius->setEnabled(!enabled);
+              ui->_adt_unload_dist->setEnabled(!enabled);
+              ui->_adt_unload_check_interval->setEnabled(!enabled);
+          });
+
       ui->_wireframe_color->setColor(Qt::white);
 
       connect(ui->saveButton, &QPushButton::clicked, [this]
@@ -246,6 +253,7 @@ namespace Noggit
       ui->_adt_unload_dist->setValue(_settings->value("unload_dist", 5).toInt());
       ui->_adt_unload_check_interval->setValue(_settings->value("unload_interval", 30).toInt());
       ui->_adt_loading_radius->setValue(_settings->value("loading_radius", 2).toInt());
+      ui->_current_adt_only->setChecked(_settings->value("current_adt_only", false).toBool());
       ui->_uid_cb->setChecked(_settings->value("uid_startup_check", true).toBool());
       ui->_load_fav_cb->setChecked(_settings->value("auto_load_fav_project", true).toBool());
       ui->_systemWindowFrame->setChecked(_settings->value("systemWindowFrame", true).toBool());
@@ -340,6 +348,7 @@ namespace Noggit
       _settings->setValue("unload_dist", ui->_adt_unload_dist->value());
       _settings->setValue("unload_interval", ui->_adt_unload_check_interval->value());
       _settings->setValue("loading_radius", ui->_adt_loading_radius->value());
+      _settings->setValue("current_adt_only", ui->_current_adt_only->isChecked());
       _settings->setValue("uid_startup_check", ui->_uid_cb->isChecked());
       _settings->setValue("auto_load_fav_project", ui->_load_fav_cb->isChecked());
       _settings->setValue("additional_file_loading_log", ui->_additional_file_loading_log->isChecked());

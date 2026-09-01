@@ -1382,6 +1382,16 @@ bool MapChunk::switchTexture(scoped_blp_texture_reference const& oldTexture, sco
   return changed;
 }
 
+bool MapChunk::switchTextures(
+    std::vector<std::pair<scoped_blp_texture_reference, scoped_blp_texture_reference>> const& replacements)
+{
+  bool const changed = texture_set->replace_textures(replacements);
+  if (changed)
+    registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+
+  return changed;
+}
+
 bool MapChunk::paintTexture(glm::vec3 const& pos, Brush* brush, float strength, float pressure, scoped_blp_texture_reference texture)
 {
   return texture_set->paintTexture(xbase, zbase, pos.x, pos.z, brush, strength, pressure, std::move (texture));
@@ -2258,6 +2268,9 @@ void MapChunk::registerChunkUpdate(unsigned flags)
   if (flags & ChunkUpdateFlags::ALPHAMAP)
   {
     _doodad_mapping_needs_update = true;
+    mt->getWorld()->notifyTextureChange(
+      static_cast<int>(mt->index.x) * 16 + px,
+      static_cast<int>(mt->index.z) * 16 + py);
   }
 }
 

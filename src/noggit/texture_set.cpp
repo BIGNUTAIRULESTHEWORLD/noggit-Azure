@@ -107,6 +107,11 @@ int TextureSet::addTexture (scoped_blp_texture_reference texture)
 
 bool TextureSet::replace_texture (scoped_blp_texture_reference const& texture_to_replace, scoped_blp_texture_reference replacement_texture)
 {
+  if (texture_to_replace == replacement_texture)
+  {
+    return false;
+  }
+
   int texture_to_replace_level = -1, replacement_texture_level = -1;
 
   for (int i = 0; i < nTextures; ++i)
@@ -149,10 +154,83 @@ bool TextureSet::replace_texture (scoped_blp_texture_reference const& texture_to
     }
   }
 
-  if (texture_to_replace_level != -1 || replacement_texture_level != -1)
-      return true;
+  return texture_to_replace_level != -1;
+}
+
+bool TextureSet::replace_textures(
+    std::vector<std::pair<scoped_blp_texture_reference, scoped_blp_texture_reference>> const& replacements)
+{
+  std::array<std::optional<scoped_blp_texture_reference>, 4> targets;
+  bool changed = false;
+
+  // Resolve every layer against the original texture set before mutating any
+  // layer. This prevents mappings such as A -> B and B -> C from cascading.
+  for (std::size_t layer = 0; layer < nTextures; ++layer)
+  {
+    for (auto const& replacement : replacements)
+    {
+      if (replacement.first != replacement.second && textures[layer] == replacement.first)
+      {
+        targets[layer].emplace(replacement.second);
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  if (!changed)
+  {
+    return false;
+  }
+
+  for (std::size_t layer = 0; layer < nTextures; ++layer)
+  {
+    if (targets[layer])
+    {
+      textures[layer] = std::move(*targets[layer]);
+    }
+  }
+
+  QSettings settings;
+  bool const do_merge_layers = settings.value("texture_merge_layers", true).toBool();
+  if (do_merge_layers)
+  {
+    bool has_duplicate = false;
+    for (std::size_t layer = 0; layer < nTextures && !has_duplicate; ++layer)
+    {
+      for (std::size_t other = layer + 1; other < nTextures; ++other)
+      {
+        if (textures[layer] == textures[other])
+        {
+          has_duplicate = true;
+          break;
+        }
+      }
+    }
+    if (has_duplicate)
+    {
+      removeDuplicate();
+    }
+  }
   else
-      return false;
+  {
+    // Match the single-replacement behavior: duplicate texture slots remain
+    // separate by assigning a visible fallback to later duplicates.
+    for (std::size_t layer = 0; layer < nTextures; ++layer)
+    {
+      for (std::size_t other = layer + 1; other < nTextures; ++other)
+      {
+        if (textures[layer] == textures[other])
+        {
+          std::stringstream fallback_name;
+          fallback_name << "error_" << other << ".blp";
+          textures[other] = scoped_blp_texture_reference(fallback_name.str(), _context);
+        }
+      }
+    }
+  }
+
+  return true;
 }
 
 void TextureSet::swap_layers(int layer_1, int layer_2)

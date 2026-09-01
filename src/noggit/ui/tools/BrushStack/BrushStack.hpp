@@ -11,6 +11,7 @@
 
 #include <QWidget>
 #include <QJsonObject>
+#include <QString>
 
 #include <glm/vec3.hpp>
 
@@ -29,6 +30,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QGroupBox;
 class QLabel;
+class QPushButton;
 class QSpinBox;
 
 namespace Noggit::Ui::Tools::UiCommon
@@ -101,8 +103,10 @@ namespace Noggit::Ui::Tools
     void addAction(BrushStackItem* brush_stack_item);
     void setupMapStampUi();
     void refreshMapStampLibrary(QString const& active_path = {});
+    void updateMapStampLibraryCard();
     bool loadMapStamp(QString const& path);
     [[nodiscard]] Stamp::MapStampProtectionSettings mapStampProtectionSettings() const;
+    [[nodiscard]] Stamp::MapStampTransform mapStampTransform() const;
     [[nodiscard]] Stamp::MapStampHeightMode mapStampHeightMode() const;
     [[nodiscard]] float mapStampRadius() const;
     [[nodiscard]] float mapStampHardness() const;
@@ -117,7 +121,10 @@ namespace Noggit::Ui::Tools
     Stamp::MapStampAsset _map_stamp;
     QCheckBox* _map_stamp_enabled = nullptr;
     QWidget* _map_stamp_options = nullptr;
-    QComboBox* _map_stamp_library = nullptr;
+    QLabel* _map_stamp_library_preview = nullptr;
+    QLabel* _map_stamp_library_name = nullptr;
+    QPushButton* _map_stamp_library_browse = nullptr;
+    QString _map_stamp_path;
     QComboBox* _map_stamp_shape = nullptr;
     QWidget* _map_stamp_painted_controls = nullptr;
     QCheckBox* _map_stamp_painted_selection = nullptr;
@@ -131,6 +138,8 @@ namespace Noggit::Ui::Tools
     QCheckBox* _map_stamp_height_drag = nullptr;
     QDoubleSpinBox* _map_stamp_opacity = nullptr;
     QSpinBox* _map_stamp_rotation = nullptr;
+    QPushButton* _map_stamp_flip_x = nullptr;
+    QPushButton* _map_stamp_flip_z = nullptr;
     QCheckBox* _map_stamp_randomize_rotation = nullptr;
     QCheckBox* _map_stamp_auto_protection = nullptr;
     QCheckBox* _map_stamp_show_protection = nullptr;

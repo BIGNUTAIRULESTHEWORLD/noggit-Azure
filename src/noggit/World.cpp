@@ -348,6 +348,31 @@ Noggit::Rendering::WorldRender* World::renderer()
   return &_renderer;
 }
 
+void World::notifyTextureChange(int global_chunk_x, int global_chunk_z)
+{
+  constexpr int chunks_per_map_axis = 64 * 16;
+  if (global_chunk_x < 0 || global_chunk_x >= chunks_per_map_axis
+      || global_chunk_z < 0 || global_chunk_z >= chunks_per_map_axis)
+  {
+    return;
+  }
+
+  std::uint32_t const chunk_key = static_cast<std::uint32_t>(
+    global_chunk_z * chunks_per_map_axis + global_chunk_x);
+  std::lock_guard<std::mutex> const lock(_texture_change_mutex);
+  _texture_changed_chunks.insert(chunk_key);
+}
+
+std::vector<std::uint32_t> World::takeTextureChanges()
+{
+  std::lock_guard<std::mutex> const lock(_texture_change_mutex);
+  std::vector<std::uint32_t> changes;
+  changes.reserve(_texture_changed_chunks.size());
+  changes.assign(_texture_changed_chunks.begin(), _texture_changed_chunks.end());
+  _texture_changed_chunks.clear();
+  return changes;
+}
+
 void World::update_selection_pivot()
 {
   ZoneScoped;
@@ -2021,8 +2046,12 @@ void World::blurTerrain(glm::vec3 const& pos, float remain, float radius, int Br
         continue;
       }
 
-      // The original brush uses the full 3D cursor distance here.
-      float const dist = glm::distance(glm::vec3{vertex_x, *center, vertex_z}, pos);
+      // Terrain brushes operate on a horizontal heightmap footprint. Using the
+      // cursor's Y coordinate here makes steep vertices fall outside the brush
+      // even when their XZ position is visibly inside its circle.
+      float const xdiff = vertex_x - pos.x;
+      float const zdiff = vertex_z - pos.z;
+      float const dist = std::sqrt(xdiff * xdiff + zdiff * zdiff);
       if (dist >= radius)
       {
         continue;
@@ -3717,14 +3746,100 @@ constexpr float HALFSHADOWSIZE = (TEXDETAILSIZE / 2.0f);
 void World::swapTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex)
 {
   ZoneScoped;
-  if (!!Noggit::Ui::selected_texture::get())
+  if (auto const replacement_texture = Noggit::Ui::selected_texture::get())
   {
-    for_all_chunks_on_tile(pos, [&](MapChunk* chunk)
-    {
-      NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
-      chunk->switchTexture(tex, *Noggit::Ui::selected_texture::get());
-    });
+    swapTextureOnTile(mapIndex.getTile(pos), tex, *replacement_texture);
   }
+}
+
+std::size_t World::swapTextureOnTile(MapTile* tile,
+                                     scoped_blp_texture_reference const& texture_to_replace,
+                                     scoped_blp_texture_reference const& replacement_texture)
+{
+  ZoneScoped;
+  if (!tile || !tile->finishedLoading() || tile->loading_failed()
+      || texture_to_replace == replacement_texture)
+  {
+    return 0;
+  }
+
+  std::size_t changed_chunks = 0;
+  for (unsigned chunk_z = 0; chunk_z < 16; ++chunk_z)
+  {
+    for (unsigned chunk_x = 0; chunk_x < 16; ++chunk_x)
+    {
+      MapChunk* chunk = tile->getChunk(chunk_x, chunk_z);
+      if (!chunk || chunk->getTextureSet()->texture_id(texture_to_replace) < 0)
+      {
+        continue;
+      }
+
+      NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+      if (chunk->switchTexture(texture_to_replace, replacement_texture))
+      {
+        ++changed_chunks;
+      }
+    }
+  }
+
+  if (changed_chunks)
+  {
+    mapIndex.setChanged(tile);
+  }
+
+  return changed_chunks;
+}
+
+std::size_t World::swapTexturesOnTile(
+    MapTile* tile,
+    std::vector<std::pair<scoped_blp_texture_reference, scoped_blp_texture_reference>> const& replacements)
+{
+  ZoneScoped;
+  if (!tile || !tile->finishedLoading() || tile->loading_failed() || replacements.empty())
+  {
+    return 0;
+  }
+
+  std::size_t changed_chunks = 0;
+  for (unsigned chunk_z = 0; chunk_z < 16; ++chunk_z)
+  {
+    for (unsigned chunk_x = 0; chunk_x < 16; ++chunk_x)
+    {
+      MapChunk* chunk = tile->getChunk(chunk_x, chunk_z);
+      if (!chunk)
+      {
+        continue;
+      }
+
+      bool has_source = false;
+      for (auto const& replacement : replacements)
+      {
+        if (replacement.first != replacement.second
+            && chunk->getTextureSet()->texture_id(replacement.first) >= 0)
+        {
+          has_source = true;
+          break;
+        }
+      }
+      if (!has_source)
+      {
+        continue;
+      }
+
+      NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+      if (chunk->switchTextures(replacements))
+      {
+        ++changed_chunks;
+      }
+    }
+  }
+
+  if (changed_chunks)
+  {
+    mapIndex.setChanged(tile);
+  }
+
+  return changed_chunks;
 }
 
 void World::swapTextureGlobal(scoped_blp_texture_reference tex)

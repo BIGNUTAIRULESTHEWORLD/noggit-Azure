@@ -9,7 +9,9 @@
 
 #include <glm/gtc/constants.hpp>
 
+#include <algorithm>
 #include <array>
+#include <numeric>
 #include <vector>
 
 using namespace Noggit::Rendering::Primitives;
@@ -555,14 +557,64 @@ void Square::setup_buffers()
       gl.drawElements(GL_LINE_STRIP, _indices_vbo, _indice_count, GL_UNSIGNED_SHORT, nullptr);
   }
 
+  void Line::drawSegments(glm::mat4x4 const& mvp,
+                          std::vector<glm::vec3> const& points,
+                          glm::vec4 const& color)
+  {
+      if (points.size() < 2)
+          return;
 
-  void Line::setup_buffers(std::vector<glm::vec3> const points)
+      // Line uses 16-bit indices. Keep each batch even so every pair remains a
+      // self-contained segment when a heavily textured area produces many hits.
+      constexpr std::size_t max_batch_points = 65534;
+      for (std::size_t start = 0; start < points.size(); start += max_batch_points)
+      {
+          std::size_t const count = std::min(max_batch_points, points.size() - start);
+          std::vector<glm::vec3> const batch(points.begin() + start,
+                                             points.begin() + start + count);
+          setup_buffers(batch);
+
+          OpenGL::Scoped::use_program line_shader{ *_program.get() };
+          line_shader.uniform("model_view_projection", mvp);
+          line_shader.uniform("color", color);
+
+          OpenGL::Scoped::vao_binder const _(_vao[0]);
+          gl.drawElements(GL_LINES, _indices_vbo, _indice_count, GL_UNSIGNED_SHORT, nullptr);
+      }
+  }
+
+  void Line::drawCachedSegments(glm::mat4x4 const& mvp,
+                                std::vector<glm::vec3> const& points,
+                                glm::vec4 const& color,
+                                std::uint64_t revision)
+  {
+      if (points.size() < 2)
+          return;
+
+      if (!_cached_segments_valid || _cached_segments_revision != revision)
+      {
+          setup_cached_segment_buffers(points);
+          _cached_segments_revision = revision;
+          _cached_segments_valid = true;
+      }
+
+      OpenGL::Scoped::use_program line_shader{ *_program.get() };
+      line_shader.uniform("model_view_projection", mvp);
+      line_shader.uniform("color", color);
+
+      OpenGL::Scoped::vao_binder const _(_vao[0]);
+      gl.drawElements(GL_LINES, _indices_vbo, _indice_count, GL_UNSIGNED_INT, nullptr);
+  }
+
+
+  void Line::setup_buffers(std::vector<glm::vec3> const& points)
   {
       _vao.upload();
       _buffers.upload();
 
       std::vector<glm::vec3> vertices = points;
       std::vector<std::uint16_t> indices;
+      indices.reserve(points.size());
 
       for (int i = 0; i < points.size(); ++i)
       {
@@ -572,7 +624,32 @@ void Square::setup_buffers()
       setup_shader(vertices, indices);
   }
 
-  void Line::setup_buffers_interpolated(std::vector<glm::vec3> const points)
+  void Line::setup_cached_segment_buffers(std::vector<glm::vec3> const& points)
+  {
+      _vao.upload();
+      _buffers.upload();
+
+      std::vector<std::uint32_t> indices(points.size());
+      std::iota(indices.begin(), indices.end(), 0u);
+      _indice_count = static_cast<int>(indices.size());
+      ensure_shader();
+
+      gl.bufferData<GL_ARRAY_BUFFER, glm::vec3>(_vertices_vbo, points, GL_STATIC_DRAW);
+      gl.bufferData<GL_ELEMENT_ARRAY_BUFFER, std::uint32_t>(_indices_vbo, indices, GL_STATIC_DRAW);
+
+      OpenGL::Scoped::index_buffer_manual_binder indices_binder(_indices_vbo);
+      OpenGL::Scoped::use_program shader(*_program.get());
+      {
+          OpenGL::Scoped::vao_binder const _(_vao[0]);
+          OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const vertices_binder(_vertices_vbo);
+          shader.attrib("position", 3, GL_FLOAT, GL_FALSE, 0, 0);
+          indices_binder.bind();
+      }
+
+      _buffers_are_setup = true;
+  }
+
+  void Line::setup_buffers_interpolated(std::vector<glm::vec3> const& points)
   {
       const float tension = 0.5f;
 
@@ -634,15 +711,24 @@ void Square::setup_buffers()
       return (c0 * p0 + c1 * m0 + c2 * p1 + c3 * m1);
   }
 
-  void Line::setup_shader(std::vector<glm::vec3> vertices, std::vector<std::uint16_t> indices)
+  void Line::ensure_shader()
+  {
+      if (!_program)
+      {
+          _program.reset(new OpenGL::program(
+              {
+                  { GL_VERTEX_SHADER, OpenGL::shader::src_from_qrc("line_vs") },
+                  { GL_FRAGMENT_SHADER, OpenGL::shader::src_from_qrc("line_fs") }
+              }
+          ));
+      }
+  }
+
+  void Line::setup_shader(std::vector<glm::vec3> const& vertices,
+                          std::vector<std::uint16_t> const& indices)
   {
       _indice_count = (int)indices.size();
-      _program.reset(new OpenGL::program(
-          {
-              { GL_VERTEX_SHADER, OpenGL::shader::src_from_qrc("line_vs") },
-              { GL_FRAGMENT_SHADER, OpenGL::shader::src_from_qrc("line_fs") }
-          }
-      ));
+      ensure_shader();
 
       gl.bufferData<GL_ARRAY_BUFFER, glm::vec3>(_vertices_vbo, vertices, GL_STATIC_DRAW);
       gl.bufferData<GL_ELEMENT_ARRAY_BUFFER, std::uint16_t>(_indices_vbo, indices, GL_STATIC_DRAW);
@@ -668,5 +754,7 @@ void Square::setup_buffers()
       _program.reset();
 
       _buffers_are_setup = false;
+      _cached_segments_valid = false;
+      _cached_segments_revision = 0;
 
   }

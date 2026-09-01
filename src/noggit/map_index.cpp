@@ -78,6 +78,7 @@ MapIndex::MapIndex (const std::string &pBasename, int map_id, World* world,
   _unload_interval = settings.value("unload_interval", 30).toInt();
   _unload_dist = settings.value("unload_dist", 5).toInt();
   _loading_radius = settings.value("loading_radius", 2).toInt();
+  _current_adt_only = settings.value("current_adt_only", false).toBool();
 
   if (create_empty)
   {
@@ -328,6 +329,12 @@ void MapIndex::enterTile(const TileIndex& tile)
     return;
   }
 
+  if (_current_adt_only)
+  {
+    loadTile(tile);
+    return;
+  }
+
   int cx = static_cast<int>(tile.x);
   int cz = static_cast<int>(tile.z);
 
@@ -449,6 +456,24 @@ void MapIndex::reloadTile(const TileIndex& tile)
 
 void MapIndex::unloadTiles(const TileIndex& tile)
 {
+  if (_current_adt_only)
+  {
+    // Keep cleanup bounded to one ADT per frame. Switching this mode on can
+    // leave a full loading-radius worth of tiles resident, and destroying all
+    // of them in one tick would create the same frame-time spike this mode is
+    // intended to avoid. Changed tiles stay resident so unsaved work is never
+    // discarded; they become eligible after being saved.
+    for (MapTile* adt : loaded_tiles())
+    {
+      if (adt->index != tile && !adt->changed.load())
+      {
+        unloadTile(adt->index);
+        break;
+      }
+    }
+    return;
+  }
+
   if (((clock() / CLOCKS_PER_SEC) - _last_unload_time) > _unload_interval)
   {
     // ensure _unload_dist is always bigger than loading dist
@@ -777,6 +802,16 @@ void MapIndex::setUnloadDistance(int value)
 void MapIndex::setUnloadInterval(int value)
 {
   _unload_interval = value;
+}
+
+void MapIndex::setCurrentAdtOnly(bool enabled)
+{
+  _current_adt_only = enabled;
+}
+
+bool MapIndex::currentAdtOnly() const
+{
+  return _current_adt_only;
 }
 
 uint32_t MapIndex::newGUID()

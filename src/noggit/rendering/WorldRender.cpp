@@ -1586,6 +1586,31 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       _line_render.draw(mvp, line, preview_color, false);
   }
 
+  bool const draw_texture_conflicts = render_settings.texture_conflict_seam_segments
+    && !render_settings.texture_conflict_seam_segments->empty();
+  bool const draw_texture_discontinuities = render_settings.texture_discontinuity_seam_segments
+    && !render_settings.texture_discontinuity_seam_segments->empty();
+  if (draw_texture_conflicts || draw_texture_discontinuities)
+  {
+    OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
+    gl.lineWidth(4.0f);
+    if (draw_texture_conflicts)
+    {
+      glm::vec4 const conflict_color{1.0f, 0.0f, 0.85f, 1.0f};
+      _texture_conflict_line_render.drawCachedSegments(
+        mvp, *render_settings.texture_conflict_seam_segments, conflict_color,
+        render_settings.texture_conflict_seam_revision);
+    }
+    if (draw_texture_discontinuities)
+    {
+      glm::vec4 const discontinuity_color{1.0f, 0.48f, 0.03f, 1.0f};
+      _texture_discontinuity_line_render.drawCachedSegments(
+        mvp, *render_settings.texture_discontinuity_seam_segments, discontinuity_color,
+        render_settings.texture_conflict_seam_revision);
+    }
+    gl.lineWidth(1.0f);
+  }
+
   if (!render_settings.road_reference_centerline.empty())
   {
     glm::vec4 const selection_color{0.08f, 0.35f, 1.0f, 1.0f};
@@ -2168,6 +2193,8 @@ void WorldRender::unload()
   _sphere_render.unload();
   _square_render.unload();
   _line_render.unload();
+  _texture_conflict_line_render.unload();
+  _texture_discontinuity_line_render.unload();
   _wirebox_render.unload();
 
   _horizon_render.reset();

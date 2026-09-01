@@ -241,11 +241,15 @@ public:
   void setUnloadDistance(int value);
 
   void setUnloadInterval(int value);;
+
+  void setCurrentAdtOnly(bool enabled);
+  [[nodiscard]] bool currentAdtOnly() const;
 private:
   int _last_unload_time;
   int _unload_interval;
   int _unload_dist;
   int _loading_radius;
+  bool _current_adt_only = false;
   unsigned _n_loaded_tiles = 0; // to be loaded, not necessarily already loaded
   int _n_existing_tiles = -1;
 

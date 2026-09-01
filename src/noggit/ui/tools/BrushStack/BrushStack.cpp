@@ -12,6 +12,7 @@
 #include <noggit/ui/ShaderTool.hpp>
 #include <noggit/ui/TerrainTool.hpp>
 #include <noggit/ui/texturing_tool.hpp>
+#include <noggit/ui/tools/Stamp/StampAssetBrowser.hpp>
 #include <noggit/ui/tools/UiCommon/ExtendedSlider.hpp>
 
 #include <QButtonGroup>
@@ -21,7 +22,9 @@
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileInfo>
+#include <QFont>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -30,6 +33,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
 #include <QRadialGradient>
 #include <QRadioButton>
@@ -46,6 +50,33 @@
 #include <optional>
 
 using namespace Noggit::Ui::Tools;
+
+namespace
+{
+  QString stampShapeName(Stamp::MapStampShape shape)
+  {
+    switch (shape)
+    {
+      case Stamp::MapStampShape::Circle:
+        return "Circle";
+      case Stamp::MapStampShape::Square:
+        return "Square";
+      case Stamp::MapStampShape::Painted:
+        return "Painted";
+    }
+    return "Unknown";
+  }
+
+  QString sanitizeStampName(QString name)
+  {
+    name = name.trimmed();
+    name.replace(QRegularExpression("[<>:\"/\\\\|?*\\x00-\\x1F]"), "_");
+    while (name.endsWith('.') || name.endsWith(' '))
+      name.chop(1);
+    return name;
+  }
+
+}
 
 
 BrushStack::BrushStack(MapView* map_view, QWidget* parent)
@@ -253,14 +284,31 @@ void BrushStack::setupMapStampUi()
   options_layout->setContentsMargins(0, 0, 0, 0);
   options_layout->setSpacing(6);
 
-  auto* library_row = new QHBoxLayout();
-  _map_stamp_library = new QComboBox(_map_stamp_options);
-  _map_stamp_library->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-  _map_stamp_library->setMinimumContentsLength(10);
-  auto* remove = new QPushButton("Delete", _map_stamp_options);
-  library_row->addWidget(_map_stamp_library, 1);
-  library_row->addWidget(remove);
-  options_layout->addLayout(library_row);
+  auto* library_card = new QFrame(_map_stamp_options);
+  library_card->setFrameShape(QFrame::StyledPanel);
+  auto* library_layout = new QHBoxLayout(library_card);
+  library_layout->setContentsMargins(6, 6, 6, 6);
+  library_layout->setSpacing(8);
+  _map_stamp_library_preview = new QLabel(library_card);
+  _map_stamp_library_preview->setFixedSize(72, 72);
+  _map_stamp_library_preview->setAlignment(Qt::AlignCenter);
+  _map_stamp_library_preview->setFrameShape(QFrame::StyledPanel);
+  auto* library_text_layout = new QVBoxLayout();
+  library_text_layout->setContentsMargins(0, 0, 0, 0);
+  _map_stamp_library_name = new QLabel("No saved stamps", library_card);
+  _map_stamp_library_name->setWordWrap(true);
+  QFont library_name_font = _map_stamp_library_name->font();
+  library_name_font.setBold(true);
+  _map_stamp_library_name->setFont(library_name_font);
+  _map_stamp_library_browse = new QPushButton("Browse stamps...", library_card);
+  _map_stamp_library_browse->setToolTip(
+      "Open the searchable thumbnail browser for the project stamp library.");
+  library_text_layout->addWidget(_map_stamp_library_name);
+  library_text_layout->addStretch(1);
+  library_text_layout->addWidget(_map_stamp_library_browse);
+  library_layout->addWidget(_map_stamp_library_preview);
+  library_layout->addLayout(library_text_layout, 1);
+  options_layout->addWidget(library_card);
 
   auto* placement_form = new QFormLayout();
   placement_form->setContentsMargins(0, 0, 0, 0);
@@ -329,10 +377,28 @@ void BrushStack::setupMapStampUi()
       "Rotates terrain and textures. Hold R and move the mouse horizontally; hold Ctrl after "
       "R for fine control. Mouse wheel uses 15 degree steps; Ctrl+wheel uses 1.");
   _map_stamp_rotation->setEnabled(false);
-  auto* reset_rotation = new QPushButton("Reset", rotation_row);
+  auto* reset_transform = new QPushButton("Reset all", rotation_row);
+  reset_transform->setToolTip("Clears rotation and both stamp-local axis flips.");
   rotation_layout->addWidget(_map_stamp_rotation, 1);
-  rotation_layout->addWidget(reset_rotation);
+  rotation_layout->addWidget(reset_transform);
   placement_form->addRow("Rotation", rotation_row);
+
+  auto* mirror_row = new QWidget(_map_stamp_options);
+  auto* mirror_layout = new QHBoxLayout(mirror_row);
+  mirror_layout->setContentsMargins(0, 0, 0, 0);
+  _map_stamp_flip_x = new QPushButton("Flip X", mirror_row);
+  _map_stamp_flip_x->setCheckable(true);
+  _map_stamp_flip_x->setEnabled(false);
+  _map_stamp_flip_x->setToolTip(
+      "Mirrors the stamp left-to-right on its local X axis before rotation.");
+  _map_stamp_flip_z = new QPushButton("Flip Z", mirror_row);
+  _map_stamp_flip_z->setCheckable(true);
+  _map_stamp_flip_z->setEnabled(false);
+  _map_stamp_flip_z->setToolTip(
+      "Mirrors the stamp front-to-back on its local Z axis before rotation.");
+  mirror_layout->addWidget(_map_stamp_flip_x);
+  mirror_layout->addWidget(_map_stamp_flip_z);
+  placement_form->addRow("Mirror", mirror_row);
   options_layout->addLayout(placement_form);
 
   _map_stamp_height_drag = new QCheckBox("Drag elevation: release to paste", _map_stamp_options);
@@ -525,7 +591,31 @@ void BrushStack::setupMapStampUi()
   });
   connect(_map_stamp_rotation, qOverload<int>(&QSpinBox::valueChanged), this,
           [this](int rotation) { setRotation(rotation); });
-  connect(reset_rotation, &QPushButton::clicked, this, [this] { setRotation(0); });
+  auto transform_changed = [this](bool)
+  {
+    if (hasActiveMapStamp())
+      updateMapStampPreview();
+    markMapStampTerrainPreviewDirty();
+  };
+  connect(_map_stamp_flip_x, &QPushButton::toggled, this, transform_changed);
+  connect(_map_stamp_flip_z, &QPushButton::toggled, this, transform_changed);
+  connect(reset_transform, &QPushButton::clicked, this, [this]
+  {
+    bool const rotation_changed = _ui.brushRotation->value() != 0;
+    {
+      QSignalBlocker const flip_x_blocker(_map_stamp_flip_x);
+      QSignalBlocker const flip_z_blocker(_map_stamp_flip_z);
+      _map_stamp_flip_x->setChecked(false);
+      _map_stamp_flip_z->setChecked(false);
+    }
+    setRotation(0);
+    if (!rotation_changed)
+    {
+      if (hasActiveMapStamp())
+        updateMapStampPreview();
+      markMapStampTerrainPreviewDirty();
+    }
+  });
   connect(_map_stamp_height_mode, qOverload<int>(&QComboBox::currentIndexChanged), this,
           [this](int) { markMapStampTerrainPreviewDirty(); });
   connect(_map_stamp_height_scale, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
@@ -558,12 +648,15 @@ void BrushStack::setupMapStampUi()
   }
   connect(_map_stamp_auto_protection, &QCheckBox::toggled, this,
           [this](bool) { markMapStampTerrainPreviewDirty(); });
-  connect(_map_stamp_library, qOverload<int>(&QComboBox::currentIndexChanged), this,
-          [this](int)
+  connect(_map_stamp_library_browse, &QPushButton::clicked, this, [this]
   {
-    QString const path = _map_stamp_library->currentData().toString();
-    if (!path.isEmpty())
-      loadMapStamp(path);
+    QString const directory = QString::fromStdString(
+        Noggit::Project::CurrentProject::get()->ProjectPath) + "/noggit-assets/stamps";
+    Stamp::StampAssetBrowser browser(directory, _map_stamp_path, this);
+    int const result = browser.exec();
+    QString const path = result == QDialog::Accepted
+        ? browser.selectedPath() : browser.activePath();
+    refreshMapStampLibrary(path);
   });
   connect(_map_stamp_enabled, &QCheckBox::toggled, this, [this](bool enabled)
   {
@@ -690,9 +783,7 @@ void BrushStack::setupMapStampUi()
                                           QLineEdit::Normal, {}, &accepted).trimmed();
     if (!accepted || name.isEmpty())
       return;
-    name.replace(QRegularExpression("[<>:\"/\\\\|?*\\x00-\\x1F]"), "_");
-    while (name.endsWith('.') || name.endsWith(' '))
-      name.chop(1);
+    name = sanitizeStampName(name);
     if (name.isEmpty())
       return;
 
@@ -746,6 +837,8 @@ void BrushStack::setupMapStampUi()
     }
     refreshMapStampLibrary(path);
     _map_stamp_rotation->setEnabled(true);
+    _map_stamp_flip_x->setEnabled(true);
+    _map_stamp_flip_z->setEnabled(true);
     _map_stamp_enabled->setChecked(true);
     _map_stamp_status->setText(
         QString("Captured '%1' (%2): grounded feature radius %3, terrain %4x%4, "
@@ -757,54 +850,65 @@ void BrushStack::setupMapStampUi()
           .arg(_map_stamp.textureCount()));
     updateMapStampPreview();
   });
-  connect(remove, &QPushButton::clicked, this, [this]
-  {
-    QString const path = _map_stamp_library->currentData().toString();
-    if (path.isEmpty())
-      return;
-    QString const name = QFileInfo(path).completeBaseName();
-    if (QMessageBox::question(this, "Delete map stamp",
-          QString("Delete '%1' from the project stamp library?").arg(name),
-          QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
-      return;
-    if (!QFile::remove(path))
-    {
-      _map_stamp_status->setText(QString("Unable to delete '%1'.").arg(name));
-      return;
-    }
-    clearMapStampTerrainPreview();
-    _map_stamp = {};
-    _map_stamp_height_offset->setValue(0.0);
-    _map_stamp_rotation->setEnabled(false);
-    refreshMapStampLibrary();
-    _map_stamp_status->setText(QString("Deleted '%1'.").arg(name));
-  });
 }
 
 void BrushStack::refreshMapStampLibrary(QString const& active_path)
 {
-  QString const previous = active_path.isEmpty() ? _map_stamp_library->currentData().toString()
+  QString const previous = active_path.isEmpty() ? _map_stamp_path
                                                   : QDir::cleanPath(active_path);
-  QSignalBlocker const blocker(_map_stamp_library);
-  _map_stamp_library->clear();
   QDir const directory(QString::fromStdString(
       Noggit::Project::CurrentProject::get()->ProjectPath) + "/noggit-assets/stamps");
   QFileInfoList const assets = directory.entryInfoList({"*.nogstamp"}, QDir::Files,
-                                                        QDir::Name | QDir::IgnoreCase);
-  for (QFileInfo const& asset : assets)
-    _map_stamp_library->addItem(asset.completeBaseName(), QDir::cleanPath(asset.absoluteFilePath()));
-  if (_map_stamp_library->count() == 0)
+                                                         QDir::Name | QDir::IgnoreCase);
+  if (assets.isEmpty())
   {
-    _map_stamp_library->addItem("No captured map stamps");
-    _map_stamp_library->setEnabled(false);
+    clearMapStampTerrainPreview();
+    _map_stamp = {};
+    _map_stamp_path.clear();
+    _map_stamp_height_offset->setValue(0.0);
+    _map_stamp_rotation->setEnabled(false);
+    _map_stamp_flip_x->setEnabled(false);
+    _map_stamp_flip_z->setEnabled(false);
+    updateMapStampLibraryCard();
     return;
   }
-  _map_stamp_library->setEnabled(true);
-  int const index = _map_stamp_library->findData(previous);
-  _map_stamp_library->setCurrentIndex(index >= 0 ? index : 0);
-  QString const selected = _map_stamp_library->currentData().toString();
-  if (!selected.isEmpty() && (!_map_stamp.valid() || !active_path.isEmpty()))
+
+  QString selected;
+  for (QFileInfo const& asset : assets)
+  {
+    QString const path = QDir::cleanPath(asset.absoluteFilePath());
+    if (path.compare(previous, Qt::CaseInsensitive) == 0)
+    {
+      selected = path;
+      break;
+    }
+  }
+  if (selected.isEmpty())
+    selected = QDir::cleanPath(assets.front().absoluteFilePath());
+  if (!_map_stamp.valid() || selected.compare(_map_stamp_path, Qt::CaseInsensitive) != 0)
     loadMapStamp(selected);
+  else
+    updateMapStampLibraryCard();
+}
+
+void BrushStack::updateMapStampLibraryCard()
+{
+  bool const has_stamp = _map_stamp.valid() && !_map_stamp_path.isEmpty();
+  if (!has_stamp)
+  {
+    _map_stamp_library_preview->setPixmap(QPixmap());
+    _map_stamp_library_preview->setText("No\npreview");
+    _map_stamp_library_name->setText("No saved stamps");
+    return;
+  }
+
+  _map_stamp_library_preview->setText(QString());
+  _map_stamp_library_preview->setPixmap(QPixmap::fromImage(_map_stamp.previewImage()).scaled(
+      _map_stamp_library_preview->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+  _map_stamp_library_name->setText(QString("%1\n%2 · radius %3")
+      .arg(QFileInfo(_map_stamp_path).completeBaseName())
+      .arg(stampShapeName(_map_stamp.shape()))
+      .arg(_map_stamp.sourceRadius(), 0, 'f', 1));
 }
 
 bool BrushStack::loadMapStamp(QString const& path)
@@ -815,11 +919,16 @@ bool BrushStack::loadMapStamp(QString const& path)
   if (!loaded.load(path, &error))
   {
     _map_stamp = {};
+    _map_stamp_path.clear();
     _map_stamp_status->setText(error);
     _map_stamp_rotation->setEnabled(false);
+    _map_stamp_flip_x->setEnabled(false);
+    _map_stamp_flip_z->setEnabled(false);
+    updateMapStampLibraryCard();
     return false;
   }
   _map_stamp = std::move(loaded);
+  _map_stamp_path = QDir::cleanPath(path);
   bool const exact_height = _map_stamp.supportsExactHeight();
   _map_stamp_height_mode->setEnabled(exact_height);
   _map_stamp_height_mode->setCurrentIndex(exact_height ? 0 : 2);
@@ -833,6 +942,8 @@ bool BrushStack::loadMapStamp(QString const& path)
   _map_stamp_shape->setCurrentIndex(_map_stamp.shape() == Stamp::MapStampShape::Painted ? 2
       : (_map_stamp.shape() == Stamp::MapStampShape::Square ? 1 : 0));
   _map_stamp_rotation->setEnabled(true);
+  _map_stamp_flip_x->setEnabled(true);
+  _map_stamp_flip_z->setEnabled(true);
   _map_stamp_status->setText(
       QString("Loaded '%1' (%2, %3): radius %4, terrain %5x%5, texture %6x%6, %7 layers.")
         .arg(QFileInfo(path).completeBaseName())
@@ -844,6 +955,7 @@ bool BrushStack::loadMapStamp(QString const& path)
         .arg(_map_stamp.textureCount()));
   if (_map_stamp_enabled->isChecked())
     updateMapStampPreview();
+  updateMapStampLibraryCard();
   return true;
 }
 
@@ -876,7 +988,7 @@ float BrushStack::mapStampPreviewRadius() const
 {
   float const radius = mapStampRadius();
   return hasLoadedMapStamp()
-      ? _map_stamp.footprintBoundingRadius(radius, _ui.brushRotation->value(),
+      ? _map_stamp.footprintBoundingRadius(radius, mapStampTransform(),
                                            mapStampHardness(), mapStampHeightMode())
       : radius;
 }
@@ -957,6 +1069,14 @@ Stamp::MapStampProtectionSettings BrushStack::mapStampProtectionSettings() const
   return protection;
 }
 
+Stamp::MapStampTransform BrushStack::mapStampTransform() const
+{
+  return {
+      static_cast<float>(_ui.brushRotation->value()),
+      _map_stamp_flip_x && _map_stamp_flip_x->isChecked(),
+      _map_stamp_flip_z && _map_stamp_flip_z->isChecked()};
+}
+
 Stamp::MapStampHeightMode BrushStack::mapStampHeightMode() const
 {
   if (!_map_stamp_height_mode || _map_stamp_height_mode->currentIndex() == 0)
@@ -987,7 +1107,7 @@ bool BrushStack::executeMapStamp(glm::vec3 const& cursor_pos, World* world)
   clearMapStampTerrainPreview();
   Stamp::MapStampProtectionSettings protection = mapStampProtectionSettings();
   bool const changed = _map_stamp.apply(world, mapStampPosition(cursor_pos), mapStampRadius(),
-                                        _ui.brushRotation->value(), mapStampHardness(),
+                                        mapStampTransform(), mapStampHardness(),
                                         static_cast<float>(_map_stamp_height_scale->value()),
                                         static_cast<float>(_map_stamp_height_offset->value()),
                                         static_cast<float>(_map_stamp_opacity->value()), protection,
@@ -1051,7 +1171,7 @@ void BrushStack::updateMapStampTerrainPreview(glm::vec3 const& cursor_pos, World
   std::vector<MapChunk*> preview_chunks;
   std::vector<std::vector<glm::vec3>> preview_lines;
   bool const preview_ready = _map_stamp.previewTerrain(
-      world, center, mapStampRadius(), _ui.brushRotation->value(), mapStampHardness(),
+      world, center, mapStampRadius(), mapStampTransform(), mapStampHardness(),
       static_cast<float>(_map_stamp_height_scale->value()),
       static_cast<float>(_map_stamp_height_offset->value()),
       static_cast<float>(_map_stamp_opacity->value()), protection, mapStampHeightMode(),
@@ -1319,9 +1439,9 @@ void BrushStack::updateMapStampPreview()
     return;
 
   constexpr int preview_resolution = 1024;
-  int const rotation = _ui.brushRotation->value();
+  Stamp::MapStampTransform const transform = mapStampTransform();
   float const extent_scale = _map_stamp.footprintBoundingRadius(
-      1.f, rotation, mapStampHardness(), mapStampHeightMode());
+      1.f, transform, mapStampHardness(), mapStampHeightMode());
   int const source_size = std::clamp(
       static_cast<int>(std::lround(preview_resolution / extent_scale)), 1, preview_resolution);
   QImage const source_preview = _map_stamp.previewImage().scaled(
@@ -1332,7 +1452,8 @@ void BrushStack::updateMapStampPreview()
     QPainter painter(&stamp_preview);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
     painter.translate(preview_resolution * .5, preview_resolution * .5);
-    painter.rotate(rotation);
+    painter.rotate(transform.rotation_degrees);
+    painter.scale(transform.flip_x ? -1.0 : 1.0, transform.flip_z ? -1.0 : 1.0);
     painter.drawImage(QPointF(-source_size * .5, -source_size * .5), source_preview);
   }
 

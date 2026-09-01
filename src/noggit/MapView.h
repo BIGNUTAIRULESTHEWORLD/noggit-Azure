@@ -17,9 +17,11 @@
 #include <QtCore/QTimer>
 
 #include <array>
+#include <cstdint>
 #include <forward_list>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 
 class DBCFile;
@@ -135,12 +137,14 @@ public:
   Noggit::BoolToggleProperty _draw_mfbo = {false};
   Noggit::BoolToggleProperty _draw_wireframe = {false};
   Noggit::BoolToggleProperty _draw_lines = {false};
+  Noggit::BoolToggleProperty _draw_texture_conflict_seams = {false};
   Noggit::BoolToggleProperty _draw_terrain = {true};
   Noggit::BoolToggleProperty _draw_wmo = {true};
   Noggit::BoolToggleProperty _draw_water = {true};
   Noggit::BoolToggleProperty _draw_wmo_doodads = {true};
   Noggit::BoolToggleProperty _draw_wmo_exterior = { true };
   Noggit::BoolToggleProperty _draw_models = {true};
+  Noggit::BoolToggleProperty _draw_ground_effects = {true};
   Noggit::BoolToggleProperty _draw_model_animations = {true};
   Noggit::BoolToggleProperty _draw_hole_lines = {false};
   Noggit::BoolToggleProperty _draw_models_with_box = {false};
@@ -427,6 +431,26 @@ private:
   bool _needs_redraw = false;
   bool _unload_tiles = true;
 
+  struct TextureConflictSeamResult
+  {
+    std::array<bool, 8> conflicting_units{};
+    std::array<bool, 8> discontinuity_units{};
+
+    bool operator==(TextureConflictSeamResult const& other) const
+    {
+      return conflicting_units == other.conflicting_units
+        && discontinuity_units == other.discontinuity_units;
+    }
+  };
+
+  QElapsedTimer _texture_conflict_seam_refresh_timer;
+  std::vector<glm::vec3> _texture_conflict_seam_segments;
+  std::vector<glm::vec3> _texture_discontinuity_seam_segments;
+  std::unordered_map<int, TextureConflictSeamResult> _texture_conflict_seam_cache;
+  std::uint64_t _texture_conflict_loaded_tiles_fingerprint = 0;
+  std::uint64_t _texture_conflict_seam_render_revision = 0;
+  bool _texture_conflict_seams_initialized = false;
+
   OpenGL::Scoped::deferred_upload_buffers<2> _buffers;
 
   glm::mat4x4 _model_view;
@@ -439,6 +463,10 @@ public:
 private:
 
   void setupViewportOverlay();
+  void refreshTextureConflictSeams();
+  void refreshDirtyTextureConflictSeams(std::vector<std::uint32_t> const& dirty_chunks);
+  bool refreshTextureConflictSeamEdge(int global_x, int global_z, bool right_edge);
+  void rebuildTextureConflictSeamSegments();
   void setupNodeEditor();
   void setupAssetBrowser();
   void setupDetailInfos();

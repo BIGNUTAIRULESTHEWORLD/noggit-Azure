@@ -95,6 +95,9 @@ struct WorldRenderParams
   std::vector<glm::vec3> road_reference_right_edge;
   std::vector<std::vector<glm::vec3>> road_reference_mask_lines;
   std::vector<std::vector<glm::vec3>> stamp_height_preview_lines;
+  std::vector<glm::vec3> const* texture_conflict_seam_segments = nullptr;
+  std::vector<glm::vec3> const* texture_discontinuity_seam_segments = nullptr;
+  std::uint64_t texture_conflict_seam_revision = 0;
 };
 
 namespace Noggit::Rendering
@@ -249,6 +252,8 @@ namespace Noggit::Rendering
     Noggit::Rendering::Primitives::Sphere _sphere_render;
     Noggit::Rendering::Primitives::Square _square_render;
     Noggit::Rendering::Primitives::Line _line_render;
+    Noggit::Rendering::Primitives::Line _texture_conflict_line_render;
+    Noggit::Rendering::Primitives::Line _texture_discontinuity_line_render;
     Noggit::Rendering::Primitives::WireBox _wirebox_render;
 
     // buffers

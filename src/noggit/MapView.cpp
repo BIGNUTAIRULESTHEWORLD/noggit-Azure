@@ -55,6 +55,7 @@
 #include <external/qtimgui/QtImGui.h>
 #include <opengl/types.hpp>
 #include <limits>
+#include <unordered_set>
 #include <variant>
 #include <noggit/Selection.h>
 #include <noggit/ui/FontAwesome.hpp>
@@ -274,6 +275,431 @@ ACTION_CODE                                                                     
 
 using Noggit::XSENS;
 using Noggit::YSENS;
+
+namespace
+{
+  constexpr int chunks_per_map_axis = 64 * 16;
+  constexpr float texture_conflict_alpha_threshold = 24.0f;
+  constexpr float texture_discontinuity_alpha_threshold = 12.0f;
+  constexpr float texture_discontinuity_excess_threshold = 6.0f;
+  constexpr float texture_discontinuity_strong_threshold = 24.0f;
+  constexpr float texture_conflict_line_height = 0.18f;
+
+  int textureConflictChunkKey(int global_x, int global_z)
+  {
+    return global_z * chunks_per_map_axis + global_x;
+  }
+
+  int textureConflictEdgeKey(int global_x, int global_z, bool right_edge)
+  {
+    return textureConflictChunkKey(global_x, global_z) * 2 + (right_edge ? 0 : 1);
+  }
+
+  MapChunk* textureConflictChunkAt(World* world, int global_x, int global_z)
+  {
+    if (!world || global_x < 0 || global_x >= chunks_per_map_axis
+        || global_z < 0 || global_z >= chunks_per_map_axis)
+    {
+      return nullptr;
+    }
+
+    TileIndex const tile_index{
+      static_cast<std::size_t>(global_x / 16),
+      static_cast<std::size_t>(global_z / 16)};
+    if (!world->mapIndex.tileLoaded(tile_index))
+      return nullptr;
+
+    MapTile* tile = world->mapIndex.getTile(tile_index);
+    return tile ? tile->getChunk(
+      static_cast<unsigned>(global_x % 16),
+      static_cast<unsigned>(global_z % 16)) : nullptr;
+  }
+
+  std::uint64_t textureConflictLoadedTilesFingerprint(World* world)
+  {
+    constexpr std::uint64_t offset_basis = 1469598103934665603ull;
+    constexpr std::uint64_t prime = 1099511628211ull;
+    std::uint64_t fingerprint = offset_basis;
+    for (MapTile* tile : world->mapIndex.loaded_tiles())
+    {
+      std::uint64_t const tile_key = static_cast<std::uint64_t>(tile->index.x)
+        | (static_cast<std::uint64_t>(tile->index.z) << 8);
+      fingerprint ^= tile_key;
+      fingerprint *= prime;
+      fingerprint ^= static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(tile));
+      fingerprint *= prime;
+    }
+    return fingerprint;
+  }
+
+  float textureWeightAt(TextureSet* texture_set, std::size_t layer, std::size_t offset)
+  {
+    if (!texture_set || layer >= texture_set->num() || offset >= 64 * 64)
+      return 0.0f;
+
+    auto const& temporary_alphas = texture_set->getTempAlphamaps();
+    if (temporary_alphas)
+      return std::clamp(temporary_alphas->map[layer][offset], 0.0f, 255.0f);
+
+    auto const* stored_alphas = texture_set->getAlphamaps();
+    if (layer > 0)
+    {
+      auto const& alphamap = (*stored_alphas)[layer - 1];
+      return alphamap ? static_cast<float>(alphamap->getAlpha(offset)) : 0.0f;
+    }
+
+    float base_weight = 255.0f;
+    for (std::size_t alpha_layer = 1; alpha_layer < texture_set->num(); ++alpha_layer)
+    {
+      auto const& alphamap = (*stored_alphas)[alpha_layer - 1];
+      if (alphamap)
+        base_weight -= static_cast<float>(alphamap->getAlpha(offset));
+    }
+    return std::clamp(base_weight, 0.0f, 255.0f);
+  }
+
+  bool hasTexturePath(TextureSet* texture_set, std::string const& path)
+  {
+    if (!texture_set)
+      return false;
+
+    for (std::size_t layer = 0; layer < texture_set->num(); ++layer)
+      if (texture_set->filename(layer) == path)
+        return true;
+    return false;
+  }
+
+  struct TextureConflictLayers
+  {
+    std::array<bool, 4> first_layers_missing_from_second{};
+    std::array<bool, 4> second_layers_missing_from_first{};
+    bool any = false;
+  };
+
+  struct TextureSeamLayers
+  {
+    std::array<std::string, 8> paths;
+    std::array<int, 4> first_groups;
+    std::array<int, 4> second_groups;
+    std::size_t group_count = 0;
+    TextureConflictLayers conflict_layers;
+
+    TextureSeamLayers()
+    {
+      first_groups.fill(-1);
+      second_groups.fill(-1);
+    }
+  };
+
+  TextureConflictLayers textureConflictLayers(TextureSet* first, TextureSet* second)
+  {
+    TextureConflictLayers result;
+    if (!first || !second)
+      return result;
+
+    if (second->num() == 4)
+    {
+      for (std::size_t layer = 0; layer < first->num(); ++layer)
+      {
+        std::string const& path = first->filename(layer);
+        if (!path.empty() && !hasTexturePath(second, path))
+        {
+          result.first_layers_missing_from_second[layer] = true;
+          result.any = true;
+        }
+      }
+    }
+
+    if (first->num() == 4)
+    {
+      for (std::size_t layer = 0; layer < second->num(); ++layer)
+      {
+        std::string const& path = second->filename(layer);
+        if (!path.empty() && !hasTexturePath(first, path))
+        {
+          result.second_layers_missing_from_first[layer] = true;
+          result.any = true;
+        }
+      }
+    }
+    return result;
+  }
+
+  TextureSeamLayers textureSeamLayers(TextureSet* first, TextureSet* second)
+  {
+    TextureSeamLayers result;
+    result.conflict_layers = textureConflictLayers(first, second);
+
+    auto add_layers = [&](TextureSet* texture_set, std::array<int, 4>& groups)
+    {
+      if (!texture_set)
+        return;
+
+      for (std::size_t layer = 0; layer < texture_set->num(); ++layer)
+      {
+        std::string const& path = texture_set->filename(layer);
+        if (path.empty())
+          continue;
+
+        std::size_t group = 0;
+        while (group < result.group_count && result.paths[group] != path)
+          ++group;
+        if (group == result.group_count && result.group_count < result.paths.size())
+          result.paths[result.group_count++] = path;
+        groups[layer] = static_cast<int>(group);
+      }
+    };
+
+    add_layers(first, result.first_groups);
+    add_layers(second, result.second_groups);
+    return result;
+  }
+
+  float textureContributionDifference(TextureSeamLayers const& layers,
+                                      TextureSet* first, TextureSet* second,
+                                      std::size_t first_offset, std::size_t second_offset)
+  {
+    std::array<float, 8> first_weights{};
+    std::array<float, 8> second_weights{};
+    for (std::size_t layer = 0; layer < first->num(); ++layer)
+    {
+      int const group = layers.first_groups[layer];
+      if (group >= 0)
+        first_weights[static_cast<std::size_t>(group)] += textureWeightAt(first, layer, first_offset);
+    }
+    for (std::size_t layer = 0; layer < second->num(); ++layer)
+    {
+      int const group = layers.second_groups[layer];
+      if (group >= 0)
+        second_weights[static_cast<std::size_t>(group)] += textureWeightAt(second, layer, second_offset);
+    }
+
+    float difference = 0.0f;
+    for (std::size_t group = 0; group < layers.group_count; ++group)
+      difference += std::abs(first_weights[group] - second_weights[group]);
+    return difference * 0.5f;
+  }
+
+  float textureContributionDifferenceWithin(TextureSet* texture_set,
+                                            std::size_t first_offset, std::size_t second_offset)
+  {
+    float difference = 0.0f;
+    for (std::size_t layer = 0; layer < texture_set->num(); ++layer)
+      difference += std::abs(textureWeightAt(texture_set, layer, first_offset)
+                           - textureWeightAt(texture_set, layer, second_offset));
+    return difference * 0.5f;
+  }
+
+  bool hasTextureConflict(TextureConflictLayers const& layers,
+                          TextureSet* first, TextureSet* second,
+                          std::size_t first_offset, std::size_t second_offset)
+  {
+    float missing_from_first = 0.0f;
+    float missing_from_second = 0.0f;
+    for (std::size_t layer = 0; layer < first->num(); ++layer)
+      if (layers.first_layers_missing_from_second[layer])
+        missing_from_second += textureWeightAt(first, layer, first_offset);
+    for (std::size_t layer = 0; layer < second->num(); ++layer)
+      if (layers.second_layers_missing_from_first[layer])
+        missing_from_first += textureWeightAt(second, layer, second_offset);
+
+    return std::max(missing_from_first, missing_from_second)
+      >= texture_conflict_alpha_threshold;
+  }
+
+  void appendTextureSeamSegments(MapChunk* chunk, bool right_edge,
+                                 std::array<bool, 8> const& seam_units,
+                                 std::vector<glm::vec3>& output)
+  {
+    for (int unit = 0; unit < 8; ++unit)
+    {
+      if (!seam_units[unit])
+        continue;
+      for (int endpoint = 0; endpoint < 2; ++endpoint)
+      {
+        int const vertex = unit + endpoint;
+        int const vertex_index = right_edge ? 8 + vertex * 17 : 136 + vertex;
+        glm::vec3 point = chunk->mVertices[vertex_index];
+        point.y += texture_conflict_line_height;
+        output.push_back(point);
+      }
+    }
+  }
+}
+
+void MapView::refreshTextureConflictSeams()
+{
+  _texture_conflict_seam_cache.clear();
+  _texture_conflict_seam_segments.clear();
+  _texture_discontinuity_seam_segments.clear();
+  if (!_draw_texture_conflict_seams.get())
+    return;
+
+  for (MapTile* tile : _world->mapIndex.loaded_tiles())
+  {
+    int const tile_x = static_cast<int>(tile->index.x) * 16;
+    int const tile_z = static_cast<int>(tile->index.z) * 16;
+    for (int chunk_z = 0; chunk_z < 16; ++chunk_z)
+    {
+      for (int chunk_x = 0; chunk_x < 16; ++chunk_x)
+      {
+        MapChunk* chunk = tile->getChunk(chunk_x, chunk_z);
+        if (!chunk || !chunk->getTextureSet())
+          continue;
+
+        int const global_x = tile_x + chunk_x;
+        int const global_z = tile_z + chunk_z;
+        refreshTextureConflictSeamEdge(global_x, global_z, true);
+        refreshTextureConflictSeamEdge(global_x, global_z, false);
+      }
+    }
+  }
+
+  rebuildTextureConflictSeamSegments();
+  ++_texture_conflict_seam_render_revision;
+}
+
+bool MapView::refreshTextureConflictSeamEdge(int global_x, int global_z, bool right_edge)
+{
+  int const edge_key = textureConflictEdgeKey(global_x, global_z, right_edge);
+  auto const old_result = _texture_conflict_seam_cache.find(edge_key);
+
+  MapChunk* first_chunk = textureConflictChunkAt(_world.get(), global_x, global_z);
+  MapChunk* second_chunk = textureConflictChunkAt(
+    _world.get(), global_x + (right_edge ? 1 : 0), global_z + (right_edge ? 0 : 1));
+  if (!first_chunk || !second_chunk
+      || !first_chunk->getTextureSet() || !second_chunk->getTextureSet())
+  {
+    if (old_result == _texture_conflict_seam_cache.end())
+      return false;
+    _texture_conflict_seam_cache.erase(old_result);
+    return true;
+  }
+
+  TextureSet* first_texture_set = first_chunk->getTextureSet();
+  TextureSet* second_texture_set = second_chunk->getTextureSet();
+  TextureSeamLayers const seam_layers = textureSeamLayers(first_texture_set, second_texture_set);
+  TextureConflictSeamResult result;
+  std::array<unsigned char, 8> discontinuity_hits{};
+  std::array<float, 8> discontinuity_maxima{};
+
+  for (int sample = 0; sample < 64; ++sample)
+  {
+    std::size_t const first_offset = right_edge
+      ? static_cast<std::size_t>(sample) * 64 + 63
+      : 63 * 64 + static_cast<std::size_t>(sample);
+    std::size_t const second_offset = right_edge
+      ? static_cast<std::size_t>(sample) * 64
+      : static_cast<std::size_t>(sample);
+    std::size_t const first_inner_offset = first_offset - (right_edge ? 1 : 64);
+    std::size_t const second_inner_offset = second_offset + (right_edge ? 1 : 64);
+    int const unit = sample / 8;
+
+    result.conflicting_units[unit] = result.conflicting_units[unit]
+      || (seam_layers.conflict_layers.any
+          && hasTextureConflict(seam_layers.conflict_layers,
+                                first_texture_set, second_texture_set,
+                                first_offset, second_offset));
+
+    float const seam_difference = textureContributionDifference(
+      seam_layers, first_texture_set, second_texture_set, first_offset, second_offset);
+    float const local_difference = std::max(
+      textureContributionDifferenceWithin(first_texture_set, first_inner_offset, first_offset),
+      textureContributionDifferenceWithin(second_texture_set, second_offset, second_inner_offset));
+    if (seam_difference >= texture_discontinuity_alpha_threshold
+        && seam_difference >= local_difference + texture_discontinuity_excess_threshold)
+    {
+      ++discontinuity_hits[unit];
+      discontinuity_maxima[unit] = std::max(discontinuity_maxima[unit], seam_difference);
+    }
+  }
+
+  bool any_visible_units = false;
+  for (int unit = 0; unit < 8; ++unit)
+  {
+    result.discontinuity_units[unit] = !result.conflicting_units[unit]
+      && (discontinuity_hits[unit] >= 2
+          || discontinuity_maxima[unit] >= texture_discontinuity_strong_threshold);
+    any_visible_units = any_visible_units
+      || result.conflicting_units[unit] || result.discontinuity_units[unit];
+  }
+
+  if (!any_visible_units)
+  {
+    if (old_result == _texture_conflict_seam_cache.end())
+      return false;
+    _texture_conflict_seam_cache.erase(old_result);
+    return true;
+  }
+
+  if (old_result != _texture_conflict_seam_cache.end() && old_result->second == result)
+    return false;
+
+  _texture_conflict_seam_cache[edge_key] = result;
+  return true;
+}
+
+void MapView::rebuildTextureConflictSeamSegments()
+{
+  _texture_conflict_seam_segments.clear();
+  _texture_discontinuity_seam_segments.clear();
+
+  for (auto const& [edge_key, result] : _texture_conflict_seam_cache)
+  {
+    int const chunk_key = edge_key / 2;
+    int const global_x = chunk_key % chunks_per_map_axis;
+    int const global_z = chunk_key / chunks_per_map_axis;
+    bool const right_edge = edge_key % 2 == 0;
+    MapChunk* chunk = textureConflictChunkAt(_world.get(), global_x, global_z);
+    if (!chunk)
+      continue;
+
+    appendTextureSeamSegments(
+      chunk, right_edge, result.conflicting_units, _texture_conflict_seam_segments);
+    appendTextureSeamSegments(
+      chunk, right_edge, result.discontinuity_units, _texture_discontinuity_seam_segments);
+  }
+}
+
+void MapView::refreshDirtyTextureConflictSeams(std::vector<std::uint32_t> const& dirty_chunks)
+{
+  if (!_draw_texture_conflict_seams.get() || dirty_chunks.empty())
+    return;
+
+  std::unordered_set<int> dirty_edges;
+  dirty_edges.reserve(dirty_chunks.size() * 4);
+  for (std::uint32_t const chunk_key : dirty_chunks)
+  {
+    int const global_x = static_cast<int>(chunk_key % chunks_per_map_axis);
+    int const global_z = static_cast<int>(chunk_key / chunks_per_map_axis);
+
+    if (global_x + 1 < chunks_per_map_axis)
+      dirty_edges.insert(textureConflictEdgeKey(global_x, global_z, true));
+    if (global_x > 0)
+      dirty_edges.insert(textureConflictEdgeKey(global_x - 1, global_z, true));
+    if (global_z + 1 < chunks_per_map_axis)
+      dirty_edges.insert(textureConflictEdgeKey(global_x, global_z, false));
+    if (global_z > 0)
+      dirty_edges.insert(textureConflictEdgeKey(global_x, global_z - 1, false));
+  }
+
+  bool visible_result_changed = false;
+  for (int const edge_key : dirty_edges)
+  {
+    int const chunk_key = edge_key / 2;
+    int const global_x = chunk_key % chunks_per_map_axis;
+    int const global_z = chunk_key / chunks_per_map_axis;
+    bool const right_edge = edge_key % 2 == 0;
+    visible_result_changed = refreshTextureConflictSeamEdge(global_x, global_z, right_edge)
+      || visible_result_changed;
+  }
+
+  if (visible_result_changed)
+  {
+    rebuildTextureConflictSeamSegments();
+    ++_texture_conflict_seam_render_revision;
+  }
+}
 
 void MapView::set_editing_mode(editing_mode mode)
 {
@@ -2741,6 +3167,7 @@ void MapView::setupViewMenu()
   ADD_TOGGLE (view_menu, "WMO doodads", Qt::Key_F2, _draw_wmo_doodads);
   ADD_TOGGLE (view_menu, "Terrain",     Qt::Key_F3, _draw_terrain);
   ADD_TOGGLE (view_menu, "Water",       Qt::Key_F4, _draw_water);
+  ADD_TOGGLE (view_menu, "Ground Effects", Qt::Key_F5, _draw_ground_effects);
   ADD_TOGGLE (view_menu, "WMOs",        Qt::Key_F6, _draw_wmo);
 
   ADD_GLOBAL_TOGGLE_POST (view_menu, "Lines", Qt::Key_F7, _draw_lines,
@@ -2752,6 +3179,26 @@ void MapView::setupViewMenu()
                        _draw_lines.get() ? "ADT/chunk borders enabled (F7)" : "ADT/chunk borders disabled (F7)",
                        2000);
                    });
+
+  ADD_TOGGLE_POST(view_menu, "Highlight texture conflict seams", QKeySequence(),
+                  _draw_texture_conflict_seams,
+                  [=]
+                  {
+                    _texture_conflict_seam_refresh_timer.invalidate();
+                    _texture_conflict_seams_initialized = false;
+                    if (!_draw_texture_conflict_seams.get())
+                    {
+                      _texture_conflict_seam_cache.clear();
+                      _texture_conflict_seam_segments.clear();
+                      _texture_discontinuity_seam_segments.clear();
+                    }
+                    invalidate();
+                    _main_window->statusBar()->showMessage(
+                      _draw_texture_conflict_seams.get()
+                        ? "Texture seam highlighting enabled (magenta: layer conflict, orange: alpha discontinuity)"
+                        : "Texture conflict seam highlighting disabled",
+                      2000);
+                  });
 
   ADD_TOGGLE_POST (view_menu, "Contours", Qt::Key_F9, _draw_contour,
                    [=]
@@ -3988,7 +4435,7 @@ void MapView::tick (float dt)
 
   // start unloading tiles
   _world->mapIndex.enterTile (TileIndex (_camera.position));
-  if (_unload_tiles)
+  if (_unload_tiles || _world->mapIndex.currentAdtOnly())
     _world->mapIndex.unloadTiles (TileIndex (_camera.position));
 
   dt = std::min(dt, 1.0f);
@@ -4631,6 +5078,32 @@ void MapView::draw_map()
   renderParams.road_reference_mask_lines = draw_parameters.road_reference_mask_lines;
   renderParams.show_painted_stamp_selection = draw_parameters.show_painted_stamp_selection;
   renderParams.stamp_height_preview_lines = draw_parameters.stamp_height_preview_lines;
+
+  if (_draw_texture_conflict_seams.get()
+      && (!_texture_conflict_seam_refresh_timer.isValid()
+          || _texture_conflict_seam_refresh_timer.elapsed() >= 100))
+  {
+    _texture_conflict_seam_refresh_timer.start();
+    std::uint64_t const loaded_tiles_fingerprint = textureConflictLoadedTilesFingerprint(_world.get());
+    std::vector<std::uint32_t> const dirty_chunks = _world->takeTextureChanges();
+    if (!_texture_conflict_seams_initialized
+        || loaded_tiles_fingerprint != _texture_conflict_loaded_tiles_fingerprint)
+    {
+      refreshTextureConflictSeams();
+      _texture_conflict_loaded_tiles_fingerprint = loaded_tiles_fingerprint;
+      _texture_conflict_seams_initialized = true;
+    }
+    else
+    {
+      refreshDirtyTextureConflictSeams(dirty_chunks);
+    }
+  }
+  if (_draw_texture_conflict_seams.get())
+  {
+    renderParams.texture_conflict_seam_segments = &_texture_conflict_seam_segments;
+    renderParams.texture_discontinuity_seam_segments = &_texture_discontinuity_seam_segments;
+    renderParams.texture_conflict_seam_revision = _texture_conflict_seam_render_revision;
+  }
 
   // The main viewport property is authoritative. Auxiliary renders and tool
   // transitions also use the shared overlay UBO, so repair any stale value
@@ -5417,6 +5890,7 @@ void MapView::onSettingsSave()
   _world.get()->mapIndex.setLoadingRadius(_settings->value("loading_radius", 2).toInt());
   _world.get()->mapIndex.setUnloadDistance(_settings->value("unload_dist", 5).toInt());
   _world.get()->mapIndex.setUnloadInterval(_settings->value("unload_interval", 30).toInt());
+  _world.get()->mapIndex.setCurrentAdtOnly(_settings->value("current_adt_only", false).toBool());
 
   _camera.fov(math::degrees(_settings->value("fov", 54.f).toFloat()));
   _debug_cam.fov(math::degrees(_settings->value("fov", 54.f).toFloat()));

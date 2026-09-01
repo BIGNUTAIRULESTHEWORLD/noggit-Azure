@@ -359,9 +359,9 @@ namespace Noggit
             {
                 auto preview_group = new QGroupBox("Render Detail Doodads", this);
                 preview_group->setCheckable(true);
-                preview_group->setChecked(true);
+                preview_group->setChecked(_map_view->_draw_ground_effects.get());
                 preview_group->setToolTip("Renders the detail doodads exactly where the client will place them.\
-                \nStays active until unchecked, even with this window closed.");
+                \nThis is the same visibility setting as View > Ground Effects (F5).");
                 right_side_layout->addWidget(preview_group);
 
                 auto preview_layout(new QFormLayout(preview_group));
@@ -386,9 +386,16 @@ namespace Noggit
 
                 _map_view->getWorld()->renderer()->_detail_doodad_density = preview_density_spin->value();
                 _map_view->getWorld()->renderer()->_detail_doodad_distance = static_cast<float>(preview_distance_spin->value());
+                _map_view->getWorld()->renderer()->_draw_detail_doodads = _map_view->_draw_ground_effects.get();
 
                 connect(preview_group, &QGroupBox::clicked, [this](bool checked)
                     {
+                        _map_view->_draw_ground_effects.set(checked);
+                    });
+                connect(&_map_view->_draw_ground_effects, &Noggit::BoolToggleProperty::changed,
+                    preview_group, [this, preview_group](bool checked)
+                    {
+                        preview_group->setChecked(checked);
                         _map_view->getWorld()->renderer()->_draw_detail_doodads = checked;
                         updateLivePreview();
                     });

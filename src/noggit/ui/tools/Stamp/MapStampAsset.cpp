@@ -167,15 +167,19 @@ namespace
   }
 
   glm::vec2 sourceCoordinates(float world_x, float world_z, glm::vec3 const& center,
-                              float radius, float rotation_degrees)
+                              float radius, MapStampTransform const& transform)
   {
     float const dx = (world_x - center.x) / radius;
     float const dz = (world_z - center.z) / radius;
-    float const radians = glm::radians(-rotation_degrees);
+    float const radians = glm::radians(-transform.rotation_degrees);
     float const cosine = std::cos(radians);
     float const sine = std::sin(radians);
-    float const nx = cosine * dx - sine * dz;
-    float const nz = sine * dx + cosine * dz;
+    float nx = cosine * dx - sine * dz;
+    float nz = sine * dx + cosine * dz;
+    if (transform.flip_x)
+      nx = -nx;
+    if (transform.flip_z)
+      nz = -nz;
     return {(nx + 1.f) * .5f, (nz + 1.f) * .5f};
   }
 
@@ -510,7 +514,8 @@ namespace
   }
 
   std::optional<QuadraticCoefficients> fitTargetMacroSurface(
-      World* world, glm::vec3 const& center, float radius, float rotation_degrees,
+      World* world, glm::vec3 const& center, float radius,
+      MapStampTransform const& transform,
       MapStampShape shape, std::function<bool(float, float)> include_sample = {},
       bool reject_raised_features = false)
   {
@@ -523,13 +528,12 @@ namespace
     std::vector<TargetSample> samples;
     float const traversal_radius = rotatedFootprintBoundingRadius(
         radius * (shape == MapStampShape::Painted ? painted_capture_extent : 1.f),
-        rotation_degrees, shape);
+        transform.rotation_degrees, shape);
     world->for_all_chunks_in_rect(center, traversal_radius, [&](MapChunk* chunk)
     {
       for (glm::vec3 const& vertex : chunk->mVertices)
       {
-        glm::vec2 const uv = sourceCoordinates(vertex.x, vertex.z, center, radius,
-                                                rotation_degrees);
+        glm::vec2 const uv = sourceCoordinates(vertex.x, vertex.z, center, radius, transform);
         double const nx = uv.x * 2.0 - 1.0;
         double const nz = uv.y * 2.0 - 1.0;
         double const distance = shapeDistance(static_cast<float>(nx), static_cast<float>(nz), shape);
@@ -634,7 +638,8 @@ namespace
   }
 
   ProtectionGrid buildAutomaticProtectionGrid(
-      World* world, glm::vec3 const& center, float radius, float rotation_degrees,
+      World* world, glm::vec3 const& center, float radius,
+      MapStampTransform const& transform,
       MapStampShape shape, QuadraticCoefficients const& target_macro,
       MapStampProtectionSettings const& settings)
   {
@@ -643,7 +648,7 @@ namespace
     std::size_t const sample_count = static_cast<std::size_t>(grid.resolution) * grid.resolution;
     std::vector<float> heights(sample_count, 0.f);
     std::vector<std::uint8_t> valid(sample_count, 0);
-    float const radians = glm::radians(rotation_degrees);
+    float const radians = glm::radians(transform.rotation_degrees);
     float const cosine = std::cos(radians);
     float const sine = std::sin(radians);
     for (int y = 0; y < grid.resolution; ++y)
@@ -653,8 +658,10 @@ namespace
         float const nz = static_cast<float>(y) / (grid.resolution - 1) * 2.f - 1.f;
         if (shapeDistance(nx, nz, shape) > 1.f)
           continue;
-        float const dx = cosine * nx - sine * nz;
-        float const dz = sine * nx + cosine * nz;
+        float const source_nx = transform.flip_x ? -nx : nx;
+        float const source_nz = transform.flip_z ? -nz : nz;
+        float const dx = cosine * source_nx - sine * source_nz;
+        float const dz = sine * source_nx + cosine * source_nz;
         glm::vec3 const position{center.x + dx * radius, center.y, center.z + dz * radius};
         MapChunk* chunk = nullptr;
         world->for_maybe_chunk_at(position, [&](MapChunk* found)
@@ -1570,15 +1577,16 @@ std::optional<float> MapStampAsset::exactSourceBaseHeight() const
 }
 
 bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
-                          float rotation_degrees, float hardness, float height_scale,
+                          MapStampTransform const& transform, float hardness, float height_scale,
                           float height_offset, float opacity, MapStampHeightMode height_mode)
 {
-  return apply(world, center, radius, rotation_degrees, hardness, height_scale,
+  return apply(world, center, radius, transform, hardness, height_scale,
                height_offset, opacity, {}, height_mode);
 }
 
 bool MapStampAsset::visitTerrainPlacement(
-    World* world, glm::vec3 const& center, float radius, float rotation_degrees,
+    World* world, glm::vec3 const& center, float radius,
+    MapStampTransform const& transform,
     float hardness, float height_scale, float height_offset, float opacity,
     MapStampProtectionSettings const& protection, MapStampHeightMode height_mode,
     bool mark_tiles_changed,
@@ -1630,7 +1638,7 @@ bool MapStampAsset::visitTerrainPlacement(
        || protection.automatic
        || (height_mode == MapStampHeightMode::ExactFeature
            && _shape == MapStampShape::Painted))
-      ? fitTargetMacroSurface(world, center, radius, rotation_degrees, _shape,
+      ? fitTargetMacroSurface(world, center, radius, transform, _shape,
                               painted_target_band, mountain_blend)
       : std::optional<QuadraticCoefficients>{};
   if (height_mode == MapStampHeightMode::ConformToTerrain && !target_macro)
@@ -1639,9 +1647,9 @@ bool MapStampAsset::visitTerrainPlacement(
       radius * (_shape == MapStampShape::Painted
           ? (height_mode == MapStampHeightMode::ExactFeature
               ? 1.5f : 1.f + std::clamp(1.f - hardness, .05f, .5f))
-          : placementExtent(hardness, height_mode)), rotation_degrees, _shape);
+          : placementExtent(hardness, height_mode)), transform.rotation_degrees, _shape);
   ProtectionGrid const automatic_protection = protection.automatic && target_macro
-      ? buildAutomaticProtectionGrid(world, center, radius, rotation_degrees, _shape,
+      ? buildAutomaticProtectionGrid(world, center, radius, transform, _shape,
                                      *target_macro, protection)
       : ProtectionGrid{};
   auto protectionAt = [&](float world_x, float world_z, glm::vec2 const& uv)
@@ -1658,7 +1666,7 @@ bool MapStampAsset::visitTerrainPlacement(
     for (std::size_t index = 0; index < mapbufsize; ++index)
     {
       glm::vec3 const& vertex = chunk->mVertices[index];
-      glm::vec2 const uv = sourceCoordinates(vertex.x, vertex.z, center, radius, rotation_degrees);
+      glm::vec2 const uv = sourceCoordinates(vertex.x, vertex.z, center, radius, transform);
       float const nx = uv.x * 2.f - 1.f;
       float const nz = uv.y * 2.f - 1.f;
       // Preserve the core with one vertical translation. Regular shapes extend a bounded edge
@@ -1726,14 +1734,15 @@ bool MapStampAsset::visitTerrainPlacement(
 }
 
 bool MapStampAsset::previewTerrain(
-    World* world, glm::vec3 const& center, float radius, float rotation_degrees,
+    World* world, glm::vec3 const& center, float radius,
+    MapStampTransform const& transform,
     float hardness, float height_scale, float height_offset, float opacity,
     MapStampProtectionSettings const& protection, MapStampHeightMode height_mode,
     bool update_textures, std::vector<MapChunk*>& preview_chunks,
     std::vector<std::vector<glm::vec3>>& preview_lines) const
 {
   std::unordered_map<MapChunk*, std::array<float, mapbufsize>> preview_heights;
-  if (!visitTerrainPlacement(world, center, radius, rotation_degrees, hardness,
+  if (!visitTerrainPlacement(world, center, radius, transform, hardness,
                              height_scale, height_offset, opacity, protection, height_mode, false,
       [&](MapChunk* chunk, std::size_t index, float height)
       {
@@ -1753,7 +1762,7 @@ bool MapStampAsset::previewTerrain(
   std::optional<QuadraticCoefficients> const texture_target_macro =
       update_textures && !_textures.empty()
           && (protection.automatic || painted_exact || mountain_blend)
-      ? fitTargetMacroSurface(world, center, radius, rotation_degrees, _shape,
+      ? fitTargetMacroSurface(world, center, radius, transform, _shape,
           _shape == MapStampShape::Painted
               ? std::function<bool(float, float)>{[this](float nx, float nz)
                 {
@@ -1781,7 +1790,7 @@ bool MapStampAsset::previewTerrain(
   }
   ProtectionGrid const texture_automatic_protection =
       protection.automatic && texture_target_macro
-      ? buildAutomaticProtectionGrid(world, center, radius, rotation_degrees, _shape,
+      ? buildAutomaticProtectionGrid(world, center, radius, transform, _shape,
                                      *texture_target_macro, protection)
       : ProtectionGrid{};
   auto textureProtectionAt = [&](float world_x, float world_z, glm::vec2 const& uv)
@@ -1858,7 +1867,7 @@ bool MapStampAsset::previewTerrain(
           float const world_x = chunk->xbase + (x + .5f) * CHUNKSIZE / 64.f;
           float const world_z = chunk->zbase + (z + .5f) * CHUNKSIZE / 64.f;
           glm::vec2 const uv = sourceCoordinates(
-              world_x, world_z, center, radius, rotation_degrees);
+              world_x, world_z, center, radius, transform);
           float const feature_weight = height_mode == MapStampHeightMode::ExactFeature
               ? exactFeatureWeight(uv.x, uv.y) : 1.f;
           glm::vec2 const texture_uv = _shape == MapStampShape::Painted
@@ -1978,7 +1987,7 @@ bool MapStampAsset::previewTerrain(
 }
 
 bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
-                          float rotation_degrees, float hardness, float height_scale,
+                          MapStampTransform const& transform, float hardness, float height_scale,
                           float height_offset, float opacity,
                           MapStampProtectionSettings const& protection,
                           MapStampHeightMode height_mode)
@@ -1993,7 +2002,7 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
   bool const mountain_blend = height_mode == MapStampHeightMode::MountainBlend;
   std::optional<QuadraticCoefficients> const texture_target_macro =
       !_textures.empty() && (protection.automatic || painted_exact || mountain_blend)
-      ? fitTargetMacroSurface(world, center, radius, rotation_degrees, _shape,
+      ? fitTargetMacroSurface(world, center, radius, transform, _shape,
           _shape == MapStampShape::Painted
               ? std::function<bool(float, float)>{[this](float nx, float nz)
                 {
@@ -2021,7 +2030,7 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
   }
   ProtectionGrid const texture_automatic_protection =
       protection.automatic && texture_target_macro
-      ? buildAutomaticProtectionGrid(world, center, radius, rotation_degrees, _shape,
+      ? buildAutomaticProtectionGrid(world, center, radius, transform, _shape,
                                      *texture_target_macro, protection)
       : ProtectionGrid{};
   auto textureProtectionAt = [&](float world_x, float world_z, glm::vec2 const& uv)
@@ -2038,7 +2047,7 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
       radius * (_shape == MapStampShape::Painted
           ? (height_mode == MapStampHeightMode::ExactFeature
               ? 1.5f : 1.f + std::clamp(1.f - hardness, .05f, .5f))
-          : placementExtent(hardness, height_mode)), rotation_degrees, _shape);
+          : placementExtent(hardness, height_mode)), transform.rotation_degrees, _shape);
   std::unordered_map<MapChunk*, std::array<float, 64 * 64>> mountain_texture_coverage;
   if (mountain_blend && !_textures.empty())
   {
@@ -2053,7 +2062,7 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
           float const world_x = chunk->xbase + (x + .5f) * CHUNKSIZE / 64.f;
           float const world_z = chunk->zbase + (z + .5f) * CHUNKSIZE / 64.f;
           glm::vec2 const uv = sourceCoordinates(
-              world_x, world_z, center, radius, rotation_degrees);
+              world_x, world_z, center, radius, transform);
           glm::vec2 const source_uv = _shape == MapStampShape::Painted
               ? clampToPaintedBoundary(uv) : clampToShapeBoundary(uv, _shape);
           float coverage = placementCoverage(
@@ -2085,8 +2094,8 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
 
   std::vector<MapChunk*> terrain_chunks;
   std::unordered_map<MapChunk*, bool> registered_chunks;
-  if (!visitTerrainPlacement(world, center, radius, rotation_degrees, hardness,
-      height_scale, height_offset, opacity, protection, height_mode, true,
+  if (!visitTerrainPlacement(world, center, radius, transform, hardness,
+                             height_scale, height_offset, opacity, protection, height_mode, true,
       [&](MapChunk* chunk, std::size_t index, float height)
       {
         if (registered_chunks.emplace(chunk, true).second)
@@ -2159,7 +2168,7 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
         int const pixel = z * 64 + x;
         float const world_x = chunk->xbase + (x + .5f) * CHUNKSIZE / 64.f;
         float const world_z = chunk->zbase + (z + .5f) * CHUNKSIZE / 64.f;
-        glm::vec2 const uv = sourceCoordinates(world_x, world_z, center, radius, rotation_degrees);
+        glm::vec2 const uv = sourceCoordinates(world_x, world_z, center, radius, transform);
         float const feature_weight = height_mode == MapStampHeightMode::ExactFeature
             ? exactFeatureWeight(uv.x, uv.y) : 1.f;
         glm::vec2 const texture_uv = _shape == MapStampShape::Painted
@@ -2543,7 +2552,8 @@ bool MapStampAsset::supportsExactHeight() const
   return valid() && !_height_is_relief;
 }
 
-float MapStampAsset::footprintBoundingRadius(float radius, float rotation_degrees,
+float MapStampAsset::footprintBoundingRadius(float radius,
+                                             MapStampTransform const& transform,
                                              float hardness,
                                              MapStampHeightMode height_mode) const
 {
@@ -2551,7 +2561,7 @@ float MapStampAsset::footprintBoundingRadius(float radius, float rotation_degree
       radius * (_shape == MapStampShape::Painted
           ? (height_mode == MapStampHeightMode::ExactFeature
               ? 1.5f : 1.f + std::clamp(1.f - hardness, .05f, .5f))
-          : placementExtent(hardness, height_mode)), rotation_degrees, _shape);
+          : placementExtent(hardness, height_mode)), transform.rotation_degrees, _shape);
 }
 
 QImage MapStampAsset::previewImage() const

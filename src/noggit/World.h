@@ -10,9 +10,12 @@
 #include <noggit/world_tile_update_queue.hpp>
 #include <noggit/world_model_instances_storage.hpp>
 #include <noggit/ContextObject.hpp>
+#include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <array>
 #include <noggit/rendering/WorldRender.hpp>
@@ -124,6 +127,9 @@ protected:
 public:
 
   Noggit::Rendering::WorldRender* renderer();
+
+  void notifyTextureChange(int global_chunk_x, int global_chunk_z);
+  [[nodiscard]] std::vector<std::uint32_t> takeTextureChanges();
 
   void update_selection_pivot();
   std::optional<glm::vec3> const& multi_select_pivot() const;
@@ -273,6 +279,12 @@ public:
   void bake_shadows(glm::vec3 const& pos, int mode, const glm::mat4x4& view);
   void clearTextures(glm::vec3 const& pos);
   void swapTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex);
+  std::size_t swapTextureOnTile(MapTile* tile,
+                                scoped_blp_texture_reference const& texture_to_replace,
+                                scoped_blp_texture_reference const& replacement_texture);
+  std::size_t swapTexturesOnTile(
+      MapTile* tile,
+      std::vector<std::pair<scoped_blp_texture_reference, scoped_blp_texture_reference>> const& replacements);
   void swapTextureGlobal(scoped_blp_texture_reference tex);
   void removeTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex);
   void removeTexDuplicateOnADT(glm::vec3 const& pos);
@@ -510,6 +522,9 @@ protected:
   std::array<std::pair<std::pair<int, int>, MapTile*>, 64 * 64 > _loaded_tiles_buffer;
 
   Noggit::Rendering::WorldRender _renderer;
+
+  std::mutex _texture_change_mutex;
+  std::unordered_set<std::uint32_t> _texture_changed_chunks;
 
   // Debug metrics
   unsigned _n_loaded_tiles = 0;

@@ -149,6 +149,7 @@ namespace Noggit
     {
         if (_texturingTool)
         {
+            _texturingTool->texture_swap_tool()->cancel_viewport_adt_selection();
             _texturingTool->unload();
         }
 
@@ -524,6 +525,7 @@ namespace Noggit
 
     void TexturingTool::onDeselected()
     {
+        _texturingTool->texture_swap_tool()->cancel_viewport_adt_selection();
         _texturingTool->getGroundEffectsTool()->hide();
 
         QSignalBlocker const blocker1(_show_texture_palette_window);
@@ -538,6 +540,12 @@ namespace Noggit
     void TexturingTool::onTick(float deltaTime, TickParameters const& params)
     {
         auto mv = mapView();
+        if (_texturingTool->texture_swap_tool()->viewport_adt_selection_active())
+        {
+            _texturingTool->texture_swap_tool()->refresh_viewport_adt_selection();
+            return;
+        }
+
         if (_texturingTool->roadModeEnabled())
         {
             if (_road_session == road_session_state::selecting_reference)
@@ -710,6 +718,13 @@ namespace Noggit
             return;
         }
 
+        if (_texturingTool->texture_swap_tool()->viewport_adt_selection_active())
+        {
+            _texturingTool->texture_swap_tool()->refresh_viewport_adt_selection();
+            _texturingTool->texture_swap_tool()->toggle_viewport_adt(mapView()->cursorPosition());
+            return;
+        }
+
         if (_texturingTool->roadModeEnabled())
         {
             if (_road_session == road_session_state::selecting_reference
@@ -767,6 +782,11 @@ namespace Noggit
 
     void TexturingTool::onMouseMove(MouseMoveParameters const& params)
     {
+        if (_texturingTool->texture_swap_tool()->viewport_adt_selection_active())
+        {
+            return;
+        }
+
         if (params.right_mouse)
         {
             if (params.mod_alt_down && !params.mod_shift_down && !params.mod_ctrl_down)
