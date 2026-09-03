@@ -35,6 +35,18 @@ struct TileIndex;
 class World;
 struct MinimapRenderSettings;
 
+struct FloatingObjectHighlight
+{
+  std::uint32_t uid = 0;
+  bool is_wmo = false;
+  bool is_below = false;
+  bool protected_by_wmo = false;
+  glm::vec3 bounds_min{};
+  glm::vec3 bounds_max{};
+  glm::vec3 object_position{};
+  glm::vec3 ground_position{};
+};
+
 
 struct WorldRenderParams 
 {
@@ -98,6 +110,9 @@ struct WorldRenderParams
   std::vector<glm::vec3> const* texture_conflict_seam_segments = nullptr;
   std::vector<glm::vec3> const* texture_discontinuity_seam_segments = nullptr;
   std::uint64_t texture_conflict_seam_revision = 0;
+  std::vector<FloatingObjectHighlight> const* floating_object_highlights = nullptr;
+  std::vector<glm::vec3> const* floating_object_drop_segments = nullptr;
+  std::uint64_t floating_object_highlight_revision = 0;
 };
 
 namespace Noggit::Rendering
@@ -254,6 +269,7 @@ namespace Noggit::Rendering
     Noggit::Rendering::Primitives::Line _line_render;
     Noggit::Rendering::Primitives::Line _texture_conflict_line_render;
     Noggit::Rendering::Primitives::Line _texture_discontinuity_line_render;
+    Noggit::Rendering::Primitives::Line _floating_object_line_render;
     Noggit::Rendering::Primitives::WireBox _wirebox_render;
 
     // buffers

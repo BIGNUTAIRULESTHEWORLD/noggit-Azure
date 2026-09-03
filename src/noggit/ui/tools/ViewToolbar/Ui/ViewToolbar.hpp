@@ -7,6 +7,7 @@
 #include <functional>
 
 #include <QWidgetAction>
+#include <QKeySequence>
 #include <QtWidgets/QActionGroup>
 #include <QtWidgets/QToolBar>
 #include <QHBoxLayout>
@@ -15,6 +16,7 @@ class MapView;
 
 class QPushButton;
 class QCheckBox;
+class QMenu;
 
 namespace Noggit
 {
@@ -69,12 +71,14 @@ namespace Noggit
       int sphere_light_alpha_index = -1;
 
       void setupWidget(QVector<QWidgetAction*> _to_setup, bool ignoreSeparator = false);
-      void add_tool_icon(MapView* mapView,
-                         Noggit::BoolToggleProperty* view_state,
-                         const QString& name,
-                         const Noggit::Ui::FontNoggit::Icons& icon,
-                         ViewToolbar* sec_tool_bar,
-                         QVector<QWidgetAction*> sec_action_bar = QVector<QWidgetAction*>());
+      QAction* add_tool_icon(MapView* mapView,
+                             Noggit::BoolToggleProperty* view_state,
+                             const QString& name,
+                             const Noggit::Ui::FontNoggit::Icons& icon,
+                             ViewToolbar* sec_tool_bar,
+                             QVector<QWidgetAction*> sec_action_bar = QVector<QWidgetAction*>(),
+                             QMenu* target_menu = nullptr,
+                             const QKeySequence& shortcut = QKeySequence());
 
     };
 

@@ -32,7 +32,7 @@ namespace Noggit
 
     char const* MinimapTool::name() const
     {
-        return "Minimap Editor";
+        return "Minimap Export";
     }
 
     editing_mode MinimapTool::editingMode() const

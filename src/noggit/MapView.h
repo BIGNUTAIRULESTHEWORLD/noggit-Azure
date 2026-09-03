@@ -5,6 +5,7 @@
 #include <math/ray.hpp>
 #include <noggit/BoolToggleProperty.hpp>
 #include <noggit/Camera.hpp>
+#include <noggit/rendering/WorldRender.hpp>
 #include <noggit/Selection.h>
 #include <noggit/StringHash.hpp>
 #include <noggit/tool_enums.hpp>
@@ -29,11 +30,17 @@ class World;
 struct ImGuiContext;
 
 class QSettings;
+class QAction;
+class QCheckBox;
 class QDockWidget;
+class QDoubleSpinBox;
 class QLabel;
+class QLineEdit;
 class QTreeWidget;
 class QWidgetAction;
 class QOpenGLContext;
+class QPoint;
+class QPointF;
 
 namespace Noggit::Ui::Windows
 {
@@ -138,6 +145,7 @@ public:
   Noggit::BoolToggleProperty _draw_wireframe = {false};
   Noggit::BoolToggleProperty _draw_lines = {false};
   Noggit::BoolToggleProperty _draw_texture_conflict_seams = {false};
+  Noggit::BoolToggleProperty _draw_texture_discontinuity_seams = {false};
   Noggit::BoolToggleProperty _draw_terrain = {true};
   Noggit::BoolToggleProperty _draw_wmo = {true};
   Noggit::BoolToggleProperty _draw_water = {true};
@@ -217,6 +225,7 @@ private:
   Noggit::Ui::Tools::ViewToolbar::Ui::ViewToolbar* _view_toolbar;
   Noggit::Ui::Tools::ViewToolbar::Ui::ViewToolbar* _secondary_toolbar;
   Noggit::Ui::Tools::ViewToolbar::Ui::ViewToolbar* _left_sec_toolbar;
+  std::array<QAction*, static_cast<std::size_t>(editing_mode::fence) + 1> _tool_menu_actions{};
 
   void save(save_mode mode);
 
@@ -389,6 +398,32 @@ private:
   QLabel* _missing_objects_summary = nullptr;
   QTimer* _missing_objects_refresh_timer = nullptr;
 
+  QDockWidget* _floating_objects_dock = nullptr;
+  QTreeWidget* _floating_objects_tree = nullptr;
+  QLabel* _floating_objects_summary = nullptr;
+  QCheckBox* _floating_objects_m2 = nullptr;
+  QCheckBox* _floating_objects_wmo = nullptr;
+  QCheckBox* _floating_objects_above = nullptr;
+  QCheckBox* _floating_objects_below = nullptr;
+  QCheckBox* _floating_objects_show_highlights = nullptr;
+  QDoubleSpinBox* _floating_objects_min_gap = nullptr;
+  QDoubleSpinBox* _floating_objects_min_depth = nullptr;
+  QLineEdit* _floating_objects_search = nullptr;
+  QLabel* _floating_objects_search_summary = nullptr;
+
+  struct FloatingObjectRecord
+  {
+    FloatingObjectHighlight highlight;
+    float gap = 0.0f;
+    std::string path;
+    bool below_terrain = false;
+    bool protected_by_wmo = false;
+  };
+  std::vector<FloatingObjectRecord> _floating_object_records;
+  std::vector<FloatingObjectHighlight> _floating_object_highlights;
+  std::vector<glm::vec3> _floating_object_drop_segments;
+  std::uint64_t _floating_object_highlight_revision = 0;
+
   struct MissingObjectRecord
   {
     bool is_wmo = false;
@@ -467,12 +502,21 @@ private:
   void refreshDirtyTextureConflictSeams(std::vector<std::uint32_t> const& dirty_chunks);
   bool refreshTextureConflictSeamEdge(int global_x, int global_z, bool right_edge);
   void rebuildTextureConflictSeamSegments();
+  void repairTextureSeamsInCurrentTile();
   void setupNodeEditor();
   void setupAssetBrowser();
   void setupDetailInfos();
   void setupMissingObjects();
   void refreshMissingObjects();
   void focusMissingObject(std::uint64_t record_key);
+  void setupFloatingObjectAudit();
+  void scanFloatingObjects();
+  void filterFloatingObjects();
+  void focusFloatingObject(std::uint32_t uid);
+  void syncFloatingObjectSelection(std::vector<selection_type> const& selection);
+  void lowerSelectedFloatingObjectsToTerrain();
+  void raiseSelectedUndergroundObjectsToTerrain();
+  void deleteSelectedFloatingObjects();
   void focusMissingTerrainTexture(std::uint64_t record_key);
   void repairMissingTerrainTexturePath(std::uint64_t record_key);
   void removeMissingTerrainTextureLayer(std::uint64_t record_key);
@@ -486,10 +530,14 @@ private:
   void setupAssistMenu();
   void setupViewMenu();
   void setupToolsMenu();
+  void setupWindowMenu();
   void setupHelpMenu();
   void setupHotkeys();
   void setupClientMenu();
   void setupMainToolbar();
+  void applyDefaultWorkspaceLayout(bool reset_visibility);
+  void restoreWorkspaceLayout();
+  void saveWorkspaceLayout();
 
   QWidget* _overlay_widget;
 
@@ -534,7 +582,14 @@ private:
   math::ray intersect_ray() const;
 
   [[nodiscard]]
+  math::ray intersect_ray(QPointF const& mouse_position) const;
+
+  [[nodiscard]]
   selection_result intersect_result(bool terrain_only);
+
+  [[nodiscard]]
+  selection_result intersect_result(QPointF const& mouse_position, bool terrain_only,
+                                    bool include_objects);
 
   [[nodiscard]]
   std::shared_ptr<Noggit::Project::NoggitProject>& project();

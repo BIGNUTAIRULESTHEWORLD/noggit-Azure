@@ -96,13 +96,15 @@ namespace Noggit
 
         // Dock
         _object_palette_dock = new QDockWidget("Object Palette", mv);
+        _object_palette_dock->setObjectName("mapViewObjectPaletteDock");
         _object_palette_dock->setFeatures(QDockWidget::DockWidgetMovable
             | QDockWidget::DockWidgetFloatable
             | QDockWidget::DockWidgetClosable
         );
 
         _object_palette_dock->setWidget(_object_palette);
-        _object_palette_dock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
+        _object_palette_dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea
+            | Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
         mv->mainWindow()->addDockWidget(Qt::BottomDockWidgetArea, _object_palette_dock);
         _object_palette_dock->hide();
         // End Dock

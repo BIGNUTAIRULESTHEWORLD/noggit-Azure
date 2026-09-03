@@ -11,8 +11,10 @@
 #include <QDialog>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMenu>
 #include <QPushButton>
 #include <QSlider>
+#include <QToolButton>
 #include <QtCore/QSettings>
 
 using namespace Noggit::Ui;
@@ -143,36 +145,64 @@ ViewToolbar::ViewToolbar(MapView *mapView, ViewToolbar *tb)
     setAllowedAreas(Qt::TopToolBarArea | Qt::BottomToolBarArea);
     setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
 
-    add_tool_icon(mapView, &mapView->_draw_models, tr("Doodads"), FontNoggit::VISIBILITY_DOODADS, tb);
-    add_tool_icon(mapView, &mapView->_draw_ground_effects, tr("Ground Effects"), FontNoggit::VISIBILITY_GROUNDEFFECTS, tb);
-    add_tool_icon(mapView, &mapView->_draw_wmo, tr("WMOs"), FontNoggit::VISIBILITY_WMO, tb);
-    add_tool_icon(mapView, &mapView->_draw_wmo_doodads, tr("WMO doodads"), FontNoggit::VISIBILITY_WMO_DOODADS, tb);
-    add_tool_icon(mapView, &mapView->_draw_wmo_exterior, tr("WMO exterior"), FontNoggit::UI_TOGGLE, tb);
-    add_tool_icon(mapView, &mapView->_draw_terrain, tr("Terrain"), FontNoggit::VISIBILITY_TERRAIN, tb);
-    add_tool_icon(mapView, &mapView->_draw_water, tr("Water"), FontNoggit::VISIBILITY_WATER, tb);
+    add_tool_icon(mapView, &mapView->_draw_models, tr("Doodads"), FontNoggit::VISIBILITY_DOODADS,
+                  tb, {}, nullptr, QKeySequence(Qt::Key_F1));
+    add_tool_icon(mapView, &mapView->_draw_wmo_doodads, tr("WMO doodads"), FontNoggit::VISIBILITY_WMO_DOODADS,
+                  tb, {}, nullptr, QKeySequence(Qt::Key_F2));
+    add_tool_icon(mapView, &mapView->_draw_terrain, tr("Terrain"), FontNoggit::VISIBILITY_TERRAIN,
+                  tb, {}, nullptr, QKeySequence(Qt::Key_F3));
+    add_tool_icon(mapView, &mapView->_draw_water, tr("Water"), FontNoggit::VISIBILITY_WATER,
+                  tb, {}, nullptr, QKeySequence(Qt::Key_F4));
+    add_tool_icon(mapView, &mapView->_draw_ground_effects, tr("Ground Effects"), FontNoggit::VISIBILITY_GROUNDEFFECTS,
+                  tb, {}, nullptr, QKeySequence(Qt::Key_F5));
+    add_tool_icon(mapView, &mapView->_draw_wmo, tr("WMOs"), FontNoggit::VISIBILITY_WMO,
+                  tb, {}, nullptr, QKeySequence(Qt::Key_F6));
 
     addSeparator();
 
-    add_tool_icon(mapView, &mapView->_draw_lines, tr("Lines"), FontNoggit::VISIBILITY_LINES, tb);
-    add_tool_icon(mapView, &mapView->_draw_texture_conflict_seams, tr("Texture conflict seams"), FontNoggit::VISIBILITY_UNUSED, tb);
-    add_tool_icon(mapView, &mapView->_draw_hole_lines, tr("Hole lines"), FontNoggit::VISIBILITY_HOLE_LINES, tb);
-    add_tool_icon(mapView, &mapView->_draw_wireframe, tr("Wireframe"), FontNoggit::VISIBILITY_WIREFRAME, tb);
-    add_tool_icon(mapView, &mapView->_draw_contour, tr("Contours"), FontNoggit::VISIBILITY_CONTOURS, tb);
-    add_tool_icon(mapView, &mapView->_draw_climb, tr("Climb"), FontNoggit::VISIBILITY_CLIMB, tb, tb->_climb_secondary_tool);
-    add_tool_icon(mapView, &mapView->_draw_vertex_color, tr("Vertex Color"), FontNoggit::VISIBILITY_VERTEX_PAINTER, tb);
-    add_tool_icon(mapView, &mapView->_draw_baked_shadows, tr("Baked Shadows"), FontNoggit::VISIBILITY_BAKED_SHADOWS, tb); // TODO : better icon
+    add_tool_icon(mapView, &mapView->_draw_lines, tr("Lines"), FontNoggit::VISIBILITY_LINES,
+                  tb, {}, nullptr, QKeySequence(Qt::Key_F7));
+    add_tool_icon(mapView, &mapView->_draw_climb, tr("Climb"), FontNoggit::VISIBILITY_CLIMB,
+                  tb, tb->_climb_secondary_tool, nullptr,
+                  QKeySequence(Qt::SHIFT | Qt::Key_F2));
 
     addSeparator();
 
-    add_tool_icon(mapView, &mapView->_draw_model_animations, tr("Animations"), FontNoggit::VISIBILITY_ANIMATION, tb);
-    add_tool_icon(mapView, &mapView->_draw_fog, tr("Fog"), FontNoggit::VISIBILITY_FOG, tb);
-    add_tool_icon(mapView, &mapView->_draw_mfbo, tr("Flight bounds\nCurrently doesn't work !"), FontNoggit::VISIBILITY_FLIGHT_BOUNDS, tb);
-    // add_tool_icon(mapView, &mapView->_draw_lights_zones, tr("Light zones"), FontNoggit::VISIBILITY_LIGHT, tb);
-    addSeparator();
+    add_tool_icon(mapView, &mapView->_draw_fog, tr("Fog"), FontNoggit::VISIBILITY_FOG,
+                  tb, {}, nullptr, QKeySequence(Qt::Key_F12));
 
-    // Hole lines always on
-    add_tool_icon(mapView, &mapView->_draw_models_with_box, tr("Models with box"), FontNoggit::VISIBILITY_WITH_BOX, tb);
-    add_tool_icon(mapView, &mapView->_draw_hidden_models, tr("Hidden models"), FontNoggit::VISIBILITY_HIDDEN_MODELS, tb);
+    auto more_view_menu = new QMenu(tr("More viewport options"), this);
+    add_tool_icon(mapView, &mapView->_draw_wmo_exterior, tr("WMO exterior"), FontNoggit::UI_TOGGLE, tb, {}, more_view_menu);
+    more_view_menu->addSeparator();
+    add_tool_icon(mapView, &mapView->_draw_texture_conflict_seams, tr("4-layer border constraints (magenta)"), FontNoggit::VISIBILITY_UNUSED, tb, {}, more_view_menu);
+    add_tool_icon(mapView, &mapView->_draw_texture_discontinuity_seams, tr("Texture alpha discontinuities (orange)"), FontNoggit::VISIBILITY_UNUSED, tb, {}, more_view_menu);
+    add_tool_icon(mapView, &mapView->_draw_hole_lines, tr("Hole lines"), FontNoggit::VISIBILITY_HOLE_LINES, tb, {}, more_view_menu);
+    add_tool_icon(mapView, &mapView->_draw_wireframe, tr("Wireframe"), FontNoggit::VISIBILITY_WIREFRAME, tb, {}, more_view_menu);
+    add_tool_icon(mapView, &mapView->_draw_contour, tr("Contours"), FontNoggit::VISIBILITY_CONTOURS, tb, {}, more_view_menu);
+    add_tool_icon(mapView, &mapView->_draw_vertex_color, tr("Vertex Color"), FontNoggit::VISIBILITY_VERTEX_PAINTER, tb, {}, more_view_menu);
+    add_tool_icon(mapView, &mapView->_draw_baked_shadows, tr("Baked Shadows"), FontNoggit::VISIBILITY_BAKED_SHADOWS, tb, {}, more_view_menu);
+    more_view_menu->addSeparator();
+    add_tool_icon(mapView, &mapView->_draw_model_animations, tr("Animations"), FontNoggit::VISIBILITY_ANIMATION, tb, {}, more_view_menu);
+    add_tool_icon(mapView, &mapView->_draw_mfbo, tr("Flight bounds (currently unavailable)"), FontNoggit::VISIBILITY_FLIGHT_BOUNDS, tb, {}, more_view_menu);
+    add_tool_icon(mapView, &mapView->_draw_models_with_box, tr("Models with box"), FontNoggit::VISIBILITY_WITH_BOX, tb, {}, more_view_menu);
+    add_tool_icon(mapView, &mapView->_draw_hidden_models, tr("Hidden models"), FontNoggit::VISIBILITY_HIDDEN_MODELS, tb, {}, more_view_menu);
+
+    auto more_view_button = new QToolButton(this);
+    more_view_button->setIcon(FontNoggitIcon{FontNoggit::SETTINGS});
+    const QKeySequence more_view_shortcut(Qt::SHIFT | Qt::Key_F12);
+    more_view_button->setToolTip(
+        tr("More viewport options (%1)").arg(more_view_shortcut.toString(QKeySequence::NativeText)));
+    more_view_button->setPopupMode(QToolButton::InstantPopup);
+    more_view_button->setMenu(more_view_menu);
+    addWidget(more_view_button);
+
+    auto more_view_shortcut_action = new QAction(mapView);
+    more_view_shortcut_action->setShortcut(more_view_shortcut);
+    more_view_shortcut_action->setShortcutContext(Qt::WindowShortcut);
+    mapView->addAction(more_view_shortcut_action);
+    connect(more_view_shortcut_action, &QAction::triggered,
+            more_view_button, &QToolButton::showMenu);
+
     addSeparator();
     /*
     auto tablet_sensitivity = new QSlider(this);
@@ -189,9 +219,6 @@ ViewToolbar::ViewToolbar(MapView *mapView, ViewToolbar *tb)
     // add_tool_icon(mapView, &mapView->_game_mode_camera, tr("Tile view"), FontNoggit::VIEW_MODE_2D, tb);
     // addSeparator();
 
-    add_tool_icon(mapView, &mapView->_show_minimap_window, tr("Show Minimap"),FontNoggit::TOOL_MINIMAP_EDITOR, tb);
-    add_tool_icon(mapView, &mapView->_show_detail_info_window, tr("Details info"), FontNoggit::INFO, tb);
-
     // TODO : will open a panel with time controls, or use 2n toolbar
     //add_tool_icon(mapView, &mapView->_game_mode_camera, tr("Time speed"), FontNoggit::TIME_NORMAL, tb, _time_secondary_tool);
 
@@ -204,7 +231,9 @@ ViewToolbar::ViewToolbar(MapView *mapView, ViewToolbar *tb)
 
     auto undo_stack_btn = new QPushButton(this);
     undo_stack_btn->setIcon(FontAwesomeIcon(FontAwesome::undo));
-    undo_stack_btn->setToolTip("History");
+    const QKeySequence history_shortcut(Qt::CTRL | Qt::Key_H);
+    undo_stack_btn->setToolTip(
+        tr("History (%1)").arg(history_shortcut.toString(QKeySequence::NativeText)));
     addWidget(undo_stack_btn);
 
 
@@ -228,21 +257,28 @@ ViewToolbar::ViewToolbar(MapView *mapView, ViewToolbar *tb)
     undo_stack_popup->repaint();
     undo_stack_popup->setVisible(false);
 
-    connect(undo_stack_btn, &QPushButton::clicked,
-            [=]()
-            {
-                QPoint new_pos = mapToGlobal(
-                    QPoint(undo_stack_btn->pos().x(),
-                           undo_stack_btn->pos().y() + 30));
+    auto show_history = [=]()
+    {
+        QPoint new_pos = mapToGlobal(
+            QPoint(undo_stack_btn->pos().x(),
+                   undo_stack_btn->pos().y() + 30));
 
-                undo_stack_popup->setGeometry(new_pos.x(),
-                                              new_pos.y(),
-                                              undo_stack_popup->width(),
-                                              undo_stack_popup->height());
+        undo_stack_popup->setGeometry(new_pos.x(),
+                                      new_pos.y(),
+                                      undo_stack_popup->width(),
+                                      undo_stack_popup->height());
 
-                undo_stack_popup->setWindowFlags(Qt::Popup);
-                undo_stack_popup->show();
-            });
+        undo_stack_popup->setWindowFlags(Qt::Popup);
+        undo_stack_popup->show();
+    };
+
+    connect(undo_stack_btn, &QPushButton::clicked, this, show_history);
+
+    auto history_shortcut_action = new QAction(mapView);
+    history_shortcut_action->setShortcut(history_shortcut);
+    history_shortcut_action->setShortcutContext(Qt::WindowShortcut);
+    mapView->addAction(history_shortcut_action);
+    connect(history_shortcut_action, &QAction::triggered, this, show_history);
 }
 
 ViewToolbar::ViewToolbar(MapView* mapView, editing_mode mode)
@@ -437,14 +473,26 @@ editing_mode ViewToolbar::getCurrentMode() const
   return current_mode;
 }
 
-void ViewToolbar::add_tool_icon(MapView* mapView,
-                                Noggit::BoolToggleProperty* view_state,
-                                const QString& name,
-                                const FontNoggit::Icons& icon,
-                                ViewToolbar* sec_tool_bar,
-                                QVector<QWidgetAction*> sec_action_bar)
+QAction* ViewToolbar::add_tool_icon(MapView* mapView,
+                                    Noggit::BoolToggleProperty* view_state,
+                                    const QString& name,
+                                    const FontNoggit::Icons& icon,
+                                    ViewToolbar* sec_tool_bar,
+                                    QVector<QWidgetAction*> sec_action_bar,
+                                    QMenu* target_menu,
+                                    const QKeySequence& shortcut)
 {
-    auto action = addAction(FontNoggitIcon{icon}, name);
+    auto action = new QAction(FontNoggitIcon{icon}, name, this);
+    if (!shortcut.isEmpty())
+    {
+        const QString shortcut_text = shortcut.toString(QKeySequence::NativeText);
+        action->setToolTip(tr("%1 (%2)").arg(name, shortcut_text));
+        action->setStatusTip(tr("%1 — %2").arg(name, shortcut_text));
+    }
+    if (target_menu)
+        target_menu->addAction(action);
+    else
+        addAction(action);
     connect (action, &QAction::triggered, [action, view_state] () {
         action->setChecked(!view_state->get());
         view_state->set(!view_state->get());
@@ -477,6 +525,7 @@ void ViewToolbar::add_tool_icon(MapView* mapView,
 
     action->setCheckable(true);
     action->setChecked(view_state->get());
+    return action;
 }
 
 void ViewToolbar::setupWidget(QVector<QWidgetAction *> _to_setup, bool ignoreSeparator)

@@ -582,11 +582,8 @@ namespace Noggit
           , &QPushButton::clicked
           , [=]() {       
               _map_view->getAssetBrowserWidget()->set_browse_mode(Tools::AssetBrowser::asset_browse_mode::world);
-              // mapView->getAssetBrowser()->setVisible(mapView->getAssetBrowser()->isHidden());
-              mapView->getAssetBrowser()->setFloating(true); // if it's not docked
-              mapView->getAssetBrowser()->resize(600, 400);
-              mapView->getAssetBrowser()->move(100, 100);  // make sure it's on screen
               mapView->getAssetBrowser()->show();
+              mapView->getAssetBrowser()->raise();
           }
       );
 

@@ -234,10 +234,12 @@ namespace Noggit
     {
       // Dock
       _textureBrowserDock = new QDockWidget("Texture Browser", mv);
+      _textureBrowserDock->setObjectName("mapViewTextureBrowserDock");
       _textureBrowserDock->setFeatures(QDockWidget::DockWidgetMovable
         | QDockWidget::DockWidgetFloatable
         | QDockWidget::DockWidgetClosable);
-      _textureBrowserDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea | Qt::LeftDockWidgetArea);
+      _textureBrowserDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea
+        | Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
       mv->mainWindow()->addDockWidget(Qt::BottomDockWidgetArea, _textureBrowserDock);
       _textureBrowserDock->hide();
 
@@ -294,13 +296,15 @@ namespace Noggit
 
       // Dock
       _texturePaletteDock = new QDockWidget("Texture Palette", mv);
+      _texturePaletteDock->setObjectName("mapViewTexturePaletteDock");
       _texturePaletteDock->setFeatures(QDockWidget::DockWidgetMovable
         | QDockWidget::DockWidgetFloatable
         | QDockWidget::DockWidgetClosable
       );
 
       _texturePaletteDock->setWidget(_texturePalette);
-      _texturePaletteDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
+      _texturePaletteDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea
+        | Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
       _texturePaletteDock->hide();
 
       QObject::connect(mv, &QObject::destroyed, _texturePaletteDock, &QObject::deleteLater);
@@ -358,12 +362,13 @@ namespace Noggit
     {
       // Dock
       _texturePickerDock = new QDockWidget("Texture picker", mv);
+      _texturePickerDock->setObjectName("mapViewTexturePickerDock");
       _texturePickerDock->setFeatures(QDockWidget::DockWidgetMovable
         | QDockWidget::DockWidgetFloatable
         | QDockWidget::DockWidgetClosable);
       mv->mainWindow()->addDockWidget(Qt::BottomDockWidgetArea, _texturePickerDock);
-      _texturePickerDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
-      _texturePickerDock->setFloating(true);
+      _texturePickerDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea
+        | Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
       _texturePickerDock->hide();
       QObject::connect(mv, &QObject::destroyed, _texturePickerDock, &QObject::deleteLater);
       // End Dock

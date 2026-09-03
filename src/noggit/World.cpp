@@ -985,6 +985,28 @@ glm::vec3 World::get_ground_height(glm::vec3 pos)
   return std::get<selected_chunk_type>(hits[0].second).position;
 }
 
+std::optional<glm::vec3> World::try_get_ground_height(glm::vec3 const& pos)
+{
+  MapTile* tile = mapIndex.getTile(pos);
+  if (!tile || !tile->finishedLoading())
+    return std::nullopt;
+
+  MapChunk* chunk = tile->getChunk(
+      (pos.x - tile->xbase) / CHUNKSIZE,
+      (pos.z - tile->zbase) / CHUNKSIZE);
+  if (!chunk)
+    return std::nullopt;
+
+  selection_result hits;
+  glm::vec3 const ray_pos(pos.x, chunk->getMaxHeight() + 1.0f, pos.z);
+  math::ray const intersect_ray(ray_pos, glm::vec3(0.f, -1.f, 0.f));
+  chunk->intersect(intersect_ray, &hits, true);
+  if (hits.empty())
+    return std::nullopt;
+
+  return std::get<selected_chunk_type>(hits[0].second).position;
+}
+
 void World::snap_selected_models_to_the_ground()
 {
   ZoneScoped;

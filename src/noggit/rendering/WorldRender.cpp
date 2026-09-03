@@ -1504,6 +1504,38 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }
   }
 
+  if (!render_settings.minimap_render && render_settings.floating_object_highlights)
+  {
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    glm::mat4x4 const identity{1.0f};
+    for (FloatingObjectHighlight const& highlight : *render_settings.floating_object_highlights)
+    {
+      if (!frustum.intersects(highlight.bounds_max, highlight.bounds_min))
+        continue;
+
+      glm::vec4 const color = highlight.protected_by_wmo
+        ? glm::vec4(0.75f, 0.2f, 1.0f, 1.0f)
+        : highlight.is_below
+          ? glm::vec4(0.05f, 0.75f, 1.0f, 1.0f)
+          : highlight.is_wmo
+            ? glm::vec4(1.0f, 0.35f, 0.02f, 1.0f)
+            : glm::vec4(1.0f, 0.05f, 0.05f, 1.0f);
+      Noggit::Rendering::Primitives::WireBox::getInstance(_world->_context).draw(
+          model_view, projection, identity, color,
+          highlight.bounds_min, highlight.bounds_max);
+    }
+
+    if (render_settings.floating_object_drop_segments)
+    {
+      _floating_object_line_render.drawCachedSegments(
+          mvp, *render_settings.floating_object_drop_segments,
+          glm::vec4(1.0f, 0.85f, 0.05f, 0.95f),
+          render_settings.floating_object_highlight_revision);
+    }
+  }
+
   // set anim time only once per frame
   {
     OpenGL::Scoped::use_program water_shader {*_liquid_program.get()};
@@ -2195,6 +2227,7 @@ void WorldRender::unload()
   _line_render.unload();
   _texture_conflict_line_render.unload();
   _texture_discontinuity_line_render.unload();
+  _floating_object_line_render.unload();
   _wirebox_render.unload();
 
   _horizon_render.reset();

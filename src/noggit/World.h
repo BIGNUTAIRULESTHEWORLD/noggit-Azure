@@ -153,6 +153,7 @@ public:
   void delete_selected_models();
   // note : height is Y axis.
   glm::vec3 get_ground_height(glm::vec3 pos);
+  std::optional<glm::vec3> try_get_ground_height(glm::vec3 const& pos);
   void range_add_to_selection(glm::vec3 const& pos, float radius, bool remove);
   Noggit::world_model_instances_storage& getModelInstanceStorage();;
 
