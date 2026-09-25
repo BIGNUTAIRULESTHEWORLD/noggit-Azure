@@ -276,12 +276,12 @@ BrushStack::~BrushStack()
 
 void BrushStack::setupMapStampUi()
 {
-  auto* group = new QGroupBox("Stamp workflow", this);
+  auto* group = new QGroupBox("Stamp tool", this);
   auto* group_layout = new QVBoxLayout(group);
   group_layout->setContentsMargins(8, 8, 8, 8);
   group_layout->setSpacing(6);
 
-  _map_stamp_enabled = new QCheckBox("Map stamp mode", group);
+  _map_stamp_enabled = new QCheckBox("Terrain stamps (capture or place)", group);
   _map_stamp_enabled->setToolTip(
       "Switches between captured terrain stamps and the legacy brush-stack editor.");
   group_layout->addWidget(_map_stamp_enabled);
@@ -289,7 +289,13 @@ void BrushStack::setupMapStampUi()
   _map_stamp_options = new QWidget(group);
   auto* options_layout = new QVBoxLayout(_map_stamp_options);
   options_layout->setContentsMargins(0, 0, 0, 0);
-  options_layout->setSpacing(6);
+  options_layout->setSpacing(8);
+
+  auto* choose_heading = new QLabel("1  Choose or capture a stamp", _map_stamp_options);
+  QFont heading_font = choose_heading->font();
+  heading_font.setBold(true);
+  choose_heading->setFont(heading_font);
+  options_layout->addWidget(choose_heading);
 
   auto* library_card = new QFrame(_map_stamp_options);
   library_card->setFrameShape(QFrame::StyledPanel);
@@ -307,7 +313,7 @@ void BrushStack::setupMapStampUi()
   QFont library_name_font = _map_stamp_library_name->font();
   library_name_font.setBold(true);
   _map_stamp_library_name->setFont(library_name_font);
-  _map_stamp_library_browse = new QPushButton("Browse stamps...", library_card);
+  _map_stamp_library_browse = new QPushButton("Choose stamp...", library_card);
   _map_stamp_library_browse->setToolTip(
       "Open the searchable thumbnail browser for the project stamp library.");
   library_text_layout->addWidget(_map_stamp_library_name);
@@ -317,9 +323,34 @@ void BrushStack::setupMapStampUi()
   library_layout->addLayout(library_text_layout, 1);
   options_layout->addWidget(library_card);
 
+  auto* placement_group = new QGroupBox("2  Adjust and place", _map_stamp_options);
+  auto* placement_layout = new QVBoxLayout(placement_group);
+  placement_layout->setContentsMargins(8, 8, 8, 8);
+  placement_layout->setSpacing(6);
+  auto* placement_hint = new QLabel(
+      "Move the preview to the destination, then Shift+Left-click to place it.",
+      placement_group);
+  placement_hint->setWordWrap(true);
+  placement_layout->addWidget(placement_hint);
+
   auto* placement_form = new QFormLayout();
   placement_form->setContentsMargins(0, 0, 0, 0);
   placement_form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+  placement_form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+
+  auto* tuning_group = new QGroupBox("More placement settings", placement_group);
+  tuning_group->setCheckable(true);
+  tuning_group->setChecked(false);
+  auto* tuning_layout = new QVBoxLayout(tuning_group);
+  tuning_layout->setContentsMargins(8, 4, 8, 8);
+  auto* tuning_body = new QWidget(tuning_group);
+  auto* tuning_form = new QFormLayout(tuning_body);
+  tuning_form->setContentsMargins(0, 0, 0, 0);
+  tuning_form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+  tuning_form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+  tuning_layout->addWidget(tuning_body);
+  tuning_body->setVisible(false);
+  connect(tuning_group, &QGroupBox::toggled, tuning_body, &QWidget::setVisible);
 
   _map_stamp_radius = new UiCommon::ExtendedSlider(_map_stamp_options);
   _map_stamp_radius->setPrefix("");
@@ -340,6 +371,21 @@ void BrushStack::setupMapStampUi()
       "positive mountain relief and merges overlapping features without digging. Terrain conform "
       "transfers signed relief and may intentionally raise or lower terrain.");
   placement_form->addRow("Height mode", _map_stamp_height_mode);
+  auto* height_mode_help = new QLabel(
+      "Exact feature keeps the captured shape and blends its edge into the destination.",
+      placement_group);
+  height_mode_help->setWordWrap(true);
+  connect(_map_stamp_height_mode, qOverload<int>(&QComboBox::currentIndexChanged),
+          height_mode_help, [height_mode_help](int index)
+  {
+    static char const* const descriptions[] = {
+      "Exact feature keeps the captured shape and blends its edge into the destination.",
+      "Mountain blend adds raised terrain without cutting into existing terrain.",
+      "Terrain conform follows the destination and can raise or lower it."
+    };
+    if (index >= 0 && index < 3)
+      height_mode_help->setText(descriptions[index]);
+  });
 
   _map_stamp_edge_blend = new QDoubleSpinBox(_map_stamp_options);
   _map_stamp_edge_blend->setRange(.05, .50);
@@ -350,7 +396,7 @@ void BrushStack::setupMapStampUi()
       "Exact feature and Mountain blend preserve the captured core and blend outside Size. "
       "With the experimental option, tall boundary edges automatically get more room. "
       "Terrain conform blends inside Size.");
-  placement_form->addRow("Edge blend", _map_stamp_edge_blend);
+  tuning_form->addRow("Edge blend", _map_stamp_edge_blend);
 
   _map_stamp_height_scale = new QDoubleSpinBox(_map_stamp_options);
   _map_stamp_height_scale->setRange(-10.0, 10.0);
@@ -359,7 +405,7 @@ void BrushStack::setupMapStampUi()
   _map_stamp_height_scale->setValue(1.0);
   _map_stamp_height_scale->setToolTip(
       "Multiplies the captured height profile. Elevation moves the whole stamp vertically.");
-  placement_form->addRow("Height scale", _map_stamp_height_scale);
+  tuning_form->addRow("Height scale", _map_stamp_height_scale);
 
   _map_stamp_opacity = new QDoubleSpinBox(_map_stamp_options);
   _map_stamp_opacity->setRange(.01, 1.0);
@@ -368,7 +414,7 @@ void BrushStack::setupMapStampUi()
   _map_stamp_opacity->setValue(1.0);
   _map_stamp_opacity->setToolTip(
       "Overall stamp strength. Keep at 1.0 to preserve exact-feature heights in the core.");
-  placement_form->addRow("Overall opacity", _map_stamp_opacity);
+  tuning_form->addRow("Strength", _map_stamp_opacity);
 
   auto* elevation_row = new QWidget(_map_stamp_options);
   auto* elevation_layout = new QHBoxLayout(elevation_row);
@@ -416,20 +462,22 @@ void BrushStack::setupMapStampUi()
       "Mirrors the stamp front-to-back on its local Z axis before rotation.");
   mirror_layout->addWidget(_map_stamp_flip_x);
   mirror_layout->addWidget(_map_stamp_flip_z);
-  placement_form->addRow("Mirror", mirror_row);
-  options_layout->addLayout(placement_form);
+  tuning_form->addRow("Mirror", mirror_row);
+  placement_layout->addLayout(placement_form);
+  placement_layout->addWidget(height_mode_help);
 
   _map_stamp_height_drag = new QCheckBox("Drag elevation: release to paste", _map_stamp_options);
   _map_stamp_height_drag->setToolTip(
       "Plain Left-drag adjusts a textured wireframe preview. Release Left to paste once; "
       "Right-click cancels. Ctrl makes fine adjustments.");
-  options_layout->addWidget(_map_stamp_height_drag);
+  placement_layout->addWidget(_map_stamp_height_drag);
 
   _map_stamp_randomize_rotation = new QCheckBox("Randomize rotation after placement",
                                                 _map_stamp_options);
-  options_layout->addWidget(_map_stamp_randomize_rotation);
+  tuning_form->addRow(_map_stamp_randomize_rotation);
+  placement_layout->addWidget(tuning_group);
 
-  auto* capture_group = new QGroupBox("Capture new stamp", _map_stamp_options);
+  auto* capture_group = new QGroupBox("Capture from map (optional)", _map_stamp_options);
   capture_group->setCheckable(true);
   capture_group->setChecked(false);
   auto* capture_body = new QWidget(capture_group);
@@ -437,6 +485,11 @@ void BrushStack::setupMapStampUi()
   capture_layout->setContentsMargins(8, 4, 8, 8);
   auto* capture_body_layout = new QVBoxLayout(capture_body);
   capture_body_layout->setContentsMargins(0, 0, 0, 0);
+  auto* capture_hint = new QLabel(
+      "Choose a source shape and capture terrain under the cursor. Size below sets the "
+      "circle or square source radius.",
+      capture_body);
+  capture_hint->setWordWrap(true);
   _map_stamp_shape = new QComboBox(capture_body);
   _map_stamp_shape->addItems({"Circle footprint", "Square footprint", "Painted footprint"});
   _map_stamp_shape->setToolTip(
@@ -460,13 +513,14 @@ void BrushStack::setupMapStampUi()
   painted_layout->addWidget(clear_painted);
   _map_stamp_painted_controls->setVisible(false);
   auto* capture = new QPushButton("Capture at cursor", capture_body);
+  capture_body_layout->addWidget(capture_hint);
   capture_body_layout->addWidget(_map_stamp_shape);
   capture_body_layout->addWidget(_map_stamp_painted_controls);
   capture_body_layout->addWidget(capture);
   capture_layout->addWidget(capture_body);
   capture_body->setVisible(false);
   connect(capture_group, &QGroupBox::toggled, capture_body, &QWidget::setVisible);
-  options_layout->addWidget(capture_group);
+  options_layout->insertWidget(2, capture_group);
 
   auto* advanced_group = new QGroupBox("Advanced placement", _map_stamp_options);
   advanced_group->setCheckable(true);
@@ -491,7 +545,7 @@ void BrushStack::setupMapStampUi()
   advanced_layout->addWidget(advanced_body);
   advanced_body->setVisible(false);
   connect(advanced_group, &QGroupBox::toggled, advanced_body, &QWidget::setVisible);
-  options_layout->addWidget(advanced_group);
+  placement_layout->addWidget(advanced_group);
 
   auto* protection_group = new QGroupBox("Terrain protection", _map_stamp_options);
   protection_group->setCheckable(true);
@@ -576,13 +630,16 @@ void BrushStack::setupMapStampUi()
   protection_group_layout->addWidget(protection_body);
   protection_body->setVisible(false);
   connect(protection_group, &QGroupBox::toggled, protection_body, &QWidget::setVisible);
-  options_layout->addWidget(protection_group);
+  placement_layout->addWidget(protection_group);
 
   _map_stamp_status = new QLabel(
       "Choose a stamp, then Shift+Left to place it or enable Drag elevation.",
-      _map_stamp_options);
+      placement_group);
   _map_stamp_status->setWordWrap(true);
-  options_layout->addWidget(_map_stamp_status);
+  _map_stamp_status->setFrameShape(QFrame::StyledPanel);
+  _map_stamp_status->setMargin(6);
+  placement_layout->insertWidget(1, _map_stamp_status);
+  options_layout->addWidget(placement_group);
 
   group_layout->addWidget(_map_stamp_options);
   _map_stamp_options->setVisible(false);

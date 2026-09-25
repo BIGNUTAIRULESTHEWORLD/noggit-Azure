@@ -17,6 +17,7 @@
 #include <noggit/Tool.hpp>
 #include <noggit/uid_storage.hpp>
 #include <noggit/ui/CurrentTexture.h>
+#include <noggit/ui/UiColorMode.hpp>
 #include <noggit/ui/DetailInfos.h> // detailInfos
 #include <noggit/ui/DuplicateObjectAudit.hpp>
 #include <noggit/ui/FlattenTool.hpp>
@@ -1417,6 +1418,7 @@ void MapView::setupViewportOverlay()
   _overlay_widget = new QWidget(this);
   _viewport_overlay_ui = new ::Ui::MapViewOverlay();
   _viewport_overlay_ui->setupUi(_overlay_widget);
+  _viewport_overlay_ui->gizmoBar->setProperty("azureOriginalStyle", _viewport_overlay_ui->gizmoBar->styleSheet());
   _viewport_overlay_ui->gizmoBar->setStyleSheet(R"(
     QWidget#gizmoBar { background: #0c192d; }
     QPushButton {
@@ -1428,6 +1430,9 @@ void MapView::setupViewportOverlay()
       background: #294565; border-color: #d6b777;
     }
   )");
+  _viewport_overlay_ui->gizmoBar->setProperty("azureStyledStyle", _viewport_overlay_ui->gizmoBar->styleSheet());
+  if (!Noggit::Ui::azureColorMode())
+    _viewport_overlay_ui->gizmoBar->setStyleSheet(_viewport_overlay_ui->gizmoBar->property("azureOriginalStyle").toString());
   _overlay_widget->setAttribute(Qt::WA_TranslucentBackground);
   _overlay_widget->setMouseTracking(true);
   _overlay_widget->setGeometry(0,0, width(), height());
@@ -3611,7 +3616,12 @@ void MapView::setupToolbars()
   for (QToolBar* strip : {static_cast<QToolBar*>(_view_toolbar),
                           static_cast<QToolBar*>(_secondary_toolbar),
                           static_cast<QToolBar*>(_left_sec_toolbar)})
-    strip->setStyleSheet(toolbar_colors);
+  {
+    strip->setProperty("azureOriginalStyle", strip->styleSheet());
+    strip->setProperty("azureStyledStyle", toolbar_colors);
+    if (Noggit::Ui::azureColorMode())
+      strip->setStyleSheet(toolbar_colors);
+  }
 }
 
 std::unique_ptr<Noggit::Tool>& MapView::activeTool()
@@ -5542,6 +5552,7 @@ void MapView::setupHotkeys()
   addHotkey(Qt::Key_B, MOD_ctrl, "duplacteSelection"_hash);
 
   addHotkey(Qt::Key_Y, MOD_none, "nextType"_hash);
+  addHotkey(Qt::Key_Y, MOD_none, "detectHoveredWaterHeight"_hash);
 
   addHotkey(Qt::Key_T, MOD_none, "toggleAngle"_hash);
 
@@ -5845,6 +5856,7 @@ void MapView::createGUI()
   // Keep every editor dock on the same palette, including tool-owned docks
   // created by Object/Texture/Stamp tools and the NPC workspace panels.
   QString const previous_editor_style = _main_window->styleSheet();
+  _main_window->setProperty("azureOriginalStyle", previous_editor_style);
   _main_window->setStyleSheet(previous_editor_style + R"(
     QMainWindow::separator { background: #405c7c; }
     QTabBar::tab { background: #182943; border-color: #405c7c; }
@@ -5912,12 +5924,16 @@ void MapView::createGUI()
     QDockWidget QScrollBar { background: #0c192d; }
     QDockWidget QScrollBar::handle { background: #405c7c; }
   )");
+  _main_window->setProperty("azureStyledStyle", _main_window->styleSheet());
+  if (!Noggit::Ui::azureColorMode())
+    _main_window->setStyleSheet(previous_editor_style);
   connect(this, &QObject::destroyed, _main_window,
           [window = _main_window, previous_editor_style]
           { window->setStyleSheet(previous_editor_style); });
 
   auto* menu_bar = _main_window->_menuBar;
   QString const previous_menu_style = menu_bar->styleSheet();
+  menu_bar->setProperty("azureOriginalStyle", previous_menu_style);
   menu_bar->setStyleSheet(R"(
     QMenuBar { background: #0c192d; color: #e9edf4; }
     QMenuBar::item:selected, QMenuBar::item:pressed {
@@ -5927,16 +5943,23 @@ void MapView::createGUI()
     QMenu::item:selected { background: #294565; color: #f4dfb1; }
     QMenu::separator { background: #405c7c; }
   )");
+  menu_bar->setProperty("azureStyledStyle", menu_bar->styleSheet());
+  if (!Noggit::Ui::azureColorMode())
+    menu_bar->setStyleSheet(previous_menu_style);
   connect(this, &QObject::destroyed, menu_bar,
           [menu_bar, previous_menu_style] { menu_bar->setStyleSheet(previous_menu_style); });
 
   auto* status_bar = _main_window->statusBar();
   QString const previous_status_style = status_bar->styleSheet();
+  status_bar->setProperty("azureOriginalStyle", previous_status_style);
   status_bar->setStyleSheet(R"(
     QStatusBar { background: #0c192d; color: #aabbd0; }
     QStatusBar::item { border-color: #405c7c; }
     QStatusBar QLabel { background: transparent; color: #aabbd0; }
   )");
+  status_bar->setProperty("azureStyledStyle", status_bar->styleSheet());
+  if (!Noggit::Ui::azureColorMode())
+    status_bar->setStyleSheet(previous_status_style);
   connect(this, &QObject::destroyed, status_bar,
           [status_bar, previous_status_style] { status_bar->setStyleSheet(previous_status_style); });
 
@@ -8055,6 +8078,27 @@ void MapView::setDbcDirty(DBCFile* dbc)
 // also called when loading world/viewport in MapView::initializeGL()
 void MapView::onSettingsSave()
 {
+  auto apply_color_mode = [](QWidget* widget)
+  {
+    if (widget && widget->property("azureStyledStyle").isValid())
+      widget->setStyleSheet(widget->property(Noggit::Ui::azureColorMode()
+          ? "azureStyledStyle"
+          : (widget->property("darkStyledStyle").isValid()
+              ? "darkStyledStyle" : "azureOriginalStyle")).toString());
+  };
+  apply_color_mode(_main_window);
+  apply_color_mode(_main_window->_menuBar);
+  apply_color_mode(_main_window->statusBar());
+  if (_viewport_overlay_ui)
+    apply_color_mode(_viewport_overlay_ui->gizmoBar);
+  apply_color_mode(_tool_panel_dock);
+  apply_color_mode(_toolbar->findChild<QWidget*>("noggitQuickAccessRail"));
+  apply_color_mode(_toolbar->findChild<QWidget*>("noggitToolBrowser"));
+  for (QToolBar* strip : {static_cast<QToolBar*>(_view_toolbar),
+                          static_cast<QToolBar*>(_secondary_toolbar),
+                          static_cast<QToolBar*>(_left_sec_toolbar)})
+    apply_color_mode(strip);
+
   _classic_ui = _settings->value("classicUI", false).toBool();
 
   OpenGL::TerrainParamsUniformBlock* params = _world->renderer()->getTerrainParamsUniformBlock();

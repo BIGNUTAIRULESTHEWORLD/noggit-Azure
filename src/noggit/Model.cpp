@@ -72,6 +72,20 @@ void Model::finishLoading()
     throw std::runtime_error("Error loading file \"" + _file_key.stringRepr() + "\". Wrong M2 version " + std::to_string(packed_version));
   }
 
+  auto const in_bounds = [&f](uint32_t offset, uint32_t count, std::size_t stride)
+  {
+    auto const size = f.getSize();
+    return offset <= size && count <= (size - offset) / stride;
+  };
+  if (!in_bounds(header.ofsVertices, header.nVertices, sizeof(ModelVertex))
+      || !in_bounds(header.ofsBones, header.nBones, sizeof(ModelBoneDef))
+      || !in_bounds(header.ofsAnimations, header.nAnimations, sizeof(ModelAnimation))
+      || !in_bounds(header.ofsGlobalSequences, header.nGlobalSequences, sizeof(int)))
+  {
+    throw std::runtime_error("Error loading file \"" + _file_key.stringRepr()
+                             + "\". M2 model data extends beyond the file.");
+  }
+
   // blend mode override
   if (header.Flags & m2_flag_use_texture_combiner_combos)
   {
@@ -109,7 +123,15 @@ void Model::finishLoading()
 
   if (animated)
   {
-    initAnimated(f, header);
+    try
+    {
+      initAnimated(f, header);
+    }
+    catch (std::runtime_error const& error)
+    {
+      throw std::runtime_error("Error loading animations for \"" + _file_key.stringRepr()
+                               + "\": " + error.what());
+    }
 
     mesh_bounds_ratio = calcMeshBoundsRatio();
   }

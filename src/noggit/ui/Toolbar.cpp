@@ -4,6 +4,7 @@
 
 #include <noggit/Tool.hpp>
 #include <noggit/ui/FontNoggit.hpp>
+#include <noggit/ui/UiColorMode.hpp>
 
 #include <QtCore/QEvent>
 #include <QtCore/QSettings>
@@ -118,7 +119,7 @@ namespace Noggit::Ui
     _rail = rail;
     rail->setObjectName("noggitQuickAccessRail");
     rail->setFixedWidth(148);
-    rail->setStyleSheet(R"(
+    QString const azure_rail_style = QStringLiteral(R"(
       QWidget#noggitQuickAccessRail { background: #14233e; color: #e9edf4; }
       QWidget#noggitQuickHolder { background: transparent; }
       QLabel#noggitRailHeading, QLabel#noggitActiveTool { color: #d6b777; }
@@ -149,6 +150,7 @@ namespace Noggit::Ui
         min-height: 1px; max-height: 1px;
       }
     )");
+    setColorModeStyle(rail, azure_rail_style);
     auto* rail_layout = new QVBoxLayout(rail);
     rail_layout->setContentsMargins(6, 7, 6, 7);
     rail_layout->setSpacing(3);
@@ -237,7 +239,7 @@ namespace Noggit::Ui
     _browser->setFocusPolicy(Qt::NoFocus);
     _browser->setFrameShape(QFrame::StyledPanel);
     _browser->setMinimumWidth(420);
-    _browser->setStyleSheet(R"(
+    QString const azure_browser_style = QStringLiteral(R"(
       QFrame#noggitToolBrowser {
         background: #0c192d; border: 1px solid #405c7c;
       }
@@ -258,6 +260,7 @@ namespace Noggit::Ui
         background: #294565; border-color: #d6b777;
       }
     )");
+    setColorModeStyle(_browser, azure_browser_style);
     _browser->installEventFilter(this);
     _close_timer = new QTimer(this);
     _close_timer->setSingleShot(true);

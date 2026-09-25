@@ -126,7 +126,7 @@ namespace Noggit
         emit detect_hovered_water_height();
       });
       detect_height->setToolTip(
-          "Move the cursor over water in the viewport, then press this button to read the exact surface height.");
+          "Move the cursor over water in the viewport, then press Y or this button to read the exact surface height.");
       height_probe_layout->addRow(detect_height);
       _hovered_water_height_label = new QLabel("No measurement yet", this);
       _hovered_water_height_label->setTextInteractionFlags(Qt::TextSelectableByMouse);

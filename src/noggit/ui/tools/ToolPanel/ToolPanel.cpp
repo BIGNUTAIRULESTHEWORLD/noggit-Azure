@@ -1,6 +1,7 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/Tool.hpp>
+#include <noggit/ui/UiColorMode.hpp>
 
 #include "ToolPanel.hpp"
 
@@ -19,7 +20,7 @@ ToolPanel::ToolPanel(QWidget* parent)
   setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
   layout()->setAlignment(Qt::AlignTop);
   setMinimumWidth(250 + 15);
-  setStyleSheet(R"(
+  QString const azure_style = QStringLiteral(R"(
     QDockWidget { background: #0c192d; color: #e9edf4; }
     QDockWidget::title { background: #14233e; color: #e9edf4; }
     QDockWidget::close-button, QDockWidget::float-button { background: #14233e; }
@@ -72,6 +73,7 @@ ToolPanel::ToolPanel(QWidget* parent)
       background: #405c7c;
     }
   )");
+  Noggit::Ui::setColorModeStyle(this, azure_style);
 
   _object_modes = new QTabBar(_ui.scrollHolder);
   _object_modes->addTab(tr("Objects"));

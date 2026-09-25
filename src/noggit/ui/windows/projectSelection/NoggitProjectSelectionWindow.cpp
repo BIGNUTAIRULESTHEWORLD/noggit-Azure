@@ -4,6 +4,7 @@
 #include <noggit/project/ApplicationProjectReader.h>
 #include <noggit/project/CurrentProject.hpp>
 #include <noggit/ui/FontAwesome.hpp>
+#include <noggit/ui/UiColorMode.hpp>
 #include <noggit/ui/windows/noggitWindow/NoggitWindow.hpp>
 #include <noggit/ui/windows/projectCreation/NoggitProjectCreationDialog.h>
 #include <noggit/ui/windows/projectSelection/components/CreateProjectComponent.hpp>
@@ -14,6 +15,7 @@
 
 
 #include <QFile>
+#include <QCheckBox>
 #include <QFileDialog>
 #include <QDir>
 #include <QEvent>
@@ -668,6 +670,11 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   _ui->settings_button->setIcon(QIcon());
   _ui->settings_button->setText(QStringLiteral("Settings"));
   _ui->settings_button->setMinimumSize(88, 36);
+  auto dark_mode_toggle = new QCheckBox(tr("Dark mode"), _ui->actionsPanel);
+  dark_mode_toggle->setObjectName(QStringLiteral("projectColorModeToggle"));
+  dark_mode_toggle->setChecked(!Noggit::Ui::azureColorMode());
+  dark_mode_toggle->setToolTip(tr("Checked: Dark colors. Unchecked: Azure colors."));
+  _ui->footerLayout->insertWidget(2, dark_mode_toggle);
 
   auto title_bar = new ProjectSelectionTitleBar(_ui->centralwidget);
   title_bar->setObjectName("projectSelectionTitleBar");
@@ -805,12 +812,29 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
     }
     QToolButton#settings_button:hover,
     QPushButton#projectSelectionExitButton:hover { color: #d6b777; }
+    QCheckBox#projectColorModeToggle {
+      color: #eee8da;
+      background: transparent;
+      font-family: Segoe UI;
+      font-size: 12px;
+    }
     QScrollBar:vertical { background: #0b1426; width: 10px; }
     QScrollBar::handle:vertical { background: #526783; min-height: 26px; }
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
   )");
 
   _settings = new Noggit::Ui::settings(this);
+  QString const azure_project_style = _ui->centralwidget->styleSheet();
+  _ui->centralwidget->setStyleSheet(Noggit::Ui::projectColorStyle(azure_project_style));
+  connect(dark_mode_toggle, &QCheckBox::toggled, this,
+          [this, azure_project_style](bool dark) {
+            Noggit::Ui::setAzureColorMode(!dark);
+            _ui->centralwidget->setStyleSheet(Noggit::Ui::projectColorStyle(azure_project_style));
+          });
+  connect(_settings, &Noggit::Ui::settings::saved, this,
+          [this, azure_project_style]() {
+            _ui->centralwidget->setStyleSheet(Noggit::Ui::projectColorStyle(azure_project_style));
+          });
   _ui->changelog_button->hide();
   Component::RecentProjectsComponent::buildRecentProjectsList(this);
 

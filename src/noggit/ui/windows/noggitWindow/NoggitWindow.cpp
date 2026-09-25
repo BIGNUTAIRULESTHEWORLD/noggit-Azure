@@ -447,6 +447,16 @@ namespace Noggit::Ui::Windows
     auto project_label = new QLabel(QString::fromStdString(_project->ProjectName), header);
     project_label->setObjectName("mapProjectName");
     header_layout->addWidget(project_label);
+    auto color_mode_toggle = new QCheckBox(tr("Dark mode"), header);
+    color_mode_toggle->setObjectName("mapColorModeToggle");
+    color_mode_toggle->setChecked(!Noggit::Ui::azureColorMode());
+    color_mode_toggle->setToolTip(tr("Checked: Dark colors. Unchecked: Azure colors."));
+    header_layout->addWidget(color_mode_toggle);
+    connect(color_mode_toggle, &QCheckBox::toggled, widget,
+            [widget](bool dark) {
+              Noggit::Ui::setAzureColorMode(!dark);
+              widget->setStyleSheet(mapSelectionStyle());
+            });
     auto header_settings = new QPushButton(QStringLiteral("Settings"), header);
     header_settings->setObjectName("mapHeaderSettings");
     header_layout->addWidget(header_settings);
@@ -946,6 +956,8 @@ namespace Noggit::Ui::Windows
         });
 
     widget->setStyleSheet(mapSelectionStyle());
+    connect(_settings, &settings::saved, widget,
+            [widget]() { widget->setStyleSheet(mapSelectionStyle()); });
     _minimap->adjustSize();
   }
 

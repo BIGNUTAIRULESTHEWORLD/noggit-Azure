@@ -1,12 +1,13 @@
 #pragma once
 
 #include <QString>
+#include <noggit/ui/UiColorMode.hpp>
 
 namespace Noggit::Ui::Windows
 {
   inline QString mapSelectionStyle()
   {
-    return QStringLiteral(R"QSS(
+    return Noggit::Ui::projectColorStyle(QStringLiteral(R"QSS(
       QWidget#mapSelectionPage, QWidget#mapSelectionContent {
         background: #0b1220;
         color: #ece8df;
@@ -48,6 +49,12 @@ namespace Noggit::Ui::Windows
         font-size: 12px;
       }
       QPushButton#mapHeaderSettings:hover { color: #d2b474; }
+      QCheckBox#mapColorModeToggle {
+        color: #ece8df;
+        background: transparent;
+        font-family: Segoe UI;
+        font-size: 12px;
+      }
       QTabWidget#mapBrowserTabs {
         background: #111d30;
         border-right: 1px solid #3d5271;
@@ -204,6 +211,6 @@ namespace Noggit::Ui::Windows
       QScrollBar:vertical { background: #0b1628; width: 10px; }
       QScrollBar::handle:vertical { background: #526783; min-height: 26px; }
       QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-    )QSS");
+    )QSS"));
   }
 }

@@ -7,6 +7,7 @@
 #include <map>
 #include <vector>
 #include <memory>
+#include <stdexcept>
 #include <type_traits>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/ext/quaternion_common.hpp>
@@ -190,7 +191,8 @@ namespace Animation
              , const std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>& animation_files
              = std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>())
     {
-      assert(animationBlock.nTimes == animationBlock.nKeys);
+      if (animationBlock.nTimes != animationBlock.nKeys)
+        throw std::runtime_error("M2 animation has mismatched time and key tracks");
 
       _interpolationType = animationBlock.type;
 
@@ -201,14 +203,30 @@ namespace Animation
         assert(_globalSequences && "Animation said to have global sequence, but pointer to global sequence data is nullptr");
       }
 
-      const AnimationBlockHeader* timestampHeaders = file.get<AnimationBlockHeader>(animationBlock.ofsTimes);
-      const AnimationBlockHeader* keyHeaders = file.get<AnimationBlockHeader>(animationBlock.ofsKeys);
+      auto const checked_entries = [](const BlizzardArchive::ClientFile& source,
+                                      std::size_t offset, std::size_t count,
+                                      std::size_t stride) -> const char*
+      {
+        auto const size = source.getSize();
+        if (offset > size || count > (size - offset) / stride)
+          throw std::runtime_error("M2 animation track extends beyond its file");
+        return source.getBuffer() + offset;
+      };
+
+      auto const* timestampHeaders = reinterpret_cast<const AnimationBlockHeader*>(
+        checked_entries(file, animationBlock.ofsTimes, animationBlock.nTimes,
+                        sizeof(AnimationBlockHeader)));
+      auto const* keyHeaders = reinterpret_cast<const AnimationBlockHeader*>(
+        checked_entries(file, animationBlock.ofsKeys, animationBlock.nKeys,
+                        sizeof(AnimationBlockHeader)));
 
       for (std::uint32_t j = 0; j < animationBlock.nTimes; ++j)
       {
-        const TimestampType* timestamps = j < animation_files.size() && animation_files[j] ?
-          animation_files[j]->get<TimestampType>(timestampHeaders[j].ofsEntries) :
-          file.get<TimestampType>(timestampHeaders[j].ofsEntries);
+        auto const& source = j < animation_files.size() && animation_files[j]
+          ? *animation_files[j] : file;
+        auto const* timestamps = reinterpret_cast<const TimestampType*>(
+          checked_entries(source, timestampHeaders[j].ofsEntries,
+                          timestampHeaders[j].nEntries, sizeof(TimestampType)));
 
         for (std::uint32_t i = 0; i < timestampHeaders[j].nEntries; ++i)
         {
@@ -218,9 +236,14 @@ namespace Animation
 
       for (std::uint32_t j = 0; j < animationBlock.nKeys; ++j)
       {
-        const DataType* keys = j < animation_files.size() && animation_files[j] ?
-          animation_files[j]->get<DataType>(keyHeaders[j].ofsEntries) :
-          file.get<DataType>(keyHeaders[j].ofsEntries);
+        auto const& source = j < animation_files.size() && animation_files[j]
+          ? *animation_files[j] : file;
+        auto const key_stride = _interpolationType == Animation::Interpolation::Type::HERMITE
+          ? std::size_t{3} : std::size_t{1};
+        auto const* keys = reinterpret_cast<const DataType*>(
+          checked_entries(source, keyHeaders[j].ofsEntries,
+                          static_cast<std::size_t>(keyHeaders[j].nEntries) * key_stride,
+                          sizeof(DataType)));
 
         switch (_interpolationType)
         {

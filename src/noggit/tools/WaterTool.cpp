@@ -17,6 +17,11 @@ namespace Noggit
     WaterTool::WaterTool(MapView* mapView)
         : Tool{ mapView }
     {
+        addHotkey("detectHoveredWaterHeight"_hash, Hotkey{
+            .onPress = [this] { emit _guiWater->detect_hovered_water_height(); },
+            .condition = [=] { return mapView->get_editing_mode() == editing_mode::water && !NOGGIT_CUR_ACTION; },
+            });
+
         addHotkey("toggleAngled"_hash, Hotkey{
             .onPress = [=] { _guiWater->toggle_angled_mode(); },
             .condition = [=] { return mapView->get_editing_mode() == editing_mode::water && !NOGGIT_CUR_ACTION; },
