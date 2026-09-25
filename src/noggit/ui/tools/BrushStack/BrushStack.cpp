@@ -338,20 +338,6 @@ void BrushStack::setupMapStampUi()
   placement_form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
   placement_form->setRowWrapPolicy(QFormLayout::WrapLongRows);
 
-  auto* tuning_group = new QGroupBox("More placement settings", placement_group);
-  tuning_group->setCheckable(true);
-  tuning_group->setChecked(false);
-  auto* tuning_layout = new QVBoxLayout(tuning_group);
-  tuning_layout->setContentsMargins(8, 4, 8, 8);
-  auto* tuning_body = new QWidget(tuning_group);
-  auto* tuning_form = new QFormLayout(tuning_body);
-  tuning_form->setContentsMargins(0, 0, 0, 0);
-  tuning_form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-  tuning_form->setRowWrapPolicy(QFormLayout::WrapLongRows);
-  tuning_layout->addWidget(tuning_body);
-  tuning_body->setVisible(false);
-  connect(tuning_group, &QGroupBox::toggled, tuning_body, &QWidget::setVisible);
-
   _map_stamp_radius = new UiCommon::ExtendedSlider(_map_stamp_options);
   _map_stamp_radius->setPrefix("");
   _map_stamp_radius->setRange(0.1, 1000.0);
@@ -396,7 +382,7 @@ void BrushStack::setupMapStampUi()
       "Exact feature and Mountain blend preserve the captured core and blend outside Size. "
       "With the experimental option, tall boundary edges automatically get more room. "
       "Terrain conform blends inside Size.");
-  tuning_form->addRow("Edge blend", _map_stamp_edge_blend);
+  placement_form->addRow("Edge blend", _map_stamp_edge_blend);
 
   _map_stamp_height_scale = new QDoubleSpinBox(_map_stamp_options);
   _map_stamp_height_scale->setRange(-10.0, 10.0);
@@ -405,7 +391,7 @@ void BrushStack::setupMapStampUi()
   _map_stamp_height_scale->setValue(1.0);
   _map_stamp_height_scale->setToolTip(
       "Multiplies the captured height profile. Elevation moves the whole stamp vertically.");
-  tuning_form->addRow("Height scale", _map_stamp_height_scale);
+  placement_form->addRow("Height scale", _map_stamp_height_scale);
 
   _map_stamp_opacity = new QDoubleSpinBox(_map_stamp_options);
   _map_stamp_opacity->setRange(.01, 1.0);
@@ -414,7 +400,7 @@ void BrushStack::setupMapStampUi()
   _map_stamp_opacity->setValue(1.0);
   _map_stamp_opacity->setToolTip(
       "Overall stamp strength. Keep at 1.0 to preserve exact-feature heights in the core.");
-  tuning_form->addRow("Strength", _map_stamp_opacity);
+  placement_form->addRow("Strength", _map_stamp_opacity);
 
   auto* elevation_row = new QWidget(_map_stamp_options);
   auto* elevation_layout = new QHBoxLayout(elevation_row);
@@ -447,6 +433,12 @@ void BrushStack::setupMapStampUi()
   rotation_layout->addWidget(reset_transform);
   placement_form->addRow("Rotation", rotation_row);
 
+  _map_stamp_randomize_rotation = new QCheckBox("Randomize rotation after placement",
+                                                _map_stamp_options);
+  _map_stamp_randomize_rotation->setToolTip(
+      "Chooses a new rotation for the next stamp after each successful placement.");
+  placement_form->addRow(_map_stamp_randomize_rotation);
+
   auto* mirror_row = new QWidget(_map_stamp_options);
   auto* mirror_layout = new QHBoxLayout(mirror_row);
   mirror_layout->setContentsMargins(0, 0, 0, 0);
@@ -462,7 +454,7 @@ void BrushStack::setupMapStampUi()
       "Mirrors the stamp front-to-back on its local Z axis before rotation.");
   mirror_layout->addWidget(_map_stamp_flip_x);
   mirror_layout->addWidget(_map_stamp_flip_z);
-  tuning_form->addRow("Mirror", mirror_row);
+  placement_form->addRow("Mirror", mirror_row);
   placement_layout->addLayout(placement_form);
   placement_layout->addWidget(height_mode_help);
 
@@ -471,11 +463,6 @@ void BrushStack::setupMapStampUi()
       "Plain Left-drag adjusts a textured wireframe preview. Release Left to paste once; "
       "Right-click cancels. Ctrl makes fine adjustments.");
   placement_layout->addWidget(_map_stamp_height_drag);
-
-  _map_stamp_randomize_rotation = new QCheckBox("Randomize rotation after placement",
-                                                _map_stamp_options);
-  tuning_form->addRow(_map_stamp_randomize_rotation);
-  placement_layout->addWidget(tuning_group);
 
   auto* capture_group = new QGroupBox("Capture from map (optional)", _map_stamp_options);
   capture_group->setCheckable(true);

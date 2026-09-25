@@ -34,6 +34,7 @@
 #include <QStyleOption>
 #include <QStyleOptionButton>
 #include <QString>
+#include <QTimer>
 #include <QToolButton>
 #include <QVector>
 #include <QVBoxLayout>
@@ -825,16 +826,17 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
 
   _settings = new Noggit::Ui::settings(this);
   QString const azure_project_style = _ui->centralwidget->styleSheet();
-  _ui->centralwidget->setStyleSheet(Noggit::Ui::projectColorStyle(azure_project_style));
+  auto apply_project_color_mode = [this, azure_project_style]() {
+    _ui->centralwidget->setStyleSheet(Noggit::Ui::projectColorStyle(azure_project_style));
+  };
+  apply_project_color_mode();
   connect(dark_mode_toggle, &QCheckBox::toggled, this,
-          [this, azure_project_style](bool dark) {
+          [apply_project_color_mode](bool dark) {
             Noggit::Ui::setAzureColorMode(!dark);
-            _ui->centralwidget->setStyleSheet(Noggit::Ui::projectColorStyle(azure_project_style));
+            apply_project_color_mode();
           });
   connect(_settings, &Noggit::Ui::settings::saved, this,
-          [this, azure_project_style]() {
-            _ui->centralwidget->setStyleSheet(Noggit::Ui::projectColorStyle(azure_project_style));
-          });
+          apply_project_color_mode);
   _ui->changelog_button->hide();
   Component::RecentProjectsComponent::buildRecentProjectsList(this);
 
@@ -1011,6 +1013,8 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
       }
   }*/
   show();
+  // Apply the persisted mode after Qt has polished the window and its theme.
+  QTimer::singleShot(0, this, apply_project_color_mode);
 }
 
 void NoggitProjectSelectionWindow::handleContextMenuProjectListItemDelete(std::string const& project_path)
