@@ -14,6 +14,7 @@ struct MinimapRenderSettings;
 
 namespace Noggit
 {
+    class ScatterSelection;
     struct ToolDrawParameters
     {
         float radius = 0.0f;
@@ -32,6 +33,7 @@ namespace Noggit
         CursorType cursor_type = CursorType::CIRCLE;
         bool project_cursor_on_water = false;
         bool show_liquid_vertices = false;
+        bool liquid_locked_plane_grid = false;
         int liquid_attribute_overlay = 0;
         int liquid_edit_layer = -1;
         std::uint64_t liquid_surface_token = 0;
@@ -49,6 +51,7 @@ namespace Noggit
         std::vector<glm::vec3> road_reference_right_edge;
         std::vector<std::vector<glm::vec3>> road_reference_mask_lines;
         std::vector<std::vector<glm::vec3>> stamp_height_preview_lines;
+        ScatterSelection const* scatter_selection = nullptr;
         MinimapRenderSettings minimapRenderSettings;
     };
 }

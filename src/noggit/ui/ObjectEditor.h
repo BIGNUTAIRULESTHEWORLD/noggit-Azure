@@ -4,6 +4,7 @@
 #include <noggit/Selection.h>
 
 #include <QWidget>
+#include <QJsonArray>
 
 class MapView;
 class QButtonGroup;
@@ -24,6 +25,7 @@ namespace Noggit
     class model_import;
     class rotation_editor;
     class helper_models;
+    class TextureScatter;
   }
 }
 
@@ -65,6 +67,7 @@ namespace Noggit
       void import_last_model_from_wmv(int type);
       void copy(std::string const& filename);
       void copy_current_selection(World* world);
+      void copy_saved_group(QJsonArray const& objects, bool keep_grouped);
       void pasteObject ( glm::vec3 cursor_pos
                        , glm::vec3 camera_pos
                        , World*
@@ -85,6 +88,7 @@ namespace Noggit
       model_import *modelImport;
       rotation_editor* rotationEditor;
       helper_models* helper_models_widget;
+      TextureScatter* textureScatter;
       QSize sizeHint() const override;
 
       void update_selection_ui();
@@ -117,6 +121,8 @@ namespace Noggit
       QLabel* _selection_groups_info;
 
       bool _copy_model_stats;
+      bool _saved_group_clipboard = false;
+      bool _group_saved_group_on_paste = true;
 
       // std::vector<selection_type> selected;
       std::vector<selection_type> _model_instance_created;

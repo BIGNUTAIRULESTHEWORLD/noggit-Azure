@@ -32,6 +32,7 @@ uniform int unfogged;
 uniform int unlit;
 
 uniform int pixel_shader;
+uniform float model_opacity;
 
 void main()
 {
@@ -247,7 +248,6 @@ void main()
   // apply world lighting
   vec3 currColor;
   vec3 lDiffuse = vec3(0.0, 0.0, 0.0);
-  vec3 accumlatedLight = vec3(1.0, 1.0, 1.0);
 
   if(unlit == 0)
   {
@@ -263,8 +263,10 @@ void main()
   }
   else
   {
-      currColor = AmbientColor_FogEnd.xyz;
-      accumlatedLight = vec3(0.0f, 0.0f, 0.0f);
+      // Unlit M2 materials bypass world lighting. Multiplying them by the
+      // ambient term turns WMO skyboxes black in interior groups, where the
+      // outdoor ambient color can legitimately be zero.
+      currColor = vec3(1.0);
   }
 
   color.rgb = clamp(color.rgb * (currColor + lDiffuse), 0.0, 1.0);
@@ -305,7 +307,28 @@ void main()
       fog = vec3(0.5);
     }
 
-    color.rgb = mix(color.rgb, FogColor_FogOn.rgb, fogFactor);
+    color.rgb = mix(color.rgb, fog, fogFactor);
+  }
+
+  float opacity = clamp(model_opacity, 0.0, 1.0);
+  if (opacity < 1.0)
+  {
+    if (blend_mode == 3) // No_Add_Alpha: additive blending ignores alpha.
+    {
+      color.rgb *= opacity;
+    }
+    else if (blend_mode == 5) // Mod: white is the neutral multiplier.
+    {
+      color.rgb = mix(vec3(1.0), color.rgb, opacity);
+    }
+    else if (blend_mode == 6) // Mod2X: 0.5 is the neutral multiplier.
+    {
+      color.rgb = mix(vec3(0.5), color.rgb, opacity);
+    }
+    else
+    {
+      color.a *= opacity;
+    }
   }
 
   out_color = color;

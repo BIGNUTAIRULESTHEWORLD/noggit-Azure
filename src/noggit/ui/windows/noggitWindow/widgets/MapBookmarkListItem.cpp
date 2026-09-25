@@ -2,73 +2,62 @@
 #include <noggit/ui/windows/noggitWindow/widgets/MapBookmarkListItem.hpp>
 
 #include <QGraphicsColorizeEffect>
-#include <QGridLayout>
+#include <QHBoxLayout>
 #include <QLabel>
-#include <QListWidget>
-
-#include <sstream>
+#include <QVBoxLayout>
 
 namespace Noggit::Ui::Widget
 {
-    MapListBookmarkItem::MapListBookmarkItem(const MapListBookmarkData& data, QWidget* parent = nullptr) : QWidget(parent)
-    {
-        auto layout = QGridLayout();
+  MapListBookmarkItem::MapListBookmarkItem(const MapListBookmarkData& data, QWidget* parent)
+    : QWidget(parent)
+  {
+    setAttribute(Qt::WA_StyledBackground, false);
+    setContextMenuPolicy(Qt::CustomContextMenu);
 
-        QIcon icon = FontAwesomeIcon(FontAwesome::bookmark);
-      
-        auto colour = new QGraphicsColorizeEffect(this);
-        colour->setColor(QColor(255, 204, 0));
-        colour->setStrength(1.0f);
+    map_icon = new QLabel(this);
+    map_icon->setFixedSize(34, 34);
+    map_icon->setAlignment(Qt::AlignCenter);
+    map_icon->setPixmap(FontAwesomeIcon(FontAwesome::bookmark).pixmap(QSize(27, 27)));
+    auto color = new QGraphicsColorizeEffect(map_icon);
+    color->setColor(QColor(214, 183, 119));
+    color->setStrength(1.0f);
+    map_icon->setGraphicsEffect(color);
 
-        map_icon = new QLabel("", parent);
-        map_icon->setPixmap(icon.pixmap(QSize(30, 30)));
-        map_icon->setGeometry(0, 0, 32, 32);
-        map_icon->setObjectName("project-icon-label");
-        map_icon->setStyleSheet("QLabel#project-icon-label { font-size: 12px; padding: 0px;}");
-        map_icon->setGraphicsEffect(colour);
-        map_icon->setAutoFillBackground(true);
+    QString const name = toCamelCase(data.MapName);
+    map_name = new QLabel(name, this);
+    map_name->setObjectName("mapListName");
+    map_name->setToolTip(name);
+    map_name->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
-        auto projectName = toCamelCase(QString(data.MapName));
-        map_name = new QLabel(projectName, parent);
-        map_name->setGeometry(32, 0, 300, 20);
-        map_name->setObjectName("project-title-label");
-        map_name->setStyleSheet("QLabel#project-title-label { font-size: 12px; }");
+    map_position = new QLabel(
+        QString("%1, %2, %3").arg(static_cast<int>(data.Position.x))
+            .arg(static_cast<int>(data.Position.y)).arg(static_cast<int>(data.Position.z)), this);
+    map_position->setObjectName("mapListMeta");
 
+    auto text_layout = new QVBoxLayout();
+    text_layout->setContentsMargins(0, 0, 0, 0);
+    text_layout->setSpacing(2);
+    text_layout->addWidget(map_name);
+    text_layout->addWidget(map_position);
 
-        auto sstream = std::stringstream();
-        sstream << std::to_string((int)data.Position.x) << " , " << std::to_string((int)data.Position.y) << " , " << std::to_string((int)data.Position.z);
+    auto row_layout = new QHBoxLayout(this);
+    row_layout->setContentsMargins(8, 5, 8, 5);
+    row_layout->setSpacing(9);
+    row_layout->addWidget(map_icon);
+    row_layout->addLayout(text_layout, 1);
+  }
 
-        map_position = new QLabel(QString::fromStdString(sstream.str()), parent);
-        map_position->setGeometry(32, 15, 300, 20);
-        map_position->setObjectName("project-information");
-        map_position->setStyleSheet("QLabel#project-information { font-size: 10px; }");
+  QSize MapListBookmarkItem::minimumSizeHint() const
+  {
+    return QSize(280, 52);
+  }
 
-        auto directoryEffect = new QGraphicsOpacityEffect(this);
-        directoryEffect->setOpacity(0.5);
+  QString MapListBookmarkItem::toCamelCase(const QString& s)
+  {
+    QStringList parts = s.split(' ', Qt::SplitBehaviorFlags::SkipEmptyParts);
+    for (int i = 0; i < parts.size(); ++i)
+      parts[i].replace(0, 1, parts[i][0].toUpper());
 
-        map_position->setGraphicsEffect(directoryEffect);
-        map_position->setAutoFillBackground(true);
-
-        setContextMenuPolicy(Qt::CustomContextMenu);
-
-        layout.addWidget(map_icon);
-        layout.addWidget(map_name);
-        layout.addWidget(map_position);
-
-        setLayout(layout.layout());
-    }
-
-    QSize MapListBookmarkItem::minimumSizeHint() const
-    {
-        return QSize(300, 32);
-    }
-
-    QString MapListBookmarkItem::toCamelCase(const QString& s)
-    {
-        QStringList parts = s.split(' ', Qt::SplitBehaviorFlags::SkipEmptyParts);
-        for (int i = 0; i < parts.size(); ++i)
-            parts[i].replace(0, 1, parts[i][0].toUpper());
-
-        return parts.join(" ");
-    }
+    return parts.join(" ");
+  }
 }

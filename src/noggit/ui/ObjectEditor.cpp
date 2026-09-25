@@ -15,6 +15,7 @@
 #include <noggit/ui/HelperModels.h>
 #include <noggit/ui/ModelImport.h>
 #include <noggit/ui/ObjectEditor.h>
+#include <noggit/ui/TextureScatter.hpp>
 #include <noggit/ui/RotationEditor.h>
 #include <noggit/ui/FontNoggit.hpp>
 #include <noggit/ui/tools/AssetBrowser/Ui/AssetBrowser.hpp>
@@ -28,6 +29,7 @@
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QJsonObject>
 #include <QLabel>
 #include <QPushButton>
 #include <QRadioButton>
@@ -42,6 +44,7 @@
 #include <QtWidgets/QSlider>
 
 #include <fstream>
+#include <cmath>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -78,6 +81,9 @@ namespace Noggit
 
       auto layout = new QVBoxLayout (this);
       layout->setAlignment(Qt::AlignTop);
+
+      textureScatter = new TextureScatter(mapView, this);
+      layout->addWidget(textureScatter);
 
       QGroupBox* radius_group = new QGroupBox("Selection Brush Radius");
       auto radius_layout = new QFormLayout(radius_group);
@@ -116,7 +122,7 @@ namespace Noggit
       QPushButton* asset_browser_btn = new QPushButton("Asset browser", this);
       asset_browser_btn->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::file));
       layout->addWidget(asset_browser_btn);
-      QPushButton* object_palette_btn = new QPushButton("Object palette", this);
+      QPushButton* object_palette_btn = new QPushButton("Object Group Browser", this);
       object_palette_btn->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::palette));
       layout->addWidget(object_palette_btn);
 
@@ -786,6 +792,7 @@ namespace Noggit
                                     )
     {
       auto last_entry = world->get_last_selected_model();
+      std::vector<SceneObject*> pasted_group_members;
 
       for (auto& selection : _model_instance_created)
       {
@@ -835,7 +842,7 @@ namespace Noggit
           float scale(1.f);
           math::degrees::vec3 rotation(math::degrees(0)._, math::degrees(0)._, math::degrees(0)._);
 
-          if (_copy_model_stats)
+          if (_copy_model_stats || _saved_group_clipboard)
           {
             // copy rot size from original model. Dirty but woring
             scale = obj->scale;
@@ -854,8 +861,10 @@ namespace Noggit
           new_obj->model->wait_until_loaded();
           new_obj->model->waitForChildrenLoaded();
           new_obj->recalcExtents();
+          if (_saved_group_clipboard && _group_saved_group_on_paste)
+            pasted_group_members.push_back(new_obj);
 
-          if (paste_params->rotate_on_terrain)
+          if (paste_params->rotate_on_terrain && !_saved_group_clipboard)
           {
               // new_obj->pos.y = world->get_ground_height(new_obj->pos).y;// in multi select, objects aren't on the ground
               world->rotate_model_to_ground_normal(new_obj, true); // always smooth?
@@ -879,7 +888,7 @@ namespace Noggit
         {
           float scale(1.f);
           math::degrees::vec3 rotation(math::degrees(0)._, math::degrees(0)._, math::degrees(0)._);
-          if (_copy_model_stats)
+          if (_copy_model_stats || _saved_group_clipboard)
           {
             // copy rot size from original model. Dirty but working
             scale = obj->scale;
@@ -891,12 +900,19 @@ namespace Noggit
           new_obj->wmo->waitForChildrenLoaded();
           new_obj->recalcExtents();
 
-          if (paste_params->rotate_on_terrain)
+          if (paste_params->rotate_on_terrain && !_saved_group_clipboard)
           {
               world->rotate_model_to_ground_normal(new_obj, true); // always smooth?
           }
         }        
-}
+      }
+      if (_saved_group_clipboard && _group_saved_group_on_paste
+          && pasted_group_members.size() > 1)
+      {
+        world->add_object_group(pasted_group_members);
+        if (NOGGIT_CUR_ACTION)
+          NOGGIT_CUR_ACTION->registerSelectionGroupAdded(pasted_group_members);
+      }
     }
 
     void object_editor::togglePasteMode()
@@ -954,6 +970,7 @@ namespace Noggit
 
       // std::vector<selection_type> selected_model;
       _model_instance_created.clear();
+      _saved_group_clipboard = false;
 
       if (filename.ends_with(".m2"))
       {
@@ -975,6 +992,42 @@ namespace Noggit
       }
     }
 
+    void object_editor::copy_saved_group(QJsonArray const& objects, bool keep_grouped)
+    {
+      if (objects.size() < 2) return;
+      std::vector<ModelInstance*> instances;
+      for (auto const& entry : objects)
+      {
+        auto const object = entry.toObject();
+        auto const path = object.value("path").toString();
+        auto const offset = object.value("offset").toArray();
+        auto const rotation = object.value("rotation").toArray();
+        auto const scale = object.value("scale").toDouble();
+        if (!path.endsWith(".m2", Qt::CaseInsensitive)
+            || !Noggit::Application::NoggitApplication::instance()->clientData()->exists(path.toStdString())
+            || offset.size() != 3 || rotation.size() != 3 || !std::isfinite(scale) || scale <= 0
+            || !offset.at(0).isDouble() || !offset.at(1).isDouble() || !offset.at(2).isDouble()
+            || !rotation.at(0).isDouble() || !rotation.at(1).isDouble() || !rotation.at(2).isDouble()
+            || !std::isfinite(offset.at(0).toDouble()) || !std::isfinite(offset.at(1).toDouble())
+            || !std::isfinite(offset.at(2).toDouble()) || !std::isfinite(rotation.at(0).toDouble())
+            || !std::isfinite(rotation.at(1).toDouble()) || !std::isfinite(rotation.at(2).toDouble()))
+        {
+          for (auto* instance : instances) delete instance;
+          QMessageBox::warning(this, "Saved M2 group", "This group contains invalid or missing M2 data.");
+          return;
+        }
+        auto* instance = new ModelInstance(path.toStdString(), _map_view->getRenderContext());
+        instance->pos = glm::vec3(offset.at(0).toDouble(), offset.at(1).toDouble(), offset.at(2).toDouble());
+        instance->dir = math::degrees::vec3(rotation.at(0).toDouble(), rotation.at(1).toDouble(), rotation.at(2).toDouble());
+        instance->scale = static_cast<float>(scale);
+        instances.push_back(instance);
+      }
+      _model_instance_created.clear();
+      for (auto* instance : instances) _model_instance_created.push_back(instance);
+      _saved_group_clipboard = true;
+      _group_saved_group_on_paste = keep_grouped;
+      update_clipboard();
+    }
     void object_editor::copy_current_selection(World* world)
     {
       auto const& current_selection = world->current_selection();
@@ -987,6 +1040,7 @@ namespace Noggit
 
       // std::vector<selection_type> selected_model;
       _model_instance_created.clear();
+      _saved_group_clipboard = false;
 
       for (auto& selection : current_selection)
       {

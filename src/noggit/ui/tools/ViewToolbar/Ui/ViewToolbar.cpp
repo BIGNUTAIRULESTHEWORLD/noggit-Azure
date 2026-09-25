@@ -186,6 +186,10 @@ ViewToolbar::ViewToolbar(MapView *mapView, ViewToolbar *tb)
     add_tool_icon(mapView, &mapView->_draw_mfbo, tr("Flight bounds (currently unavailable)"), FontNoggit::VISIBILITY_FLIGHT_BOUNDS, tb, {}, more_view_menu);
     add_tool_icon(mapView, &mapView->_draw_models_with_box, tr("Models with box"), FontNoggit::VISIBILITY_WITH_BOX, tb, {}, more_view_menu);
     add_tool_icon(mapView, &mapView->_draw_hidden_models, tr("Hidden models"), FontNoggit::VISIBILITY_HIDDEN_MODELS, tb, {}, more_view_menu);
+    more_view_menu->addSeparator();
+    add_tool_icon(mapView, &mapView->_draw_sky, tr("Sky"), FontNoggit::VISIBILITY_LIGHT, tb, {}, more_view_menu);
+    add_tool_icon(mapView, &mapView->_draw_skybox, tr("Skybox"), FontNoggit::VISIBILITY_UNUSED, tb, {}, more_view_menu);
+    add_tool_icon(mapView, &mapView->_draw_occlusion_boxes, tr("Occlusion boxes"), FontNoggit::VISIBILITY_WITH_BOX, tb, {}, more_view_menu);
 
     auto more_view_button = new QToolButton(this);
     more_view_button->setIcon(FontNoggitIcon{FontNoggit::SETTINGS});

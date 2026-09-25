@@ -15,22 +15,26 @@
 
 #include <QFile>
 #include <QFileDialog>
-#include <QBitmap>
+#include <QDir>
 #include <QEvent>
+#include <QFont>
 #include <QHash>
 #include <QImage>
 #include <QLabel>
 #include <QLinearGradient>
+#include <QListWidget>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPair>
 #include <QPushButton>
+#include <QPixmap>
 #include <QSettings>
 #include <QStyleOption>
 #include <QStyleOptionButton>
 #include <QString>
 #include <QToolButton>
 #include <QVector>
+#include <QVBoxLayout>
 
 #include "ui_NoggitProjectSelectionWindow.h"
 
@@ -41,6 +45,50 @@ using namespace Noggit::Ui::Windows;
 
 namespace
 {
+  class ProjectWorldPreview final : public QWidget
+  {
+  public:
+    explicit ProjectWorldPreview(QWidget* parent) : QWidget(parent)
+    {
+      setMinimumHeight(270);
+      setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    }
+
+  protected:
+    void paintEvent(QPaintEvent*) override
+    {
+      QPainter painter(this);
+      painter.setRenderHint(QPainter::SmoothPixmapTransform);
+      QRectF const bounds = rect().adjusted(3, 3, -3, -3);
+      // Cropped from Blizzard's 2001 WoW wallpaper, archived at
+      // https://archivecraft.com/archives/wallpapers/vanilla/.
+      static QPixmap const artwork(QStringLiteral(":/project-selection-canyon"));
+      painter.fillRect(bounds, QColor(12, 18, 32));
+      if (!artwork.isNull() && bounds.width() > 0 && bounds.height() > 0)
+      {
+        qreal const target_aspect = bounds.width() / bounds.height();
+        qreal const artwork_aspect = qreal(artwork.width()) / artwork.height();
+        QRectF source(0, 0, artwork.width(), artwork.height());
+        if (artwork_aspect > target_aspect)
+        {
+          qreal const source_width = artwork.height() * target_aspect;
+          source.setLeft((artwork.width() - source_width) / 2.0);
+          source.setWidth(source_width);
+        }
+        else
+        {
+          qreal const source_height = artwork.width() / target_aspect;
+          source.setTop((artwork.height() - source_height) / 2.0);
+          source.setHeight(source_height);
+        }
+        painter.drawPixmap(bounds, artwork, source);
+      }
+
+      painter.setPen(QPen(QColor(210, 183, 117), 1));
+      painter.drawRect(bounds);
+    }
+  };
+
   class ProjectSelectionTitleBar final : public QWidget
   {
   public:
@@ -475,10 +523,8 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   , _ui(new ::Ui::NoggitProjectSelectionWindow)
   , _noggit_application(noggit_app)
 {
-  // The artwork supplies the complete window frame, so do not wrap it in a
-  // second rectangular Windows title bar and border.
   setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
-  setAttribute(Qt::WA_TranslucentBackground, true);
+  _load_project_component = std::make_unique<Component::LoadProjectComponent>();
 
   ////////////////////////////
   // auto load favorite project
@@ -548,51 +594,18 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   ///////////////////////////
 
   _ui->setupUi(this);
-
-  // Preserve the design coordinate system used by the full-screen frame art.
-  // The former native title bar made the outer rectangular window conspicuous;
-  // this keeps the decorative frame itself as the visible boundary.
   setFixedSize(size());
 
-  QImage const frame_mask_source(":/project-selection-azure-frame");
-  if (!frame_mask_source.isNull())
-  {
-    QImage scaled_mask = frame_mask_source.scaled(
-        size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
-                             .convertToFormat(QImage::Format_ARGB32);
-
-    // The shaped artwork contains intentional translucent lighting inside the
-    // frame. A binary window mask must treat every non-transparent artwork
-    // pixel as solid or those highlights become holes in the window.
-    for (int y = 0; y < scaled_mask.height(); ++y)
-    {
-      QRgb* scan_line = reinterpret_cast<QRgb*>(scaled_mask.scanLine(y));
-      for (int x = 0; x < scaled_mask.width(); ++x)
-      {
-        if (qAlpha(scan_line[x]) != 0)
-          scan_line[x] = qRgba(qRed(scan_line[x]), qGreen(scan_line[x]), qBlue(scan_line[x]), 255);
-      }
-    }
-
-    setMask(QBitmap::fromImage(scaled_mask.createAlphaMask()));
-  }
-
-  _ui->label->setObjectName("title");
-  _ui->label_2->setObjectName("title");
-
-  // The generated chrome is the visual source of truth for this screen. The
-  // widgets below remain native and interactive, but sit over its empty slots.
-  _ui->titlePlaque->hide();
-  _ui->label->hide();
-  _ui->label_2->hide();
-
-  _ui->rootLayout->setContentsMargins(0, 0, 0, 0);
+  _ui->rootLayout->setContentsMargins(10, 10, 10, 10);
   _ui->rootLayout->setSpacing(0);
-  _ui->contentLayout->setContentsMargins(15, 0, 15, 0);
+  _ui->titlePlaque->setMinimumSize(500, 86);
+  _ui->titlePlaque->setMaximumSize(530, 86);
+  _ui->titlePlaque->setText(QStringLiteral("NOGGIT AZURE"));
+  _ui->contentLayout->setContentsMargins(0, 0, 0, 0);
   _ui->contentLayout->setSpacing(0);
-  _ui->contentLayout->setStretch(0, 29);
-  _ui->contentLayout->setStretch(1, 43);
-  _ui->contentLayout->setStretch(2, 28);
+  _ui->contentLayout->setStretch(0, 27);
+  _ui->contentLayout->setStretch(1, 45);
+  _ui->contentLayout->setStretch(2, 27);
 
   for (QFrame* panel : {_ui->recentPanel, _ui->actionsPanel})
   {
@@ -601,245 +614,243 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
     panel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   }
 
-  _ui->heroWindow->setMinimumWidth(0);
-  _ui->recentLayout->setContentsMargins(54, 174, 20, 112);
-  _ui->recentLayout->setSpacing(0);
-  _ui->listView->setSpacing(11);
+  _ui->recentLayout->setContentsMargins(18, 23, 18, 18);
+  _ui->recentLayout->setSpacing(8);
+  _ui->label->setText(QStringLiteral("Recent Projects"));
+  _ui->label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+  auto recent_note = new QLabel(QStringLiteral("Return to a world in progress"), _ui->recentPanel);
+  recent_note->setObjectName("sideNote");
+  _ui->recentLayout->insertWidget(1, recent_note);
+  _ui->listView->setSpacing(8);
 
-  _ui->actionsLayout->setContentsMargins(0, 0, 0, 0);
-  _ui->actionsLayout->setSpacing(0);
+  auto hero_layout = new QVBoxLayout(_ui->heroWindow);
+  hero_layout->setContentsMargins(18, 18, 18, 18);
+  hero_layout->setSpacing(12);
+  hero_layout->addWidget(new ProjectWorldPreview(_ui->heroWindow), 1);
 
-  auto configure_embedded_button = [](QPushButton* button,
-                                      QString const& accessible_name)
-  {
-    button->setAccessibleName(accessible_name);
-    button->setToolTip(accessible_name);
-    button->setText(QString());
-  };
+  auto project_details = new QFrame(_ui->heroWindow);
+  project_details->setObjectName("projectDetails");
+  auto details_layout = new QVBoxLayout(project_details);
+  details_layout->setContentsMargins(18, 12, 18, 12);
+  details_layout->setSpacing(3);
+  auto project_caption = new QLabel(QStringLiteral("SELECTED PROJECT"), project_details);
+  project_caption->setObjectName("projectCaption");
+  auto project_name = new QLabel(QStringLiteral("Select a project"), project_details);
+  project_name->setObjectName("selectedProjectName");
+  project_name->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+  auto project_meta = new QLabel(QStringLiteral("Choose a project from Recent Projects"), project_details);
+  project_meta->setObjectName("selectedProjectMeta");
+  project_meta->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+  project_meta->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  details_layout->addWidget(project_caption);
+  details_layout->addWidget(project_name);
+  details_layout->addWidget(project_meta);
+  hero_layout->addWidget(project_details);
 
-  configure_embedded_button(_ui->button_create_new_project, "Create a new project");
-  configure_embedded_button(_ui->button_open_existing_project, "Open an existing project");
-  configure_embedded_button(_ui->button_convert_project, "Convert project");
-
-  // These controls overlay frames that are part of the background artwork.
-  // Keep their hit/highlight rectangles locked to those painted coordinates
-  // rather than allowing the generic panel layout to stretch them.
-  for (QPushButton* button : {_ui->button_create_new_project,
-                              _ui->button_open_existing_project,
-                              _ui->button_convert_project})
-  {
-    _ui->actionsLayout->removeWidget(button);
-    button->setParent(_ui->centralwidget);
-    button->show();
-  }
-
-  _ui->button_create_new_project->setGeometry(933, 190, 278, 105);
-  _ui->button_open_existing_project->setGeometry(933, 320, 278, 105);
-  _ui->button_convert_project->setGeometry(933, 450, 278, 105);
-
-  _ui->footerLayout->removeWidget(_ui->settings_button);
-  _ui->settings_button->setParent(_ui->centralwidget);
-  _ui->settings_button->setGeometry(1136, 584, 96, 96);
-  _ui->settings_button->show();
+  _ui->actionsLayout->setContentsMargins(18, 23, 18, 18);
+  _ui->actionsLayout->setSpacing(12);
+  _ui->label_2->setText(QStringLiteral("Begin"));
+  _ui->label_2->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+  auto actions_note = new QLabel(QStringLiteral("Choose how to enter Noggit"), _ui->actionsPanel);
+  actions_note->setObjectName("sideNote");
+  _ui->actionsLayout->insertWidget(1, actions_note);
+  auto launch_button = new QPushButton(QStringLiteral("Enter Selected Project"), _ui->actionsPanel);
+  launch_button->setObjectName("launchSelectedProject");
+  launch_button->setMinimumHeight(56);
+  launch_button->setEnabled(false);
+  _ui->actionsLayout->insertWidget(2, launch_button);
+  _ui->button_create_new_project->setText(QStringLiteral("Create New Project"));
+  _ui->button_open_existing_project->setText(QStringLiteral("Open Project File"));
+  _ui->button_create_new_project->setMinimumHeight(56);
+  _ui->button_open_existing_project->setMinimumHeight(56);
+  _ui->button_convert_project->hide();
+  _ui->changelog_button->hide();
+  _ui->settings_button->setIcon(QIcon());
+  _ui->settings_button->setText(QStringLiteral("Settings"));
+  _ui->settings_button->setMinimumSize(88, 36);
 
   auto title_bar = new ProjectSelectionTitleBar(_ui->centralwidget);
   title_bar->setObjectName("projectSelectionTitleBar");
-  title_bar->setGeometry(0, 0, width(), 145);
+  title_bar->setGeometry(10, 10, width() - 20, 86);
   title_bar->raise();
-
-  auto exit_button = new QPushButton("Exit Project", title_bar);
+  auto exit_button = new QPushButton(QStringLiteral("Exit"), title_bar);
   exit_button->setObjectName("projectSelectionExitButton");
-  exit_button->setAccessibleName("Exit project");
-  exit_button->setToolTip("Exit Noggit Azure");
+  exit_button->setToolTip(QStringLiteral("Exit Noggit Azure"));
   exit_button->setCursor(Qt::ArrowCursor);
-  exit_button->setGeometry(title_bar->width() - 250, 34, 140, 36);
+  exit_button->setGeometry(title_bar->width() - 92, 22, 76, 36);
   QObject::connect(exit_button, &QPushButton::clicked, this, &QWidget::close);
 
   _ui->centralwidget->setStyleSheet(R"(
     QWidget#centralwidget {
-      color: #dbeeff;
-      background: transparent;
-      border-image: url(:/project-selection-azure-artwork) 0 0 0 0 stretch stretch;
-      border: none;
+      color: #eee8da;
+      background: qradialgradient(cx:0.5, cy:0.35, radius:0.9,
+                                  stop:0 #1c2b4c, stop:0.6 #101b31, stop:1 #080e1b);
+      border: 3px solid #64738c;
     }
-
-    QFrame#mainFrame {
-      background: transparent;
-      border: none;
-    }
-
-    QFrame#recentPanel,
-    QFrame#actionsPanel {
-      background: transparent;
-      border: none;
-    }
-
-    QFrame#heroWindow {
-      background: transparent;
-      border: none;
-    }
-
     QLabel#titlePlaque {
-      color: #78dcff;
+      color: #b0d9ef;
+      background: transparent;
+      border: none;
+      font-family: Georgia;
+      font-size: 31px;
+      font-weight: bold;
+    }
+    QFrame#mainFrame {
+      background: #0b1426;
+      border: 1px solid #d6b777;
+    }
+    QFrame#recentPanel, QFrame#actionsPanel {
       background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                  stop:0 #263d73, stop:0.18 #0d1735,
-                                  stop:0.76 #080d26, stop:1 #281b58);
-      border: 3px solid #527bd2;
-      border-top-color: #8bdcff;
-      border-bottom-color: #21184d;
-      border-radius: 7px;
-      padding: 5px 24px;
-      font-size: 26px;
+                                  stop:0 #14233e, stop:1 #0b1426);
+      border: none;
     }
-
-    QLabel#title {
-      color: #f1c94f;
-      background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                  stop:0 rgba(7, 20, 59, 165),
-                                  stop:0.5 rgba(22, 13, 60, 190),
-                                  stop:1 rgba(7, 20, 59, 165));
-      border: 1px solid #526fc2;
-      border-bottom-color: #6c47ba;
-      border-radius: 4px;
-      padding: 7px 8px;
-      font-size: 19px;
+    QFrame#recentPanel { border-right: 1px solid #526783; }
+    QFrame#actionsPanel { border-left: 1px solid #526783; }
+    QFrame#heroWindow { background: #0a1326; border: none; }
+    QLabel#label, QLabel#label_2 {
+      color: #d6b777;
+      font-family: Georgia;
+      font-size: 21px;
+      font-weight: bold;
+      border-bottom: 1px solid #526783;
+      padding-bottom: 7px;
     }
-
+    QLabel#sideNote {
+      color: #aabbd0;
+      font-family: Segoe UI;
+      font-size: 11px;
+      margin-bottom: 10px;
+    }
     QListWidget#listView {
       background: transparent;
       border: none;
       outline: none;
-      padding: 1px;
     }
-
     QListWidget#listView::item {
-      color: #dbeeff;
-      background: transparent;
-      border: 1px solid transparent;
-      border-radius: 6px;
+      background: #172944;
+      border: 1px solid #526783;
+      margin-bottom: 3px;
     }
-
-    QListWidget#listView::item:hover {
-      background-color: rgba(34, 115, 206, 48);
-      border-color: rgba(121, 216, 255, 155);
-    }
-
+    QListWidget#listView::item:hover,
     QListWidget#listView::item:selected {
-      background-color: rgba(37, 104, 209, 72);
-      border-color: #9ce9ff;
+      background: #263c61;
+      border: 1px solid #d6b777;
     }
-
     QLabel#project-title-label {
-      color: #e7cb75;
+      color: #eee8da;
       background: transparent;
-      font-family: Georgia, serif;
-      font-size: 15px;
-      font-weight: bold;
+      font-family: Georgia;
+      font-size: 14px;
     }
-
-    QLabel#project-information,
-    QLabel#project-last-edited {
-      color: #a9c8e7;
+    QLabel#project-information, QLabel#project-last-edited {
+      color: #aabbd0;
       background: transparent;
+      font-family: Segoe UI;
       font-size: 10px;
     }
-
-    QPushButton {
-      color: transparent;
+    QFrame#projectDetails {
+      background: #14233e;
+      border: 1px solid #526783;
+    }
+    QLabel#projectCaption {
+      color: #d6b777;
+      font-family: Segoe UI;
+      font-size: 10px;
+    }
+    QLabel#selectedProjectName {
+      color: #eee8da;
+      font-family: Georgia;
+      font-size: 22px;
+    }
+    QLabel#selectedProjectMeta {
+      color: #aabbd0;
+      font-family: Segoe UI;
+      font-size: 11px;
+    }
+    QPushButton#launchSelectedProject,
+    QPushButton#button_create_new_project,
+    QPushButton#button_open_existing_project {
+      color: #eee8da;
+      background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                  stop:0 #253a60, stop:1 #101d35);
+      border: 1px solid #526783;
+      font-family: Georgia;
+      font-size: 15px;
+      padding: 8px;
+      text-align: left;
+    }
+    QPushButton#launchSelectedProject {
+      color: #f6e3b5;
+      background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                  stop:0 #315f96, stop:1 #173358);
+      border-color: #d6b777;
+    }
+    QPushButton#launchSelectedProject:disabled {
+      color: #7e8b9c;
+      background: #1c293c;
+      border-color: #526783;
+    }
+    QPushButton#launchSelectedProject:hover,
+    QPushButton#button_create_new_project:hover,
+    QPushButton#button_open_existing_project:hover {
+      background: #365581;
+      border-color: #d6b777;
+    }
+    QToolButton#settings_button, QPushButton#projectSelectionExitButton {
+      color: #aabbd0;
       background: transparent;
-      border: 1px solid transparent;
-      border-radius: 9px;
+      border: none;
+      font-family: Segoe UI;
+      font-size: 12px;
     }
-
-    QPushButton:hover {
-      background-color: rgba(40, 133, 241, 42);
-      border-color: rgba(155, 232, 255, 190);
-    }
-
-    QPushButton:pressed {
-      background-color: rgba(43, 48, 151, 78);
-      border-color: rgba(125, 113, 235, 210);
-    }
-
-    QPushButton:focus {
-      border-color: #a7ecff;
-    }
-
-    QPushButton:disabled {
-      background: transparent;
-      border-color: transparent;
-    }
-
-    QToolButton#settings_button {
-      color: transparent;
-      background: transparent;
-      border: 1px solid transparent;
-      border-radius: 47px;
-      padding: 0px;
-    }
-
-    QToolButton#settings_button:hover {
-      background-color: rgba(35, 95, 162, 55);
-      border-color: rgba(150, 230, 255, 195);
-    }
-
-    QPushButton#projectSelectionExitButton {
-      color: #e7cb75;
-      background: rgba(4, 10, 29, 125);
-      border: 1px solid rgba(104, 151, 220, 110);
-      border-radius: 8px;
-      font-family: Georgia, serif;
-      font-size: 13px;
-      font-weight: bold;
-      padding: 0px;
-    }
-
-    QPushButton#projectSelectionExitButton:hover {
-      color: #fff2a6;
-      background: rgba(40, 103, 187, 150);
-      border-color: rgba(155, 232, 255, 220);
-    }
-
-    QPushButton#projectSelectionExitButton:pressed {
-      background: rgba(43, 48, 151, 190);
-    }
-
-    QScrollBar:vertical {
-      background: #080d25;
-      width: 12px;
-      margin: 1px;
-      border: 1px solid #344f8c;
-    }
-
-    QScrollBar::handle:vertical {
-      background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                  stop:0 #234da0, stop:1 #57339a);
-      border: 1px solid #6bbfe9;
-      border-radius: 3px;
-      min-height: 26px;
-    }
-
-    QScrollBar::add-line:vertical,
-    QScrollBar::sub-line:vertical {
-      height: 0px;
-    }
+    QToolButton#settings_button:hover,
+    QPushButton#projectSelectionExitButton:hover { color: #d6b777; }
+    QScrollBar:vertical { background: #0b1426; width: 10px; }
+    QScrollBar::handle:vertical { background: #526783; min-height: 26px; }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
   )");
 
   _settings = new Noggit::Ui::settings(this);
-  //_changelog = new Noggit::Ui::CChangelog(this);
-
-  _load_project_component = std::make_unique<Component::LoadProjectComponent>();
-
-  _ui->settings_button->setIcon(QIcon());
-
   _ui->changelog_button->hide();
-  //_ui->changelog_button->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::Icons::file));
-  //_ui->changelog_button->setIconSize(QSize(20, 20));
-  //_ui->changelog_button->setText(tr(" Changelog"));
-  //_ui->changelog_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-
   Component::RecentProjectsComponent::buildRecentProjectsList(this);
 
+  auto update_selected_project = [this, project_name, project_meta, launch_button]()
+  {
+    QListWidgetItem* const item = _ui->listView->currentItem();
+    if (!item)
+    {
+      project_name->setText(QStringLiteral("Select a project"));
+      project_meta->setText(QStringLiteral("Choose a project from Recent Projects"));
+      launch_button->setText(QStringLiteral("Enter Selected Project"));
+      launch_button->setEnabled(false);
+      return;
+    }
+
+    QString const path = item->data(Qt::UserRole).toString();
+    auto const project = Noggit::Project::ApplicationProjectReader().readProject(
+        std::filesystem::path(path.toStdString()));
+    if (!project)
+    {
+      launch_button->setEnabled(false);
+      return;
+    }
+
+    QString const name = QString::fromStdString(project->ProjectName);
+    QString const version = project->projectVersion == Noggit::Project::ProjectVersion::SL
+        ? QStringLiteral("Shadowlands") : QStringLiteral("Wrath of the Lich King");
+    project_name->setText(name);
+    project_meta->setText(version + QStringLiteral("  •  ") + QDir::toNativeSeparators(path));
+    project_meta->setToolTip(path);
+    launch_button->setText(launch_button->fontMetrics().elidedText(
+        QStringLiteral("Enter ") + name, Qt::ElideRight, 220));
+    launch_button->setEnabled(true);
+  };
+  QObject::connect(_ui->listView, &QListWidget::currentItemChanged, this,
+                   [update_selected_project]() { update_selected_project(); });
+  if (_ui->listView->count() > 0)
+    _ui->listView->setCurrentRow(0);
+  else
+    update_selected_project();
   QObject::connect(_ui->settings_button, &QToolButton::clicked, [&]
       {
           _settings->show();
@@ -865,6 +876,8 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
                        Component::CreateProjectComponent::createProject(this, project_reference);
                        resetFavoriteProject();
                        Component::RecentProjectsComponent::buildRecentProjectsList(this);
+                       if (_ui->listView->count() > 0)
+                         _ui->listView->setCurrentRow(0);
                      });
 
                      project_creation_dialog.exec();
@@ -924,26 +937,27 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
                    }
   );
 
-  QObject::connect(_ui->listView, &QListView::doubleClicked, [=]
-                   {
-                     auto selected_project = _load_project_component->loadProject(this);
+  auto launch_selected_project = [this]()
+  {
+    if (!_ui->listView->currentItem())
+      return;
 
-                     if (!selected_project)
-                     {
-                       LogError << "Selected Project is null, loading failed." << std::endl;
-                       return;
-                     }
+    auto selected_project = _load_project_component->loadProject(this);
+    if (!selected_project)
+    {
+      LogError << "Selected Project is null, loading failed." << std::endl;
+      return;
+    }
 
-                     Noggit::Project::CurrentProject::initialize(selected_project.get());
-
-                     _project_selection_page = std::make_unique<Noggit::Ui::Windows::NoggitWindow>(
-                         _noggit_application->getConfiguration(),
-                         selected_project);
-                         _project_selection_page->showMaximized();
-
-                     close();
-                   }
-  );
+    Noggit::Project::CurrentProject::initialize(selected_project.get());
+    _project_selection_page = std::make_unique<Noggit::Ui::Windows::NoggitWindow>(
+        _noggit_application->getConfiguration(), selected_project);
+    _project_selection_page->showMaximized();
+    close();
+  };
+  QObject::connect(launch_button, &QPushButton::clicked, this, launch_selected_project);
+  QObject::connect(_ui->listView, &QListView::doubleClicked, this,
+                   [launch_selected_project]() { launch_selected_project(); });
 
   // !disable-update && !force-changelog
   /*if (!_noggit_application->GetCommand(0) && !_noggit_application->GetCommand(1))
@@ -1005,6 +1019,8 @@ void NoggitProjectSelectionWindow::handleContextMenuProjectListItemDelete(std::s
   resetFavoriteProject();
 
   Component::RecentProjectsComponent::buildRecentProjectsList(this);
+  if (_ui->listView->count() > 0)
+    _ui->listView->setCurrentRow(0);
 }
 
 void NoggitProjectSelectionWindow::handleContextMenuProjectListItemForget(std::string const& project_path)
@@ -1033,6 +1049,8 @@ void NoggitProjectSelectionWindow::handleContextMenuProjectListItemForget(std::s
 
   resetFavoriteProject();
   Component::RecentProjectsComponent::buildRecentProjectsList(this);
+  if (_ui->listView->count() > 0)
+    _ui->listView->setCurrentRow(0);
 }
 
 void Noggit::Ui::Windows::NoggitProjectSelectionWindow::handleContextMenuProjectListItemFavorite(int index)
@@ -1041,6 +1059,8 @@ void Noggit::Ui::Windows::NoggitProjectSelectionWindow::handleContextMenuProject
   settings.sync();
   settings.setValue("favorite_project", index);
   Component::RecentProjectsComponent::buildRecentProjectsList(this);
+  if (_ui->listView->count() > 0)
+    _ui->listView->setCurrentRow(0);
 }
 
 void Noggit::Ui::Windows::NoggitProjectSelectionWindow::resetFavoriteProject()

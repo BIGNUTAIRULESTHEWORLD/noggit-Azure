@@ -6,6 +6,7 @@
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/MapView.h>
 #include <noggit/ModelInstance.h>
+#include <noggit/NpcSpawnOverlay.hpp>
 #include <noggit/WMOInstance.h>
 #include <noggit/World.h>
 
@@ -15,12 +16,76 @@
 #include <external/glm/gtx/matrix_decompose.hpp>
 #include <external/glm/gtx/string_cast.hpp>
 
+#include <cmath>
+
 using namespace Noggit::Ui::Tools::ViewportGizmo;
 
 ViewportGizmo::ViewportGizmo(Noggit::Ui::Tools::ViewportGizmo::GizmoContext gizmo_context, World* world)
 : _gizmo_context(gizmo_context)
 , _world(world)
 {
+}
+
+bool ViewportGizmo::handleNpcTransformGizmo(Noggit::NpcSpawnOverlay& overlay,
+                                             glm::mat4x4 const& model_view,
+                                             glm::mat4x4 const& projection)
+{
+  // Creature spawns only persist a position and a yaw. Keep the viewport
+  // interaction on those server-backed values and never register the preview
+  // ModelInstance as a real ADT object.
+  ImGuizmo::SetID(_gizmo_context);
+  ImGuizmo::SetDrawlist();
+  ImGuizmo::SetOrthographic(false);
+  ImGuizmo::BeginFrame();
+
+  ImGuiIO& io = ImGui::GetIO();
+  ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
+
+  glm::mat4x4 object_matrix = overlay.anchorTransformMatrix();
+  glm::mat4x4 delta_matrix(1.0f);
+  ImGuizmo::OPERATION const operation = _gizmo_operation == ImGuizmo::SCALE
+    ? ImGuizmo::TRANSLATE : _gizmo_operation;
+  ImGuizmo::Manipulate(glm::value_ptr(model_view), glm::value_ptr(projection),
+                       operation, _gizmo_mode, glm::value_ptr(object_matrix),
+                       glm::value_ptr(delta_matrix), nullptr);
+
+  if (!isUsing())
+    return false;
+
+  glm::vec3 delta_scale;
+  glm::quat delta_orientation;
+  glm::vec3 delta_translation;
+  glm::vec3 delta_skew;
+  glm::vec4 delta_perspective;
+  glm::decompose(delta_matrix, delta_scale, delta_orientation, delta_translation,
+                 delta_skew, delta_perspective);
+  delta_orientation = glm::conjugate(delta_orientation);
+
+  glm::vec3 position = overlay.anchorPosition();
+  float yaw = overlay.anchorYaw();
+  if (operation == ImGuizmo::TRANSLATE)
+  {
+    if (glm::length(delta_translation) <= 0.000001f)
+      return false;
+    position += delta_translation;
+  }
+  else if (operation == ImGuizmo::ROTATE)
+  {
+    glm::vec3 const rotation_delta =
+      glm::degrees(glm::eulerAngles(delta_orientation) * -1.0f);
+    if (std::abs(rotation_delta.y) <= 0.000001f)
+      return false;
+    yaw += rotation_delta.y;
+    while (yaw >= 180.0f) yaw -= 360.0f;
+    while (yaw < -180.0f) yaw += 360.0f;
+  }
+  else
+  {
+    return false;
+  }
+
+  overlay.setTransform(position, yaw, overlay.scale());
+  return true;
 }
 
 void ViewportGizmo::handleTransformGizmo(MapView* map_view

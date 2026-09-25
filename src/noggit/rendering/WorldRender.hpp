@@ -16,11 +16,13 @@
 #include <noggit/map_horizon.h>
 #include <noggit/ModelManager.h>
 #include <noggit/Sky.h>
+#include <noggit/scoped_blp_texture_reference.hpp>
 
 #include <noggit/rendering/Primitives.hpp>
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <map>
 #include <array>
 #include <vector>
@@ -33,6 +35,7 @@ namespace OpenGL
 
 struct TileIndex;
 class World;
+namespace Noggit { class ScatterSelection; }
 struct MinimapRenderSettings;
 
 struct FloatingObjectHighlight
@@ -54,6 +57,7 @@ struct WorldRenderParams
   CursorType cursor_type;
   bool project_cursor_on_water = false;
   bool show_liquid_vertices = false;
+  bool liquid_locked_plane_grid = false;
   int liquid_attribute_overlay = 0;
   int liquid_edit_layer = -1;
   std::uint64_t liquid_surface_token = 0;
@@ -107,6 +111,7 @@ struct WorldRenderParams
   std::vector<glm::vec3> road_reference_right_edge;
   std::vector<std::vector<glm::vec3>> road_reference_mask_lines;
   std::vector<std::vector<glm::vec3>> stamp_height_preview_lines;
+  Noggit::ScatterSelection const* scatter_selection = nullptr;
   std::vector<glm::vec3> const* texture_conflict_seam_segments = nullptr;
   std::vector<glm::vec3> const* texture_discontinuity_seam_segments = nullptr;
   std::uint64_t texture_conflict_seam_revision = 0;
@@ -158,6 +163,11 @@ namespace Noggit::Rendering
     float _detail_doodad_distance = 140.f;
     void setDetailDoodadPreview(DetailDoodadPreview preview);
     void clearDetailDoodadPreview();
+
+    // Weather.dbc state plus the client packet's independent 0..1 grade.
+    void setWeatherPreview(int weather_state, float intensity, bool immediate = false);
+    [[nodiscard]] int weatherPreviewState() const { return _weather_target_state; }
+    [[nodiscard]] float weatherPreviewIntensity() const { return _weather_target_intensity; }
 
     void updatePaintedStampSelectionOverlay(std::vector<glm::ivec2> const& cells,
                                             bool selected);
@@ -221,6 +231,17 @@ namespace Noggit::Rendering
     bool bindPaintedStampSelectionOverlay(TileIndex const& tile_index);
     std::map<TileIndex, PaintedStampSelectionPage> _painted_stamp_selection_pages;
 
+    struct ScatterSelectionTexture
+    {
+      std::array<GLuint, 2> textures{};
+      std::uint64_t revision = 0;
+      int displayed = 0;
+    };
+    std::map<TileIndex, ScatterSelectionTexture> _scatter_selection_textures;
+    std::uint64_t _scatter_selection_clear_revision = 0;
+    bool bindScatterSelectionOverlay(TileIndex const& tile, Noggit::ScatterSelection const& selection);
+    void clearScatterSelectionTextures();
+
     void drawMinimap ( MapTile *tile
         , glm::mat4x4 const& model_view
         , glm::mat4x4 const& projection
@@ -237,6 +258,9 @@ namespace Noggit::Rendering
     void setupOccluderBuffers();
     void setupChunkBuffers();
     void setupLiquidChunkBuffers();
+    void drawWeather(glm::mat4x4 const& model_view,
+                     glm::mat4x4 const& projection,
+                     glm::vec3 const& camera_pos);
 
     World* _world;
     float _cull_distance;
@@ -255,6 +279,16 @@ namespace Noggit::Rendering
     std::unique_ptr<OpenGL::program> _wmo_program;
     std::unique_ptr<OpenGL::program> _liquid_program;
     std::unique_ptr<OpenGL::program> _occluder_program;
+    std::unique_ptr<OpenGL::program> _weather_program;
+
+    int _weather_state = 0;
+    int _weather_target_state = 0;
+    int _weather_effect_type = 0;
+    float _weather_intensity = 0.0f;
+    float _weather_target_intensity = 0.0f;
+    glm::vec3 _weather_color{1.0f};
+    std::optional<scoped_blp_texture_reference> _weather_texture;
+    int _weather_last_animtime = -1;
 
     // horizon && skies && lighting
     std::unique_ptr<Noggit::map_horizon::render> _horizon_render;
@@ -267,6 +301,7 @@ namespace Noggit::Rendering
     Noggit::Rendering::Primitives::Sphere _sphere_render;
     Noggit::Rendering::Primitives::Square _square_render;
     Noggit::Rendering::Primitives::Line _line_render;
+    Noggit::Rendering::Primitives::Line _npc_waypoint_line_render;
     Noggit::Rendering::Primitives::Line _texture_conflict_line_render;
     Noggit::Rendering::Primitives::Line _texture_discontinuity_line_render;
     Noggit::Rendering::Primitives::Line _floating_object_line_render;
@@ -289,10 +324,11 @@ namespace Noggit::Rendering
     OpenGL::TerrainParamsUniformBlock _terrain_params_ubo_data;
 
     // VAOs
-    OpenGL::Scoped::deferred_upload_vertex_arrays<3> _vertex_arrays;
+    OpenGL::Scoped::deferred_upload_vertex_arrays<4> _vertex_arrays;
     GLuint const& _mapchunk_vao = _vertex_arrays[0];
     GLuint const& _liquid_chunk_vao = _vertex_arrays[1];
     GLuint const& _occluder_vao = _vertex_arrays[2];
+    GLuint const& _weather_vao = _vertex_arrays[3];
 
     LiquidTextureManager _liquid_texture_manager;
 

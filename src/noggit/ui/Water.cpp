@@ -15,8 +15,12 @@
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QRadioButton>
+#include <QtWidgets/QToolButton>
+#include <QtGui/QStandardItemModel>
 #include <QtCore/QSettings>
+#include <QtCore/QSignalBlocker>
 
 #include <atomic>
 #include <cmath>
@@ -115,6 +119,29 @@ namespace Noggit
 
       layout->addRow (brush_group);
 
+      auto height_probe_group = new QGroupBox("Water height", this);
+      auto height_probe_layout = new QFormLayout(height_probe_group);
+      auto detect_height = new pushbutton("Detect hovered water height", [this]
+      {
+        emit detect_hovered_water_height();
+      });
+      detect_height->setToolTip(
+          "Move the cursor over water in the viewport, then press this button to read the exact surface height.");
+      height_probe_layout->addRow(detect_height);
+      _hovered_water_height_label = new QLabel("No measurement yet", this);
+      _hovered_water_height_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+      height_probe_layout->addRow("Height (Y)", _hovered_water_height_label);
+      _use_hovered_height_button = new pushbutton("Use hovered point for Lock", [this]
+      {
+        if (_hovered_water_position)
+          lockPos(*_hovered_water_position);
+      });
+      _use_hovered_height_button->setEnabled(false);
+      _use_hovered_height_button->setToolTip(
+          "Copies the measured water point to Lock X, Z, and H, then enables Lock.");
+      height_probe_layout->addRow(_use_hovered_height_button);
+      layout->addRow(height_probe_group);
+
       auto angle_group (new QGroupBox ("Angled mode", this));
       angle_group->setCheckable (true);
       angle_group->setChecked (_angled_mode.get());
@@ -162,9 +189,9 @@ namespace Noggit
       _x_spin->setRange (std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max());
       _z_spin->setRange (std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max());
       _h_spin->setRange (std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max());
-      _x_spin->setDecimals (2);
-      _z_spin->setDecimals (2);
-      _h_spin->setDecimals (2);
+      _x_spin->setDecimals (4);
+      _z_spin->setDecimals (4);
+      _h_spin->setDecimals (4);
 
       connect ( _x_spin, qOverload<double> (&QDoubleSpinBox::valueChanged)
               , [&] (float f) { _lock_pos.x = f; }
@@ -189,7 +216,7 @@ namespace Noggit
       auto override_layout (new QFormLayout (override_group));
 
       auto liquid_id_channel = new CheckBox ("Change liquid type", &_override_liquid_id, this);
-      liquid_id_channel->setToolTip("Applies the selected liquid type only to the current surface.");
+      liquid_id_channel->setToolTip("Paints coverage with the selected liquid type. Editing all layers may replace other liquid layers.");
       override_layout->addWidget(liquid_id_channel);
       auto height_channel = new CheckBox ("Reshape existing height", &_override_height, this);
       height_channel->setToolTip("Off paints coverage without flattening existing water. On applies the level or angled plane to vertices in the brush.");
@@ -197,7 +224,7 @@ namespace Noggit
 
       layout->addRow(override_group);
 
-      auto vertex_group = new QGroupBox("Vertex data", this);
+      auto vertex_group = new QGroupBox("Edit water", this);
       auto vertex_layout = new QFormLayout(vertex_group);
       auto edit_channel = new QComboBox(this);
       edit_channel->addItems({"Coverage", "Raise / lower", "Flatten", "Smooth",
@@ -207,30 +234,9 @@ namespace Noggit
               [this](int value) { _edit_channel = value; });
       vertex_layout->addRow("Edit channel", edit_channel);
 
-      auto clear_fishable = new pushbutton("Clear fishing flags on ADT",
-                                           [this] { emit clear_fishable_flags(); });
-      clear_fishable->setToolTip("Clears every fishing-zone bit on the current ADT. Undo is supported.");
-      vertex_layout->addRow(clear_fishable);
-      auto clear_fatigue = new pushbutton("Clear fatigue flags on ADT",
-                                          [this] { emit clear_fatigue_flags(); });
-      clear_fatigue->setToolTip("Clears every fatigue/deep-zone bit on the current ADT. Undo is supported.");
-      vertex_layout->addRow(clear_fatigue);
-      auto clear_all_flags = new pushbutton("Clear all liquid flags on ADT",
-                                            [this] { emit clear_all_liquid_flags(); });
-      clear_all_flags->setToolTip("Clears both liquid flag masks on the current ADT. Undo is supported.");
-      vertex_layout->addRow(clear_all_flags);
-      auto clear_outside_liquid = new pushbutton("Clear fishing flags outside liquid on ADT",
-                                                 [this] { emit clear_fishing_flags_outside_liquid(); });
-      clear_outside_liquid->setToolTip("Clears fishing bits only where no liquid surface exists. Water, ocean, lava, and slime flags are preserved. Undo is supported.");
-      vertex_layout->addRow(clear_outside_liquid);
-      auto regenerate_flags = new pushbutton("Regenerate liquid flags on ADT",
-                                             [this] { emit regenerate_liquid_flags(); });
-      regenerate_flags->setToolTip("Rebuilds flags from liquid data. Every occupied liquid cell becomes fishable, including lava and slime; fatigue remains limited to deep Ocean cells.");
-      vertex_layout->addRow(regenerate_flags);
-
       auto show_liquid_vertices = new CheckBox("Show liquid vertex grid",
                                                 &_show_liquid_vertices, this);
-      show_liquid_vertices->setToolTip("Displays the active MH2O vertices and grid while shaping water.");
+      show_liquid_vertices->setToolTip("Displays the active MH2O vertices and grid in every edit channel.");
       vertex_layout->addRow(show_liquid_vertices);
       connect(&_show_liquid_vertices, &BoolToggleProperty::changed,
               [](bool enabled)
@@ -289,9 +295,70 @@ namespace Noggit
       connect(uv_rotation, qOverload<double>(&QDoubleSpinBox::valueChanged),
               [this](double value) { _uv_rotation = static_cast<float>(value); });
       vertex_layout->addRow("UV rotation", uv_rotation);
+
+      auto adt_menu = new QMenu(this);
+      connect(adt_menu->addAction("Crop water on ADT"), &QAction::triggered,
+              this, [this] { emit crop_water(); });
+      adt_menu->addSeparator();
+      connect(adt_menu->addAction("Clear fishing flags on ADT"), &QAction::triggered,
+              this, [this] { emit clear_fishable_flags(); });
+      connect(adt_menu->addAction("Clear fatigue flags on ADT"), &QAction::triggered,
+              this, [this] { emit clear_fatigue_flags(); });
+      connect(adt_menu->addAction("Clear all liquid flags on ADT"), &QAction::triggered,
+              this, [this] { emit clear_all_liquid_flags(); });
+      connect(adt_menu->addAction("Clear fishing flags outside liquid on ADT"),
+              &QAction::triggered, this,
+              [this] { emit clear_fishing_flags_outside_liquid(); });
+      connect(adt_menu->addAction("Regenerate liquid flags on ADT"),
+              &QAction::triggered, this, [this] { emit regenerate_liquid_flags(); });
+      auto adt_operations = new QToolButton(this);
+      adt_operations->setText("ADT operations");
+      adt_operations->setMenu(adt_menu);
+      adt_operations->setPopupMode(QToolButton::InstantPopup);
+
+      auto set_field_visible = [vertex_layout](QWidget* field, bool visible)
+      {
+        field->setVisible(visible);
+        if (auto* label = vertex_layout->labelForField(field))
+          label->setVisible(visible);
+      };
+      auto update_channel_ui = [=](int channel)
+      {
+        bool const coverage = channel == 0;
+        bool const height = channel >= 1 && channel <= 3;
+        bool const uses_plane = coverage || channel == 2;
+        waterType->setVisible(coverage);
+        height_probe_group->setVisible(uses_plane);
+        angle_group->setVisible(uses_plane);
+        lock_group->setVisible(uses_plane);
+        override_group->setVisible(coverage);
+        set_field_visible(height_strength, height);
+        set_field_visible(inner_radius, height);
+        set_field_visible(height_falloff, height);
+        set_field_visible(depth_value, channel == 4);
+        set_field_visible(uv_scale, channel == 5);
+        set_field_visible(uv_rotation, channel == 5);
+      };
+      connect(edit_channel, qOverload<int>(&QComboBox::currentIndexChanged),
+              this, update_channel_ui);
+      update_channel_ui(edit_channel->currentIndex());
+
+      auto update_layer_modes = [edit_channel](bool edit_current_layer)
+      {
+        auto* model = qobject_cast<QStandardItemModel*>(edit_channel->model());
+        if (!model)
+          return;
+        if (!edit_current_layer && edit_channel->currentIndex() >= 1
+            && edit_channel->currentIndex() <= 5)
+          edit_channel->setCurrentIndex(0);
+        for (int channel = 1; channel <= 5; ++channel)
+          model->item(channel)->setEnabled(edit_current_layer);
+      };
+      connect(&_edit_current_layer, &BoolToggleProperty::changed,
+              this, update_layer_modes);
       layout->addRow(vertex_group);
 
-      auto opacity_group (new QGroupBox ("Auto opacity", this));
+      auto opacity_group (new QGroupBox ("Coverage opacity", this));
       auto opacity_layout (new QFormLayout (opacity_group));
 
       auto auto_button(new QRadioButton("Auto", this));
@@ -329,32 +396,32 @@ namespace Noggit
               );
       opacity_layout->addRow (opacity_spin);
 
-      layout->addRow (opacity_group);
-
-      layout->addRow ( new pushbutton
-                            ( "Regen ADT opacity"
+      opacity_layout->addRow ( new pushbutton
+                            ( "Recalculate opacity on ADT"
                             , [this]
                               {
                                 emit regenerate_water_opacity
                                   (get_opacity_factor());
                               }
                             )
-                        );
-      layout->addRow ( new pushbutton
-                            ( "Crop water"
-                            , [this]
-                              {
-                                emit crop_water();
-                              }
-                            )
-                        );
+                         );
+
+      layout->addRow (opacity_group);
+      auto update_opacity_visibility = [opacity_group](int channel)
+      {
+        opacity_group->setVisible(channel == 0);
+      };
+      connect(edit_channel, qOverload<int>(&QComboBox::currentIndexChanged),
+              this, update_opacity_visibility);
+      update_opacity_visibility(edit_channel->currentIndex());
+      layout->addRow(adt_operations);
 
       auto layer_group (new QGroupBox ("Layers", this));
       auto layer_layout (new QFormLayout (layer_group));
 
       layer_layout->addRow (new CheckBox("Show all layers", display_all_layers));
       auto edit_current = new CheckBox("Edit current layer only", &_edit_current_layer, this);
-      edit_current->setToolTip("Keeps stacked and nearly-equal liquid surfaces independent. Disable for the legacy liquid-ID brush.");
+      edit_current->setToolTip("Off enables legacy coverage and flag painting. Height, depth, and UV tools require a current layer.");
       layer_layout->addRow(edit_current);
       layer_layout->addRow (new QLabel("Current layer:", this));
 
@@ -384,6 +451,18 @@ namespace Noggit
               , waterLayer, &QSpinBox::setValue
               );
 
+      auto clear_hovered_height = [this]
+      {
+        _hovered_water_position.reset();
+        _use_hovered_height_button->setEnabled(false);
+        _hovered_water_height_label->setText("No measurement yet");
+        _hovered_water_height_label->setToolTip({});
+      };
+      connect(current_layer, &unsigned_int_property::changed,
+              this, clear_hovered_height);
+      connect(&_edit_current_layer, &BoolToggleProperty::changed,
+              this, clear_hovered_height);
+
       updateData();
 
     }
@@ -399,10 +478,35 @@ namespace Noggit
 
     void water::updateData()
     {
-      std::stringstream mt;
-      mt << _liquid_id << " - " << LiquidTypeDB::getLiquidName(_liquid_id);
-      waterType->setCurrentText (QString::fromStdString (mt.str()));
+      int const index = waterType->findData(_liquid_id);
+      if (index >= 0 && waterType->currentIndex() != index)
+      {
+        QSignalBlocker const blocker(waterType);
+        waterType->setCurrentIndex(index);
+      }
       _liquid_type = static_cast<liquid_basic_types>(LiquidTypeDB::getLiquidType(_liquid_id));
+    }
+
+    void water::showHoveredWaterPosition(std::optional<glm::vec3> position)
+    {
+      _hovered_water_position = position;
+      _use_hovered_height_button->setEnabled(position.has_value());
+      if (position)
+      {
+        _hovered_water_height_label->setText(QString::number(position->y, 'f', 4));
+        _hovered_water_height_label->setToolTip(
+            QString("Exact hovered liquid surface height: %1").arg(position->y, 0, 'g', 9));
+      }
+      else
+      {
+        _hovered_water_height_label->setText("No water under cursor");
+        _hovered_water_height_label->setToolTip({});
+      }
+    }
+
+    int water::targetLayer() const
+    {
+      return _edit_current_layer.get() ? static_cast<int>(_current_layer->get()) : -1;
     }
 
     void water::changeWaterType(int waterint)
@@ -450,7 +554,7 @@ namespace Noggit
 
     void water::paintLiquid (World* world, glm::vec3 const& pos, bool add, float delta_time)
     {
-      int const target_layer = _edit_current_layer.get() ? static_cast<int>(_current_layer->get()) : -1;
+      int const target_layer = targetLayer();
       if (_edit_channel == 1)
       {
         if (target_layer >= 0)
@@ -602,9 +706,13 @@ namespace Noggit
 
     bool water::showLiquidVertices() const
     {
-      bool const editing_flags = _edit_channel == 6 || _edit_channel == 7;
-      bool const editing_vertices = _edit_channel >= 1 && _edit_channel <= 3;
-      return _show_liquid_vertices.get() && (editing_vertices || editing_flags);
+      return _show_liquid_vertices.get();
+    }
+
+    bool water::showLockedPlaneGrid() const
+    {
+      return _locked.get() && _show_liquid_vertices.get()
+          && (_edit_channel == 0 || _edit_channel == 2);
     }
 
     int water::liquidAttributeOverlay() const

@@ -214,7 +214,10 @@ namespace Noggit
       auto* object = std::get<selected_object_type>(*instance);
       for (auto& selection_group : _world->_selection_groups)
         if (selection_group.contains_object(object))
+        {
           selection_group.remove_member(object->uid);
+          break;
+        }
 
       if (action && NOGGIT_CUR_ACTION)
         NOGGIT_CUR_ACTION->registerObjectRemoved(object);

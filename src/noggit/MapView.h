@@ -41,6 +41,7 @@ class QWidgetAction;
 class QOpenGLContext;
 class QPoint;
 class QPointF;
+class QString;
 
 namespace Noggit::Ui::Windows
 {
@@ -65,7 +66,6 @@ namespace Noggit
   namespace Ui::Tools
   {
     class ToolPanel;
-
     namespace AssetBrowser::Ui
     {
       class AssetBrowserWidget;
@@ -159,6 +159,7 @@ public:
   Noggit::BoolToggleProperty _draw_fog = {false};
   Noggit::BoolToggleProperty _draw_sky = { true };
   Noggit::BoolToggleProperty _draw_skybox = { true };
+  Noggit::BoolToggleProperty _game_preview = { false };
   Noggit::BoolToggleProperty _draw_hidden_models = {false};
   Noggit::BoolToggleProperty _draw_occlusion_boxes = {false};
   // Noggit::BoolToggleProperty _game_mode_camera = { false };
@@ -166,6 +167,49 @@ public:
   Noggit::BoolToggleProperty _show_detail_info_window = { false };
   Noggit::BoolToggleProperty _show_minimap_window = { false };
 private:
+
+  struct GamePreviewRestoreState
+  {
+    bool valid = false;
+    bool draw_fog = false;
+    bool draw_terrain = true;
+    bool draw_wmo = true;
+    bool draw_water = true;
+    bool draw_wmo_doodads = true;
+    bool draw_wmo_exterior = true;
+    bool draw_models = true;
+    bool draw_sky = true;
+    bool draw_skybox = true;
+    bool draw_model_animations = true;
+    bool draw_vertex_color = true;
+    bool draw_baked_shadows = false;
+    bool draw_ground_effects = true;
+    bool draw_wireframe = false;
+    bool draw_contour = false;
+    bool draw_climb = false;
+    bool draw_hole_lines = false;
+    bool draw_models_with_box = false;
+    bool draw_hidden_models = false;
+    bool draw_occlusion_boxes = false;
+    bool directional_lighting = true;
+    bool local_lighting = true;
+    bool detail_doodads = true;
+    SkyParamsNames preview_state = SKY_PARAM_CLEAR;
+  };
+
+  GamePreviewRestoreState _game_preview_restore;
+  SkyParamsNames _game_preview_state = SKY_PARAM_CLEAR;
+  int _game_preview_weather_state = 0;
+  float _game_preview_weather_intensity = 0.0f;
+
+  void setGamePreviewEnabled(bool enabled);
+  void setGamePreviewState(SkyParamsNames state);
+  void setGamePreviewWeather(int weather_state, float intensity, bool force_storm = false);
+  QString gamePreviewWeatherName() const;
+  QString gamePreviewReference() const;
+  void copyGamePreviewReference() const;
+  void saveGamePreviewScreenshot();
+  void setExactGamePreviewTime();
 
   void update_cursor_pos();
 
@@ -225,7 +269,6 @@ private:
   Noggit::Ui::Tools::ViewToolbar::Ui::ViewToolbar* _view_toolbar;
   Noggit::Ui::Tools::ViewToolbar::Ui::ViewToolbar* _secondary_toolbar;
   Noggit::Ui::Tools::ViewToolbar::Ui::ViewToolbar* _left_sec_toolbar;
-  std::array<QAction*, static_cast<std::size_t>(editing_mode::fence) + 1> _tool_menu_actions{};
 
   void save(save_mode mode);
 
@@ -239,6 +282,7 @@ signals:
   void saved();
   void updateProgress(int value);
   void selectionUpdated(std::vector<selection_type>& selection);
+  void npcSpawnTransformed(qulonglong guid, float x, float y, float z, float yaw);
   void menuToggleChanged(bool value);
   void rotationChanged();
   void trySetBrushTexture(QImage* image, QWidget* sender);
@@ -298,6 +342,9 @@ public:
 
   void enableGizmoBar();
   void disableGizmoBar();
+  void activateNpcTransformGizmo();
+  void activateNpcRotationGizmo();
+  bool transformGizmoCapturesMouse() const;
 
   void setDbcDirty(DBCFile* dbc);
 
@@ -391,6 +438,18 @@ private:
   Noggit::Ui::Tools::AssetBrowser::Ui::AssetBrowserWidget* _asset_browser = nullptr;
 
   QDockWidget* _asset_browser_dock;
+  QDockWidget* _npc_browser_dock = nullptr;
+  QDockWidget* _npc_properties_dock = nullptr;
+  bool _npc_workspace_active = false;
+  bool _npc_browser_visible = false;
+  bool _npc_properties_visible = false;
+  bool _npc_properties_shown_with_browser = false;
+  bool _npc_tool_panel_was_visible = false;
+  bool _npc_toolbar_was_visible = false;
+  bool _npc_left_secondary_was_visible = false;
+  editing_mode _npc_mode_before = editing_mode::ground;
+  bool _npc_gizmo_bar_was_visible = false;
+  bool _npc_restore_chrome_on_ui_show = false;
   QDockWidget* _node_editor_dock;
   QDockWidget* _detail_infos_dock;
   QDockWidget* _missing_objects_dock = nullptr;
@@ -399,6 +458,7 @@ private:
   QTimer* _missing_objects_refresh_timer = nullptr;
 
   QDockWidget* _floating_objects_dock = nullptr;
+  QDockWidget* _duplicate_objects_dock = nullptr;
   QTreeWidget* _floating_objects_tree = nullptr;
   QLabel* _floating_objects_summary = nullptr;
   QCheckBox* _floating_objects_m2 = nullptr;
@@ -505,17 +565,19 @@ private:
   void repairTextureSeamsInCurrentTile();
   void setupNodeEditor();
   void setupAssetBrowser();
+  void setupNpcBrowser();
+  void setNpcWorkspaceActive(bool active);
   void setupDetailInfos();
   void setupMissingObjects();
   void refreshMissingObjects();
   void focusMissingObject(std::uint64_t record_key);
   void setupFloatingObjectAudit();
+  void setupDuplicateObjectAudit();
   void scanFloatingObjects();
   void filterFloatingObjects();
   void focusFloatingObject(std::uint32_t uid);
   void syncFloatingObjectSelection(std::vector<selection_type> const& selection);
-  void lowerSelectedFloatingObjectsToTerrain();
-  void raiseSelectedUndergroundObjectsToTerrain();
+  void fixSelectedFloatingObjectsToTerrain();
   void deleteSelectedFloatingObjects();
   void focusMissingTerrainTexture(std::uint64_t record_key);
   void repairMissingTerrainTexturePath(std::uint64_t record_key);
@@ -529,15 +591,11 @@ private:
   void setupEditMenu();
   void setupAssistMenu();
   void setupViewMenu();
-  void setupToolsMenu();
   void setupWindowMenu();
   void setupHelpMenu();
   void setupHotkeys();
   void setupClientMenu();
-  void setupMainToolbar();
-  void applyDefaultWorkspaceLayout(bool reset_visibility);
-  void restoreWorkspaceLayout();
-  void saveWorkspaceLayout();
+  void applyDefaultWorkspaceLayout();
 
   QWidget* _overlay_widget;
 

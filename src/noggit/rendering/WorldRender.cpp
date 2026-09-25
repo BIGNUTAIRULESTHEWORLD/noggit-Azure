@@ -11,19 +11,26 @@
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/TileIndex.hpp>
+#include <noggit/TextureManager.h>
 #include <noggit/MinimapRenderSettings.hpp>
 #include <noggit/MissingObjectPlaceholder.hpp>
 #include <noggit/Misc.h>
 #include <noggit/Model.h>
 #include <noggit/ModelInstance.h>
+#include <noggit/NpcSpawnOverlay.hpp>
+#include <noggit/ServerGameObjectOverlay.hpp>
 #include <noggit/project/CurrentProject.hpp>
 #include <noggit/World.h>
+#include <noggit/tools/ScatterSelection.hpp>
+#include <noggit/texture_set.hpp>
 
 #include <noggit/ui/MinimapCreator.hpp>
 
 #include <opengl/shader.hpp>
 
 #include <glm/gtx/euler_angles.hpp>
+#include <glm/gtc/constants.hpp>
+#include <glm/geometric.hpp>
 
 #include <QBuffer>
 #include <QCryptographicHash>
@@ -34,11 +41,38 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 using namespace Noggit::Rendering;
 
 namespace
 {
+  bool valid_npc_mesh_bounds(std::array<glm::vec3, 2> const& bounds)
+  {
+    for (auto const& corner : bounds)
+    {
+      if (!std::isfinite(corner.x) || !std::isfinite(corner.y) || !std::isfinite(corner.z))
+        return false;
+    }
+    return bounds[0].x <= bounds[1].x
+      && bounds[0].y <= bounds[1].y
+      && bounds[0].z <= bounds[1].z;
+  }
+
+  std::array<glm::vec3, 2> npc_mesh_bounds(Model const& model)
+  {
+    auto bounds = model.animated_mesh() ? model.getAnimatedBoundingBox() : model.vertices_bounds;
+    if (!valid_npc_mesh_bounds(bounds))
+      bounds = {model.bounding_box_min, model.bounding_box_max};
+
+    glm::vec3 const size = bounds[1] - bounds[0];
+    float const padding = std::clamp(std::max(size.x, std::max(size.y, size.z)) * 0.025f,
+                                     0.02f, 0.15f);
+    bounds[0] -= glm::vec3(padding);
+    bounds[1] += glm::vec3(padding);
+    return bounds;
+  }
+
   // WMO F_SIDN emissive pulse from 3.3.5 client DayNight::SetColors (0x007F3230) 
   // interpolates the SIDN emissive scalar from the fixed 4-key table at
   // 0x00AF4C80: 06:00=1, 07:00=0, 20:30=0, 21:30=1.
@@ -224,6 +258,58 @@ bool WorldRender::bindPaintedStampSelectionOverlay(TileIndex const& tile_index)
   gl.activeTexture(GL_TEXTURE0 + 4);
   OpenGL::texture::current_active_texture = 4;
   gl.bindTexture(GL_TEXTURE_2D, page.textures[page.displayed_texture]);
+  return true;
+}
+
+void WorldRender::clearScatterSelectionTextures()
+{
+  for (auto& [tile, cache] : _scatter_selection_textures)
+    for (GLuint texture : cache.textures)
+      if (texture) gl.deleteTextures(1, &texture);
+  _scatter_selection_textures.clear();
+}
+
+bool WorldRender::bindScatterSelectionOverlay(TileIndex const& tile, Noggit::ScatterSelection const& selection)
+{
+  auto const* page = selection.page(static_cast<int>(tile.x), static_cast<int>(tile.z));
+  if (!page)
+  {
+    auto found = _scatter_selection_textures.find(tile);
+    if (found != _scatter_selection_textures.end())
+    {
+      for (GLuint texture : found->second.textures)
+        if (texture) gl.deleteTextures(1, &texture);
+      _scatter_selection_textures.erase(found);
+    }
+    return false;
+  }
+  auto& cache = _scatter_selection_textures[tile];
+  gl.activeTexture(GL_TEXTURE0 + 4);
+  OpenGL::texture::current_active_texture = 4;
+  if (cache.revision != page->revision)
+  {
+    // Upload only changed, visible tiles. Alternate textures so an upload never
+    // rewrites the texture used by the preceding frame's terrain draw.
+    int const next = 1 - cache.displayed;
+    GLuint& texture = cache.textures[next];
+    bool const create = !texture;
+    if (create) gl.genTextures(1, &texture);
+    gl.bindTexture(GL_TEXTURE_2D, texture);
+    constexpr int size = Noggit::ScatterSelection::resolution;
+    if (create)
+    {
+      gl.texImage2D(GL_TEXTURE_2D, 0, GL_R8, size, size, 0, GL_RED, GL_UNSIGNED_BYTE, page->pixels.data());
+      gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    else
+      gl.texSubImage2D(GL_TEXTURE_2D, 0, 0, 0, size, size, GL_RED, GL_UNSIGNED_BYTE, page->pixels.data());
+    cache.displayed = next;
+    cache.revision = page->revision;
+  }
+  gl.bindTexture(GL_TEXTURE_2D, cache.textures[cache.displayed]);
   return true;
 }
 
@@ -459,7 +545,13 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
     GLint previous_active_texture = GL_TEXTURE0;
     GLint previous_stamp_texture = 0;
-    if (render_settings.show_painted_stamp_selection)
+    if (render_settings.scatter_selection
+        && _scatter_selection_clear_revision != render_settings.scatter_selection->clearRevision())
+    {
+      clearScatterSelectionTextures();
+      _scatter_selection_clear_revision = render_settings.scatter_selection->clearRevision();
+    }
+    if (render_settings.show_painted_stamp_selection || render_settings.scatter_selection)
     {
       gl.getIntegerv(GL_ACTIVE_TEXTURE, &previous_active_texture);
       gl.activeTexture(GL_TEXTURE0 + 4);
@@ -478,9 +570,14 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       mcnk_shader.uniform("draw_stamp_protection", render_settings.show_stamp_protection);
       mcnk_shader.uniform("stamp_protection_center", render_settings.stamp_protection_center);
       mcnk_shader.uniform("stamp_protection_radius", render_settings.stamp_protection_radius);
+      mcnk_shader.uniform("scatter_filter_enabled", render_settings.scatter_selection != nullptr);
+      mcnk_shader.uniform("scatter_coverage", render_settings.scatter_selection ? render_settings.scatter_selection->coverage / 100.0f : 0.0f);
+      mcnk_shader.uniform("painted_selection_color", render_settings.scatter_selection
+          ? glm::vec4(0.05f, 0.70f, 0.85f, 0.30f) : glm::vec4(0.03f, 0.20f, 1.0f, 0.34f));
 
       if (render_settings.cursor_type != CursorType::NONE
-          && !render_settings.project_cursor_on_water)
+          && !render_settings.project_cursor_on_water
+          && !render_settings.liquid_locked_plane_grid)
       {
         mcnk_shader.uniform("draw_cursor_circle", static_cast<int>(render_settings.cursor_type));
         mcnk_shader.uniform("cursor_position", glm::vec3(cursor_pos.x, cursor_pos.y, cursor_pos.z));
@@ -524,8 +621,24 @@ void WorldRender::draw (glm::mat4x4 const& model_view
         if (num_chunks_uploaded_alphamap > _frame_max_chunk_updates)
           skip_updates = true;
 
-        bool const show_painted_selection = render_settings.show_painted_stamp_selection
-            && bindPaintedStampSelectionOverlay(tile->index);
+        bool const show_painted_selection = render_settings.scatter_selection
+            ? bindScatterSelectionOverlay(tile->index, *render_settings.scatter_selection)
+            : render_settings.show_painted_stamp_selection && bindPaintedStampSelectionOverlay(tile->index);
+        if (show_painted_selection && render_settings.scatter_selection)
+        {
+          std::array<int, 256> layers;
+          layers.fill(-1);
+          for (int x = 0; x < 16; ++x)
+            for (int z = 0; z < 16; ++z)
+            {
+              auto* chunk = tile->getChunk(x, z);
+              auto* textures = chunk->getTextureSet();
+              for (std::size_t layer = 0; layer < textures->num(); ++layer)
+                if (textures->filename(layer) == render_settings.scatter_selection->texture)
+                  layers[chunk->px * 16 + chunk->py] = static_cast<int>(layer);
+            }
+          mcnk_shader.uniform("scatter_layers", layers.data(), layers.size());
+        }
         mcnk_shader.uniform("draw_painted_stamp_selection", show_painted_selection);
         if (show_painted_selection)
         {
@@ -557,7 +670,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       gl.bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     }
 
-    if (render_settings.show_painted_stamp_selection)
+    if (render_settings.show_painted_stamp_selection || render_settings.scatter_selection)
     {
       gl.activeTexture(GL_TEXTURE0 + 4);
       gl.bindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previous_stamp_texture));
@@ -1004,9 +1117,20 @@ void WorldRender::draw (glm::mat4x4 const& model_view
   _detail_doodads.endFrame(frame);
 
   // WMOs / map objects
-  if (render_settings.draw_wmo || _world->mapIndex.hasAGlobalWMO())
+  bool const draw_server_gameobject_wmos = !render_settings.minimap_render
+    && std::any_of(_world->_server_gameobject_overlays.begin(),
+                   _world->_server_gameobject_overlays.end(),
+                   [](auto const& overlay) { return overlay && overlay->wmo(); });
+  if (render_settings.draw_wmo || _world->mapIndex.hasAGlobalWMO()
+      || draw_server_gameobject_wmos)
   {
     ZoneScopedN("World::draw() : Draw WMOs");
+    // Establish WMO depth, blend, and face-culling state on every map frame.
+    gl.enable(GL_DEPTH_TEST);
+    gl.depthMask(GL_TRUE);
+    gl.disable(GL_BLEND);
+    gl.enable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
     {
       OpenGL::Scoped::use_program wmo_program{*_wmo_program.get()};
 
@@ -1111,6 +1235,23 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
       // TODO setting
       bool constexpr draw_wdl_models = false;
+
+      if (!render_settings.minimap_render)
+        for (auto const& overlay : _world->_server_gameobject_overlays)
+        {
+          if (!overlay || !overlay->wmo()) continue;
+          glm::vec3 const delta = overlay->position() - camera_pos;
+          if (glm::dot(delta, delta) > Noggit::NpcSpawnOverlay::view_distance
+                                        * Noggit::NpcSpawnOverlay::view_distance)
+            continue;
+          TileIndex const tile(overlay->position());
+          if (!tile.is_valid() || !_world->mapIndex.tileLoaded(tile)
+              || _world->mapIndex.tileAwaitingLoading(tile))
+            continue;
+          WMOInstance* instance = overlay->wmo();
+          if (instance->finishedLoading() && !instance->wmo->loading_failed())
+            wmos_to_draw.push_back(instance);
+        }
 
       for (auto& instance: wmos_to_draw)
       {
@@ -1250,7 +1391,12 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
   bool draw_doodads_wmo = render_settings.draw_wmo && render_settings.draw_wmo_doodads;
   // M2s / models
-  if (render_settings.draw_models || draw_doodads_wmo || !models_to_draw.empty()
+  bool const draw_npc_spawns = !render_settings.minimap_render
+      && !_world->_npc_spawn_overlays.empty();
+  bool const draw_server_gameobjects = !render_settings.minimap_render
+      && !_world->_server_gameobject_overlays.empty();
+  if (render_settings.draw_models || draw_doodads_wmo || !models_to_draw.empty() || draw_npc_spawns
+      || draw_server_gameobjects
       || (render_settings.minimap_render && minimap_render_settings->use_filters))
   {
     ZoneScopedN("World::draw() : Draw M2s");
@@ -1266,7 +1412,8 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }*/
 
     {
-      if (render_settings.draw_models || draw_doodads_wmo || !models_to_draw.empty()
+      if (render_settings.draw_models || draw_doodads_wmo || !models_to_draw.empty() || draw_npc_spawns
+          || draw_server_gameobjects
           || (render_settings.minimap_render && minimap_render_settings->use_filters))
       {
         OpenGL::Scoped::use_program m2_shader {*_m2_instanced_program.get()};
@@ -1359,16 +1506,222 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
         }
 
+        if (draw_npc_spawns)
+        {
+          for (auto const& overlay_ptr : _world->_npc_spawn_overlays)
+          {
+            if (!overlay_ptr) continue;
+            Noggit::NpcSpawnOverlay& overlay = *overlay_ptr;
+            glm::vec3 const delta = overlay.anchorPosition() - camera_pos;
+            if (glm::dot(delta, delta) > Noggit::NpcSpawnOverlay::view_distance
+                                          * Noggit::NpcSpawnOverlay::view_distance)
+              continue;
+            TileIndex const overlay_tile(overlay.anchorPosition());
+            if (!overlay_tile.is_valid() || !_world->mapIndex.tileLoaded(overlay_tile)
+                || _world->mapIndex.tileAwaitingLoading(overlay_tile))
+              continue;
+            ModelInstance& body = overlay.body();
+            if (!body.finishedLoading() || body.model->loading_failed())
+              continue;
+
+            overlay.updatePreview(_world->animtime);
+
+            std::vector<glm::mat4x4> transforms{body.transformMatrix()};
+            auto const body_appearance = overlay.renderAppearance();
+            body.model->renderer()->draw(
+              model_view, transforms, m2_shader, model_render_state, frustum,
+              _cull_distance, camera_pos, overlay.previewAnimationTime(), false,
+              model_boxes_to_draw, render_settings.display_mode, true,
+              render_settings.draw_model_animations, false, false, &body_appearance,
+              static_cast<int>(overlay.previewAnimation()), true,
+              static_cast<int>(overlay.previewBlendFromAnimation()),
+              overlay.previewBlendFromAnimationTime(), overlay.previewAnimationBlend());
+            ++_world->_n_rendered_objects;
+
+            for (auto& attachment : overlay.attachments())
+            {
+              unsigned const attachment_id = attachment.attachment_id;
+              if (((attachment_id == 0 || attachment_id == 1 || attachment_id == 2)
+                   && !overlay.showsMainOffHand())
+                  || (attachment_id == 12 && !overlay.showsRangedWeapon()))
+                continue;
+              if (!attachment.model->finishedLoading() || attachment.model->loading_failed())
+                continue;
+              auto const transform = body.model->attachmentTransform(
+                attachment.render_attachment_id, body.transformMatrix());
+              if (!transform) continue;
+              transforms.front() = *transform;
+              auto const attachment_appearance = attachment.renderAppearance();
+              attachment.model->renderer()->draw(
+                model_view, transforms, m2_shader, model_render_state, frustum,
+                _cull_distance, camera_pos, _world->animtime, false,
+                model_boxes_to_draw, render_settings.display_mode, true,
+                render_settings.draw_model_animations, false, false,
+                &attachment_appearance);
+            }
+
+            if (_world->_selected_npc_spawn_guid == overlay.guid())
+            {
+              auto const bounds = npc_mesh_bounds(*body.model.get());
+              Noggit::Rendering::Primitives::WireBox::getInstance(_world->_context).draw(
+                model_view, projection, body.transformMatrix(),
+                {0.2f, 1.0f, 0.2f, 1.0f}, bounds[0], bounds[1]);
+              if (overlay.showsWaypointPath() || overlay.wanderRadius() > 0.0f)
+              {
+                constexpr float surface_offset = 0.18f;
+                constexpr unsigned circle_sides = 48;
+                std::vector<glm::vec3> route_segments;
+                std::vector<glm::vec3> marker_segments;
+                std::vector<glm::vec3> start_marker_segments;
+                std::vector<glm::vec3> end_marker_segments;
+                std::vector<glm::vec3> start_arrow_segments;
+                std::vector<glm::vec3> wander_boundary_segments;
+                auto const& route = overlay.previewRoute();
+                route_segments.reserve(route.size() * 2);
+                marker_segments.reserve(route.size() * circle_sides * 2);
+                glm::vec3 const route_start = overlay.previewRouteStart();
+                std::optional<glm::vec3> const route_end = overlay.previewRouteEnd();
+                auto append_circle = [&](std::vector<glm::vec3>& segments,
+                                         glm::vec3 center, float radius)
+                {
+                  center.y += surface_offset;
+                  for (unsigned side = 0; side < circle_sides; ++side)
+                  {
+                    float const a = glm::two_pi<float>() * side / circle_sides;
+                    float const b = glm::two_pi<float>() * (side + 1) / circle_sides;
+                    segments.push_back(center + glm::vec3(
+                      std::cos(a) * radius, 0.0f, std::sin(a) * radius));
+                    segments.push_back(center + glm::vec3(
+                      std::cos(b) * radius, 0.0f, std::sin(b) * radius));
+                  }
+                };
+
+                if (overlay.wanderRadius() > 0.0f)
+                {
+                  append_circle(wander_boundary_segments, overlay.anchorPosition(),
+                                overlay.wanderRadius());
+                  append_circle(start_marker_segments, overlay.anchorPosition(), 0.55f);
+                  for (auto const& point : route)
+                    if (glm::distance(point.position, overlay.anchorPosition()) > 0.01f)
+                      append_circle(marker_segments, point.position, 0.28f);
+                }
+                if (overlay.showsWaypointPath())
+                {
+                  append_circle(start_marker_segments, route_start, 0.62f);
+                  append_circle(start_marker_segments, route_start, 0.82f);
+                  if (route_end && glm::distance(*route_end, route_start) > 0.01f)
+                  {
+                    append_circle(end_marker_segments, *route_end, 0.62f);
+                    append_circle(end_marker_segments, *route_end, 0.82f);
+                  }
+
+                  // Point along the first real movement segment. The arrow is
+                  // deliberately separate from the route line so the initial
+                  // travel direction remains obvious on loop and retrace paths.
+                  for (auto const& point : route)
+                  {
+                    glm::vec2 direction{point.position.x - route_start.x,
+                                        point.position.z - route_start.z};
+                    float const length = glm::length(direction);
+                    if (length <= 0.01f) continue;
+                    direction /= length;
+                    glm::vec2 const side{-direction.y, direction.x};
+                    glm::vec3 const base{route_start.x, route_start.y + surface_offset,
+                                         route_start.z};
+                    glm::vec3 const tip = base + glm::vec3(direction.x, 0.0f, direction.y) * 1.25f;
+                    glm::vec3 const wing_base = tip - glm::vec3(direction.x, 0.0f, direction.y) * 0.38f;
+                    start_arrow_segments.insert(start_arrow_segments.end(), {
+                      base, tip,
+                      tip, wing_base + glm::vec3(side.x, 0.0f, side.y) * 0.28f,
+                      tip, wing_base - glm::vec3(side.x, 0.0f, side.y) * 0.28f
+                    });
+                    break;
+                  }
+
+                  glm::vec3 previous = route_start;
+                  for (auto const& point : route)
+                  {
+                    glm::vec3 from = previous;
+                    glm::vec3 to = point.position;
+                    from.y += surface_offset;
+                    to.y += surface_offset;
+                    if (glm::distance(from, to) > 0.001f)
+                    {
+                      route_segments.push_back(from);
+                      route_segments.push_back(to);
+                    }
+                    previous = point.position;
+
+                    if (!point.show_marker) continue;
+                    if (glm::distance(point.position, route_start) <= 0.01f) continue;
+                    if (route_end && glm::distance(point.position, *route_end) <= 0.01f) continue;
+                    append_circle(marker_segments, point.position, 0.42f);
+                  }
+                }
+                OpenGL::Scoped::depth_mask_setter<GL_FALSE> const no_depth_write;
+                {
+                  // Movement guides are editing affordances. Keep the route,
+                  // nodes, and wander boundary visible through terrain.
+                  OpenGL::Scoped::bool_setter<GL_DEPTH_TEST, GL_FALSE> const no_depth_test;
+                  _npc_waypoint_line_render.drawSegments(mvp, wander_boundary_segments,
+                    {1.0f, 0.30f, 0.05f, 1.0f});
+                  _npc_waypoint_line_render.drawSegments(mvp, route_segments,
+                    {0.15f, 0.85f, 1.0f, 0.95f});
+                  _npc_waypoint_line_render.drawSegments(mvp, marker_segments,
+                    {1.0f, 0.85f, 0.1f, 1.0f});
+                  _npc_waypoint_line_render.drawSegments(mvp, start_marker_segments,
+                    {0.05f, 1.0f, 0.1f, 1.0f});
+                  _npc_waypoint_line_render.drawSegments(mvp, start_arrow_segments,
+                    {0.05f, 1.0f, 0.1f, 1.0f});
+                  _npc_waypoint_line_render.drawSegments(mvp, end_marker_segments,
+                    {1.0f, 0.05f, 0.03f, 1.0f});
+                }
+              }
+            }
+          }
+        }
+
+        if (draw_server_gameobjects)
+          for (auto const& overlay : _world->_server_gameobject_overlays)
+          {
+            if (!overlay || !overlay->model()) continue;
+            glm::vec3 const delta = overlay->position() - camera_pos;
+            if (glm::dot(delta, delta) > Noggit::NpcSpawnOverlay::view_distance
+                                          * Noggit::NpcSpawnOverlay::view_distance)
+              continue;
+            TileIndex const tile(overlay->position());
+            if (!tile.is_valid() || !_world->mapIndex.tileLoaded(tile)
+                || _world->mapIndex.tileAwaitingLoading(tile))
+              continue;
+            ModelInstance& body = *overlay->model();
+            if (!body.finishedLoading() || body.model->loading_failed()) continue;
+            std::vector<glm::mat4x4> transforms{body.transformMatrix()};
+            body.model->renderer()->draw(
+              model_view, transforms, m2_shader, model_render_state, frustum,
+              _cull_distance, camera_pos, _world->animtime, false,
+              model_boxes_to_draw, render_settings.display_mode, true,
+              render_settings.draw_model_animations, false, false);
+            ++_world->_n_rendered_objects;
+          }
+
         // A WMO fallback is deliberately an M2 marker at the placement
         // origin. Its saved MODF box remains the best available description
         // of the missing WMO's footprint.
         for (WMOInstance* instance : missing_wmos_to_draw)
         {
+          bool const selected = _world->selected_uids.contains(instance->uid);
+          if (selected)
+          {
+            glm::vec3 const radius{Noggit::MissingObjectPlaceholder::wmo_display_scale};
+            Noggit::Rendering::Primitives::WireBox::getInstance(_world->_context).draw(
+                model_view, projection, glm::mat4x4{1.0f}, glm::vec4{1.0f},
+                instance->pos - radius, instance->pos + radius);
+          }
+
           auto const& bounds = instance->getExtents();
           if (!Noggit::MissingObjectPlaceholder::valid_bounds(bounds[0], bounds[1]))
             continue;
 
-          bool const selected = _world->selected_uids.contains(instance->uid);
           Noggit::Rendering::Primitives::WireBox::getInstance(_world->_context).draw(
               model_view,
               projection,
@@ -1673,10 +2026,13 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     _line_render.draw(mvp, render_settings.road_reference_right_edge, selection_edge_color, false);
   }
 
-  // render before the water and enable depth right 
-  // so it's visible under water
-  // the checker board pattern is used to see the water under it
-  if (render_settings.angled_mode || render_settings.use_ref_pos)
+  // Render the checkerboard plane before water, except when it would mask the
+  // Water Editor's vertex grid at the locked height. The reference marker is
+  // drawn separately above.
+  if ((render_settings.angled_mode || render_settings.use_ref_pos)
+      && !(render_settings.editing_mode == editing_mode::water
+           && render_settings.draw_water
+           && render_settings.show_liquid_vertices))
   {
     ZoneScopedN("World::draw() : Draw angles");
     // OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> cull;
@@ -1778,6 +2134,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
           , render_settings.display_mode
           , &_liquid_texture_manager
           , render_settings.show_liquid_vertices
+            && !render_settings.liquid_locked_plane_grid
           , render_settings.liquid_edit_layer
           , render_settings.liquid_surface_token
       );
@@ -1787,6 +2144,31 @@ void WorldRender::draw (glm::mat4x4 const& model_view
   }
 
   gl.enable(GL_BLEND);
+
+  if (render_settings.liquid_locked_plane_grid && render_settings.draw_water)
+  {
+    // Preview the locked Coverage/Flatten target plane instead of coloring
+    // liquid that is still at its old height.
+    OpenGL::Scoped::depth_mask_setter<GL_FALSE> const no_depth_write;
+    OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const no_cull;
+    math::degrees const incl(render_settings.angled_mode ? render_settings.angle : 0.f);
+    math::degrees const orient(render_settings.angled_mode ? render_settings.orientation : 0.f);
+    glm::vec3 preview_pos = cursor_pos;
+    preview_pos.y = render_settings.angled_mode
+      ? misc::angledHeight(ref_pos, preview_pos, incl, orient)
+      : ref_pos.y;
+    preview_pos.y += 0.15f;
+    _square_render.draw(mvp, preview_pos, render_settings.brush_radius,
+                        incl, orient, cursor_color, true,
+                        render_settings.inner_radius_ratio,
+                        render_settings.liquid_brush_falloff);
+  }
+
+  // Weather is a camera-relative client effect.  Draw it after opaque scene
+  // geometry and water so the existing depth buffer naturally hides drops
+  // behind roofs, terrain, and objects without writing new depth.
+  if (!render_settings.minimap_render && render_settings.display_mode == display_mode::in_3D)
+    drawWeather(model_view, projection, camera_pos);
 
   // draw last because of the transparency
   if (render_settings.draw_mfbo)
@@ -1997,6 +2379,151 @@ void WorldRender::clearDetailDoodadPreview()
   DetailDoodads::bumpDbcStamp();
 }
 
+void WorldRender::setWeatherPreview(int weather_state, float intensity, bool immediate)
+{
+  _weather_target_state = weather_state;
+  _weather_target_intensity = weather_state == 0
+    ? 0.0f : std::clamp(intensity, 0.0f, 0.9999f);
+
+  if (weather_state != 0 && weather_state != _weather_state)
+  {
+    int const previous_effect_type = _weather_effect_type;
+    _weather_state = weather_state;
+    _weather_effect_type = 0;
+    _weather_color = glm::vec3(1.0f);
+    _weather_texture.reset();
+
+    try
+    {
+      auto const record = gWeatherDB.getByID(weather_state);
+      _weather_effect_type = record.getInt(WeatherDB::EffectType);
+      glm::vec3 const dbc_color(record.getFloat(WeatherDB::EffectColorR),
+                                record.getFloat(WeatherDB::EffectColorG),
+                                record.getFloat(WeatherDB::EffectColorB));
+      // Standard Wrath rain/snow rows leave the override black.  In that case
+      // use the client-like neutral tint for the effect family.
+      if (glm::length(dbc_color) > 0.05f)
+        _weather_color = dbc_color;
+
+      std::string const texture_path = record.getString(WeatherDB::EffectTexture);
+      if (!texture_path.empty()
+          && Noggit::Application::NoggitApplication::instance()->clientData()->exists(texture_path))
+        _weather_texture.emplace(texture_path, _world->_context);
+    }
+    catch (DBCFile::NotFound const&)
+    {
+      // Known state IDs still get a useful fallback if a custom client omits
+      // the matching row.
+      if (weather_state >= 3 && weather_state <= 5)
+        _weather_effect_type = 1;
+      else if (weather_state >= 6 && weather_state <= 8)
+        _weather_effect_type = 2;
+      else if (weather_state == 22 || weather_state == 41 || weather_state == 42)
+        _weather_effect_type = 3;
+    }
+
+    if (_weather_effect_type == 1)
+      _weather_color = glm::min(_weather_color, glm::vec3(0.78f, 0.86f, 0.95f));
+    else if (_weather_effect_type == 2)
+      _weather_color = glm::max(_weather_color, glm::vec3(0.86f, 0.90f, 0.95f));
+    else if (_weather_effect_type == 3 && glm::length(_weather_color - glm::vec3(1.0f)) < 0.05f)
+      _weather_color = glm::vec3(0.72f, 0.58f, 0.38f);
+
+    // Intensity changes within a weather family should not make the effect
+    // disappear before fading to the new grade.
+    if (!immediate && previous_effect_type != _weather_effect_type)
+      _weather_intensity = 0.0f;
+  }
+
+  if (immediate)
+  {
+    _weather_intensity = _weather_target_intensity;
+    if (_weather_target_state == 0)
+      _weather_state = 0;
+  }
+}
+
+void WorldRender::drawWeather(glm::mat4x4 const& model_view,
+                              glm::mat4x4 const& projection,
+                              glm::vec3 const& camera_pos)
+{
+  if (!_weather_program)
+    return;
+
+  int const animtime = _world->animtime;
+  float delta_seconds = 1.0f / 60.0f;
+  if (_weather_last_animtime >= 0)
+  {
+    int const elapsed = animtime - _weather_last_animtime;
+    if (elapsed >= 0 && elapsed < 1000)
+      delta_seconds = static_cast<float>(elapsed) * 0.001f;
+  }
+  _weather_last_animtime = animtime;
+
+  float const fade_step = delta_seconds / 1.25f;
+  if (_weather_intensity < _weather_target_intensity)
+    _weather_intensity = std::min(_weather_target_intensity, _weather_intensity + fade_step);
+  else if (_weather_intensity > _weather_target_intensity)
+    _weather_intensity = std::max(_weather_target_intensity, _weather_intensity - fade_step);
+
+  if (_weather_intensity <= 0.001f)
+  {
+    if (_weather_target_state == 0)
+      _weather_state = 0;
+    return;
+  }
+
+  int max_particles = 1400;
+  if (_weather_effect_type == 1)
+    max_particles = 2400;
+  else if (_weather_effect_type == 2)
+    max_particles = 2500;
+  else if (_weather_effect_type == 3)
+    max_particles = 900;
+  // The shader fades rain and snow particles with sqrt(grade). Using the same
+  // curve for count keeps their overall precipitation roughly linear with grade.
+  float const density = (_weather_effect_type == 1 || _weather_effect_type == 2)
+    ? std::sqrt(_weather_intensity) : _weather_intensity;
+  int const particle_count = std::max(1, static_cast<int>(max_particles * density));
+
+  OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const no_cull;
+  OpenGL::Scoped::depth_mask_setter<GL_FALSE> const no_depth_write;
+  gl.enable(GL_DEPTH_TEST);
+  gl.enable(GL_BLEND);
+  gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+  OpenGL::Scoped::use_program shader{*_weather_program};
+  shader.uniform("model_view", model_view);
+  shader.uniform("projection", projection);
+  shader.uniform("camera_position", camera_pos);
+  shader.uniform("weather_type", _weather_effect_type);
+  shader.uniform("intensity", _weather_intensity);
+  shader.uniform("weather_color", _weather_color);
+  shader.uniform("elapsed_seconds", static_cast<float>(animtime) * 0.001f);
+  shader.uniform("fog_color", _skies->color_set[SKY_FOG_COLOR]);
+  shader.uniform("fog_start", _skies->fog_distance_end() * _skies->fog_distance_multiplier());
+  shader.uniform("fog_end", _skies->fog_distance_end());
+
+  bool textured = false;
+  if (_weather_texture && _weather_texture->get()->finishedLoading()
+      && !_weather_texture->get()->source_missing())
+  {
+    _weather_texture->get()->upload();
+    if (_weather_texture->get()->is_uploaded())
+    {
+      gl.activeTexture(GL_TEXTURE0);
+      gl.bindTexture(GL_TEXTURE_2D_ARRAY, _weather_texture->get()->texture_array());
+      shader.uniform("weather_texture", 0);
+      shader.uniform("weather_texture_index", _weather_texture->get()->array_index());
+      textured = true;
+    }
+  }
+  shader.uniform("use_weather_texture", textured ? 1 : 0);
+
+  OpenGL::Scoped::vao_binder const vao(_weather_vao);
+  gl.drawArraysInstanced(GL_TRIANGLES, 0, 6, particle_count);
+}
+
 void WorldRender::upload()
 {
   ZoneScoped;
@@ -2083,6 +2610,13 @@ void WorldRender::upload()
       new OpenGL::program
           { { GL_VERTEX_SHADER,   OpenGL::shader::src_from_qrc("occluder_vs") }
               , { GL_FRAGMENT_SHADER, OpenGL::shader::src_from_qrc("occluder_fs") }
+          }
+  );
+
+  _weather_program.reset(
+      new OpenGL::program
+          { { GL_VERTEX_SHADER, OpenGL::shader::src_from_qrc("weather_vs") }
+              , { GL_FRAGMENT_SHADER, OpenGL::shader::src_from_qrc("weather_fs") }
           }
   );
 
@@ -2219,12 +2753,15 @@ void WorldRender::unload()
   _wmo_program.reset();
   _liquid_program.reset();
   _detail_doodads_program.reset();
+  _weather_program.reset();
+  _weather_texture.reset();
 
   _detail_doodads.unload();
   _cursor_render.unload();
   _sphere_render.unload();
   _square_render.unload();
   _line_render.unload();
+  _npc_waypoint_line_render.unload();
   _texture_conflict_line_render.unload();
   _texture_discontinuity_line_render.unload();
   _floating_object_line_render.unload();
@@ -2243,6 +2780,7 @@ void WorldRender::unload()
     }
   }
   _painted_stamp_selection_pages.clear();
+  clearScatterSelectionTextures();
 
   _skies->unload();
 
@@ -2280,7 +2818,8 @@ void WorldRender::updateLightingUniformBlock(bool draw_fog, glm::vec3 const& cam
   glm::vec3 river_color_dark = _skies->color_set[RIVER_COLOR_DARK];
 
 
-  _lighting_ubo_data.DiffuseColor_FogStart = {diffuse.x,diffuse.y,diffuse.z, _skies->fog_distance_start()};
+  // Shaders reconstruct the absolute start distance as fog end * multiplier.
+  _lighting_ubo_data.DiffuseColor_FogStart = {diffuse.x,diffuse.y,diffuse.z, _skies->fog_distance_multiplier()};
   _lighting_ubo_data.AmbientColor_FogEnd = {ambient.x,ambient.y,ambient.z, _skies->fog_distance_end()};
   _lighting_ubo_data.FogColor_FogOn = {fog_color.x,fog_color.y,fog_color.z, static_cast<float>(draw_fog)};
 

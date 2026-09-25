@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -305,6 +306,19 @@ namespace
     glm::vec2 const source = center
         + inverseTransformRelative(vertexLocalPosition(destination_index) - center, options);
     return nearestLocalVertexIndex(source);
+  }
+
+  int transformedLiquidVertexIndex(int x, int z, ChunkPasteOptions const& options)
+  {
+    glm::vec2 const center{CHUNKSIZE * .5f};
+    glm::vec2 const destination{x * UNITSIZE, z * UNITSIZE};
+    glm::vec2 const source = center
+        + inverseTransformRelative(destination - center, options);
+    int const source_x = std::clamp(
+        static_cast<int>(std::lround(source.x / UNITSIZE)), 0, 8);
+    int const source_z = std::clamp(
+        static_cast<int>(std::lround(source.y / UNITSIZE)), 0, 8);
+    return source_z * 9 + source_x;
   }
 }
 
@@ -1249,19 +1263,33 @@ std::vector<liquid_layer> ChunkClipboard::buildLiquidPreview(
     for (int z = 0; z < 9; ++z)
       for (int x = 0; x < 9; ++x)
       {
-        glm::vec2 const point{destination_chunk->xbase + x * UNITSIZE,
-                              destination_chunk->zbase + z * UNITSIZE};
-        glm::vec2 const source = inverseTransform(point, destination_pivot, options);
-        int const sx = std::clamp(static_cast<int>(std::round(
-            (source.x - scalar_source->xbase) / UNITSIZE)), 0, 8);
-        int const sz = std::clamp(static_cast<int>(std::round(
-            (source.y - scalar_source->zbase) / UNITSIZE)), 0, 8);
-        int const source_vertex = sz * 9 + sx;
+        int source_vertex;
+        if (usesExactChunkGridMapping(options))
+        {
+          source_vertex = transformedLiquidVertexIndex(x, z, options);
+        }
+        else
+        {
+          glm::vec2 const point{destination_chunk->xbase + x * UNITSIZE,
+                                destination_chunk->zbase + z * UNITSIZE};
+          glm::vec2 const source = inverseTransform(point, destination_pivot, options);
+          int const sx = std::clamp(static_cast<int>(std::round(
+              (source.x - scalar_source->xbase) / UNITSIZE)), 0, 8);
+          int const sz = std::clamp(static_cast<int>(std::round(
+              (source.y - scalar_source->zbase) / UNITSIZE)), 0, 8);
+          source_vertex = sz * 9 + sx;
+        }
         int const target_vertex = z * 9 + x;
         vertices[target_vertex].position.y = source_layer->heights[source_vertex]
                                              + options.height_offset;
         vertices[target_vertex].depth = source_layer->depths[source_vertex];
-        vertices[target_vertex].uv = source_layer->uvs[source_vertex];
+        // Water and ocean UVs are chunk-local. Rotating or mirroring their
+        // source indices creates a texture discontinuity at every chunk edge.
+        // Noggit 3 keeps those UVs fixed while transforming magma/slime UVs.
+        int const uv_vertex = target.liquidType() == liquid_basic_types_water
+                           || target.liquidType() == liquid_basic_types_ocean
+                            ? target_vertex : source_vertex;
+        vertices[target_vertex].uv = source_layer->uvs[uv_vertex];
       }
     target.refresh();
   }
@@ -1706,6 +1734,77 @@ ChunkPasteResult ChunkClipboard::pasteSelection(glm::vec3 const& destination,
 
   // Restore real destination data and remove render-only ghost objects before recording undo state.
   clearPreview();
+
+  bool const paste_objects = hasFlag(options.components, ChunkCopyFlags::MODELS)
+                        || hasFlag(options.components, ChunkCopyFlags::WMOs);
+  auto replacesObject = [&](SceneObject& object)
+  {
+    if (object.chunk_mover_preview)
+      return false;
+    bool const is_wmo = object.which() == eWMO;
+    if ((is_wmo && !hasFlag(options.components, ChunkCopyFlags::WMOs))
+        || (!is_wmo && !hasFlag(options.components, ChunkCopyFlags::MODELS)))
+      return false;
+    glm::vec2 const source = inverseTransform({object.pos.x, object.pos.z}, destination_pivot, options);
+    return sourceAt(source) != nullptr;
+  };
+
+  if (paste_objects)
+  {
+    // An earlier paste can still have add updates pending. Bulk deletion below
+    // erases instances directly, so those updates must finish before it runs.
+    _world->wait_for_all_tile_updates();
+
+    // An object can be referenced by ADTs beyond the destination chunks. Load
+    // those ADTs before removing it, or a saved reference on an unloaded ADT
+    // will recreate the old UID when the replacement later loads that ADT.
+    // Loading one ADT may reveal another object with its origin in the paste
+    // footprint, so repeat until every affected object's ADTs are prepared.
+    std::set<TileIndex> prepared_tiles;
+    for (;;)
+    {
+      std::set<TileIndex> needed_tiles;
+      auto collectTiles = [&](SceneObject& object)
+      {
+        if (!replacesObject(object))
+          return;
+        auto const& extents = object.getExtents();
+        auto tileCoordinate = [](float coordinate)
+        {
+          return static_cast<int>(std::clamp(
+              std::floor(static_cast<double>(coordinate) / TILESIZE), 0.0, 63.0));
+        };
+        if (!std::isfinite(extents[0].x) || !std::isfinite(extents[0].z)
+            || !std::isfinite(extents[1].x) || !std::isfinite(extents[1].z))
+          return;
+        int const first_x = tileCoordinate(extents[0].x);
+        int const first_z = tileCoordinate(extents[0].z);
+        int const last_x = tileCoordinate(extents[1].x);
+        int const last_z = tileCoordinate(extents[1].z);
+        for (int z = first_z; z <= last_z; ++z)
+          for (int x = first_x; x <= last_x; ++x)
+          {
+            TileIndex const index{static_cast<std::size_t>(x), static_cast<std::size_t>(z)};
+            if (_world->mapIndex.hasTile(index) && prepared_tiles.insert(index).second)
+              needed_tiles.insert(index);
+          }
+      };
+      auto& storage = _world->getModelInstanceStorage();
+      storage.for_each_m2_instance([&](ModelInstance& object) { collectTiles(object); });
+      storage.for_each_wmo_instance([&](WMOInstance& object) { collectTiles(object); });
+      if (needed_tiles.empty())
+        break;
+      for (TileIndex const& index : needed_tiles)
+        if (MapTile* tile = _world->mapIndex.loadTile(index))
+        {
+          tile->wait_until_loaded();
+          if (tile->loading_failed())
+            return result;
+        }
+      _world->wait_for_all_tile_updates();
+    }
+  }
+
   NOGGIT_ACTION_MGR->beginAction(_map_view,
     _map_view ? ActionFlags::eNO_FLAG : ActionFlags::eDO_NOT_WRITE_HISTORY);
   std::vector<MapChunk*> terrain_changed;
@@ -1914,25 +2013,52 @@ ChunkPasteResult ChunkClipboard::pasteSelection(glm::vec3 const& destination,
         for (liquid_layer& target : *water->getLayers())
         {
           auto& vertices = target.getVertices();
+          ChunkLiquidLayerCache const* exact_source_layer = nullptr;
+          if (usesExactChunkGridMapping(options) && scalar_source)
+          {
+            auto const found = std::find_if(scalar_source->liquids.begin(),
+              scalar_source->liquids.end(), [&](ChunkLiquidLayerCache const& layer)
+              { return layer.liquid_id == target.liquidID(); });
+            if (found != scalar_source->liquids.end())
+              exact_source_layer = &*found;
+          }
           for (int z = 0; z < 9; ++z)
             for (int x = 0; x < 9; ++x)
             {
-              glm::vec2 const point{chunk->xbase + x * UNITSIZE, chunk->zbase + z * UNITSIZE};
-              glm::vec2 const source = inverseTransform(point, destination_pivot, options);
-              ChunkCache const* source_chunk = sourceAt(source);
-              if (!source_chunk)
-                continue;
-              auto source_layer = std::find_if(source_chunk->liquids.begin(), source_chunk->liquids.end(),
-                [&](ChunkLiquidLayerCache const& layer) { return layer.liquid_id == target.liquidID(); });
-              if (source_layer == source_chunk->liquids.end())
-                continue;
-              int sx = std::clamp(static_cast<int>(std::round((source.x - source_chunk->xbase) / UNITSIZE)), 0, 8);
-              int sz = std::clamp(static_cast<int>(std::round((source.y - source_chunk->zbase) / UNITSIZE)), 0, 8);
-              int const source_vertex = sz * 9 + sx;
+              int source_vertex;
+              ChunkLiquidLayerCache const* source_layer = exact_source_layer;
+              if (source_layer)
+              {
+                source_vertex = transformedLiquidVertexIndex(x, z, options);
+              }
+              else
+              {
+                glm::vec2 const point{chunk->xbase + x * UNITSIZE,
+                                      chunk->zbase + z * UNITSIZE};
+                glm::vec2 const source = inverseTransform(point, destination_pivot, options);
+                ChunkCache const* source_chunk = sourceAt(source);
+                if (!source_chunk)
+                  continue;
+                auto const found = std::find_if(source_chunk->liquids.begin(), source_chunk->liquids.end(),
+                  [&](ChunkLiquidLayerCache const& layer)
+                  { return layer.liquid_id == target.liquidID(); });
+                if (found == source_chunk->liquids.end())
+                  continue;
+                source_layer = &*found;
+                int const sx = std::clamp(static_cast<int>(std::round(
+                    (source.x - source_chunk->xbase) / UNITSIZE)), 0, 8);
+                int const sz = std::clamp(static_cast<int>(std::round(
+                    (source.y - source_chunk->zbase) / UNITSIZE)), 0, 8);
+                source_vertex = sz * 9 + sx;
+              }
               int const target_vertex = z * 9 + x;
-              vertices[target_vertex].position.y = source_layer->heights[source_vertex] + options.height_offset;
+              vertices[target_vertex].position.y = source_layer->heights[source_vertex]
+                                                   + options.height_offset;
               vertices[target_vertex].depth = source_layer->depths[source_vertex];
-              vertices[target_vertex].uv = source_layer->uvs[source_vertex];
+              int const uv_vertex = target.liquidType() == liquid_basic_types_water
+                                 || target.liquidType() == liquid_basic_types_ocean
+                                  ? target_vertex : source_vertex;
+              vertices[target_vertex].uv = source_layer->uvs[uv_vertex];
             }
           target.refresh();
         }
@@ -2118,20 +2244,12 @@ ChunkPasteResult ChunkClipboard::pasteSelection(glm::vec3 const& destination,
     sewTerrain(terrain_changed);
   recalcNormalsAroundTerrain(terrain_changed);
 
-  if (hasFlag(options.components, ChunkCopyFlags::MODELS)
-      || hasFlag(options.components, ChunkCopyFlags::WMOs))
+  if (paste_objects)
   {
     std::vector<std::uint32_t> remove;
     auto collect = [&](SceneObject& object)
     {
-      if (object.chunk_mover_preview)
-        return;
-      bool const is_wmo = object.which() == eWMO;
-      if ((is_wmo && !hasFlag(options.components, ChunkCopyFlags::WMOs))
-          || (!is_wmo && !hasFlag(options.components, ChunkCopyFlags::MODELS)))
-        return;
-      glm::vec2 const source = inverseTransform({object.pos.x, object.pos.z}, destination_pivot, options);
-      if (sourceAt(source))
+      if (replacesObject(object))
         remove.push_back(object.uid);
     };
     _world->getModelInstanceStorage().for_each_m2_instance([&](ModelInstance& object) { collect(object); });

@@ -59,6 +59,11 @@ void Noggit::Action::undo(bool redo)
 {
   _map_view->context()->makeCurrent(_map_view->context()->surface());
   OpenGL::context::scoped_setter const _ (::gl, _map_view->context());
+  if (_npc_apply)
+  {
+    _npc_apply(redo);
+    return;
+  }
 
   if (_flags & ActionFlags::eCHUNKS_TERRAIN)
   {
@@ -169,6 +174,21 @@ void Noggit::Action::undo(bool redo)
       }
     }
     _object_operations = std::move(new_operation_map);
+    if (redo)
+    {
+      for (auto const& group_uids : _added_selection_groups)
+      {
+        std::vector<SceneObject*> members;
+        for (auto const uid : group_uids)
+        {
+          auto const instance = _map_view->getWorld()->get_model(uid);
+          if (instance && instance->index() == eEntry_Object)
+            members.push_back(std::get<selected_object_type>(*instance));
+        }
+        if (members.size() == group_uids.size())
+          _map_view->getWorld()->add_object_group(members);
+      }
+    }
   }
   if (_flags & ActionFlags::eCHUNKS_HOLES)
   {
@@ -329,6 +349,9 @@ unsigned Noggit::Action::handleObjectAdded(unsigned uid, bool redo)
 
       new_uid = obj->uid;
       pair.first = new_uid;
+      for (auto& group : _added_selection_groups)
+        for (auto& member_uid : group)
+          if (member_uid == old_uid) member_uid = new_uid;
 
       // fix references in other actions
       for (auto& pair_ : _removed_objects_pre)
@@ -484,6 +507,9 @@ void Noggit::Action::remapObjectUID(unsigned old_uid, unsigned new_uid)
   remap_cache(_removed_objects_pre);
   remap_cache(_transformed_objects_pre);
   remap_cache(_transformed_objects_post);
+  for (auto& group : _added_selection_groups)
+    for (auto& member_uid : group)
+      if (member_uid == old_uid) member_uid = new_uid;
 
   auto operations = _object_operations.find(old_uid);
   if (operations == _object_operations.end())
@@ -730,6 +756,19 @@ void Noggit::Action::setPostCallback(std::function<void()> function)
   _post = function;
 }
 
+void Noggit::Action::setNpcEdit(std::uint64_t guid, unsigned domains,
+                                std::function<void(bool)> apply)
+{
+  _npc_guid = guid;
+  _npc_domains = domains;
+  _npc_apply = std::move(apply);
+}
+
+bool Noggit::Action::editsNpc(std::uint64_t guid, unsigned domains) const
+{
+  return _npc_apply && _npc_guid == guid && (_npc_domains & domains);
+}
+
  bool Noggit::Action::getTag()
 {
   return _tag;
@@ -871,6 +910,14 @@ void Noggit::Action::registerObjectAdded(SceneObject* obj)
     cache.wmo_doodadset = wmo->doodadset();
   }
   _added_objects_pre.emplace_back(std::make_pair(obj->uid, cache));
+}
+
+void Noggit::Action::registerSelectionGroupAdded(std::vector<SceneObject*> const& objects)
+{
+  std::vector<unsigned> uids;
+  uids.reserve(objects.size());
+  for (auto const* object : objects) uids.push_back(object->uid);
+  if (uids.size() > 1) _added_selection_groups.push_back(std::move(uids));
 }
 
 void Noggit::Action::registerObjectRemoved(SceneObject* obj)

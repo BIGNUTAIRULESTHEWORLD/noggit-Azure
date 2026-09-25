@@ -35,7 +35,7 @@ namespace Noggit
 
           if (state == QIcon::On)
           {
-              painter->setPen(temp_btn->palette().color(QPalette::WindowText));
+              painter->setPen(temp_btn->palette().color(QPalette::HighlightedText));
           }
           else if (state == QIcon::Off)
           {

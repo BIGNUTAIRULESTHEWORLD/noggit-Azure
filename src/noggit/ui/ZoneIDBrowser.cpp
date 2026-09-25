@@ -154,6 +154,10 @@ namespace Noggit
                     {
                         emit selected(selected_items.back()->data(0, Qt::UserRole + 1).toInt());
                     }
+                    else
+                    {
+                        emit selected(-1);
+                    }
                 }
             );
 

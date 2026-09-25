@@ -11,11 +11,18 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QList>
 #include <QMenu>
+#include <QMessageBox>
 #include <QProcess>
+#include <QSaveFile>
 #include <QSettings>
+#include <QTimer>
 #include <QUrl>
 
 #include <filesystem>
@@ -110,6 +117,83 @@ void RecentProjectsComponent::buildRecentProjectsList(Noggit::Ui::Windows::Noggi
           });
 
       context_menu.addAction(&action_4);
+
+      QAction change_client_directory("Change WoW Client Directory...", project_list_item);
+      change_client_directory.setIcon(FontAwesomeIcon(FontAwesome::gamepad).pixmap(QSize(16, 16)));
+      QObject::connect(&change_client_directory, &QAction::triggered, [=]()
+      {
+        QString current_path = QString::fromStdString(project->ClientPath);
+        QString selected_path = QFileDialog::getExistingDirectory(parent, "Select WoW Client Directory",
+                                                                   QDir(current_path).exists() ? current_path : project_data.project_directory,
+                                                                   QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+        if (selected_path.isEmpty() || QDir::cleanPath(selected_path) == QDir::cleanPath(current_path))
+          return;
+
+        if (!QFileInfo(QDir(selected_path).filePath("Data")).isDir())
+        {
+          QMessageBox::warning(parent, "Invalid WoW Client Directory",
+                               "Select the WoW client folder containing the Data directory.");
+          return;
+        }
+
+        std::filesystem::path project_file_path;
+        for (const auto& entry : std::filesystem::directory_iterator(project_path))
+        {
+          if (entry.path().extension() == ".noggitproj")
+          {
+            project_file_path = entry.path();
+            break;
+          }
+        }
+
+        if (project_file_path.empty())
+        {
+          QMessageBox::critical(parent, "Error", "Could not find the project's .noggitproj file.");
+          return;
+        }
+
+        QString file_name = QString::fromStdString(project_file_path.generic_string());
+        QFile project_file(file_name);
+        if (!project_file.open(QIODevice::ReadOnly))
+        {
+          QMessageBox::critical(parent, "Error", "Could not read the project file: " + project_file.errorString());
+          return;
+        }
+
+        QJsonParseError parse_error;
+        QJsonDocument document = QJsonDocument::fromJson(project_file.readAll(), &parse_error);
+        project_file.close();
+        QJsonObject root = document.object();
+        if (parse_error.error != QJsonParseError::NoError || !root.value("Project").isObject()
+            || !root.value("Project").toObject().value("Client").isObject())
+        {
+          QMessageBox::critical(parent, "Error", "The project file has invalid project or client settings.");
+          return;
+        }
+
+        QJsonObject project_settings = root.value("Project").toObject();
+        QJsonObject client_settings = project_settings.value("Client").toObject();
+        client_settings.insert("ClientPath", QDir::cleanPath(selected_path));
+        project_settings.insert("Client", client_settings);
+        root.insert("Project", project_settings);
+
+        QSaveFile output_file(file_name);
+        if (!output_file.open(QIODevice::WriteOnly))
+        {
+          QMessageBox::critical(parent, "Error", "Could not open the project file for saving: " + output_file.errorString());
+          return;
+        }
+
+        QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
+        if (output_file.write(data) != data.size() || !output_file.commit())
+        {
+          QMessageBox::critical(parent, "Error", "Could not save the new client path: " + output_file.errorString());
+          return;
+        }
+
+        QTimer::singleShot(0, parent, [parent]() { buildRecentProjectsList(parent); });
+      });
+      context_menu.addAction(&change_client_directory);
 
       // if (!project_data.is_favorite)
         QAction action_5("Favorite Project(auto load)", project_list_item);

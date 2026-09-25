@@ -9,6 +9,12 @@
 #include <noggit/ui/ZoneIDBrowser.h>
 #include <noggit/ui/tools/ToolPanel/ToolPanel.hpp>
 #include <noggit/World.h>
+#include <QApplication>
+#include <QClipboard>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QLayout>
+#include <QPushButton>
 
 namespace Noggit
 {
@@ -53,13 +59,52 @@ namespace Noggit
 
         _areaTool->setMapID(mapView()->getWorld()->getMapID());
         QObject::connect(_areaTool, &Noggit::Ui::zone_id_browser::selected
-            , [this](int area_id) { _selectedAreaId = area_id; }
+            , _areaTool, [this](int area_id) { setSelectedAreaId(area_id); }
         );
+
+        auto* selected_area_row = new QWidget(_areaTool);
+        auto* selected_area_layout = new QHBoxLayout(selected_area_row);
+        selected_area_layout->setContentsMargins(0, 0, 0, 0);
+        _selectedAreaLabel = new QLabel("Selected Area ID: None", selected_area_row);
+        _selectedAreaLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        _copyAreaIdButton = new QPushButton("Copy ID", selected_area_row);
+        _copyAreaIdButton->setEnabled(false);
+        selected_area_layout->addWidget(_selectedAreaLabel);
+        selected_area_layout->addWidget(_copyAreaIdButton);
+        _areaTool->layout()->addWidget(selected_area_row);
+        QObject::connect(_copyAreaIdButton, &QPushButton::clicked, _areaTool,
+            [this]
+            {
+                if (_selectedAreaId >= 0)
+                    QApplication::clipboard()->setText(QString::number(_selectedAreaId));
+            });
+
+        auto* set_current_adt_button = new QPushButton("Set Area ID on current ADT", _areaTool);
+        _areaTool->layout()->addWidget(set_current_adt_button);
+        QObject::connect(set_current_adt_button, &QPushButton::clicked, _areaTool,
+            [this]
+            {
+                if (hotkeyCondition("setAreaId"_hash))
+                    onHotkeyPress("setAreaId"_hash);
+            });
     }
 
     ToolDrawParameters AreaTool::drawParameters() const
     {
-        return ToolDrawParameters();
+        return
+        {
+            .radius = _areaTool->brushRadius(),
+            .cursor_type = CursorType::SQUARE,
+        };
+    }
+
+    void AreaTool::setSelectedAreaId(int areaId)
+    {
+        _selectedAreaId = areaId;
+        _selectedAreaLabel->setText(areaId >= 0
+            ? QString("Selected Area ID: %1").arg(areaId)
+            : QString("Selected Area ID: None"));
+        _copyAreaIdButton->setEnabled(areaId >= 0);
     }
 
     void AreaTool::registerMenuItems(QMenu* menu)
@@ -87,6 +132,24 @@ namespace Noggit
         mapView()->getWorld()->renderer()->getTerrainParamsUniformBlock()->draw_areaid_overlay = false;
     }
 
+    void AreaTool::onTick(float deltaTime, TickParameters const& params)
+    {
+        if (_selectedAreaId == -1
+            || !mapView()->getWorld()->has_selection()
+            || params.underMap
+            || !params.left_mouse
+            || !params.mod_shift_down)
+        {
+            return;
+        }
+
+        NOGGIT_ACTION_MGR->beginAction(mapView(), Noggit::ActionFlags::eCHUNKS_AREAID,
+            Noggit::ActionModalityControllers::eSHIFT
+            | Noggit::ActionModalityControllers::eLMB);
+        mapView()->getWorld()->setAreaID(mapView()->cursorPosition(), _selectedAreaId,
+                                        false, _areaTool->brushRadius());
+    }
+
     void AreaTool::onMouseMove(MouseMoveParameters const& params)
     {
         if (params.left_mouse && params.mod_alt_down && !params.mod_shift_down && !params.mod_ctrl_down)
@@ -102,15 +165,7 @@ namespace Noggit
         return;
       }
 
-      if (params.mod_shift_down)
-      {
-        NOGGIT_ACTION_MGR->beginAction(mapView(), Noggit::ActionFlags::eCHUNKS_AREAID,
-          Noggit::ActionModalityControllers::eSHIFT
-          | Noggit::ActionModalityControllers::eLMB);
-        // draw the selected AreaId on current selected chunk
-        mapView()->getWorld()->setAreaID(mapView()->cursorPosition(), _selectedAreaId, false, _areaTool->brushRadius());
-      }
-      else if(params.mod_ctrl_down)
+      if (params.mod_ctrl_down)
       {
         mapView()->doSelection(true);
 
@@ -118,7 +173,7 @@ namespace Noggit
         {
           MapChunk* chnk(std::get<selected_chunk_type>(selection).chunk);
           int newID = chnk->getAreaID();
-          _selectedAreaId = newID;
+          setSelectedAreaId(newID);
           _areaTool->setZoneID(newID);
         }
         return;

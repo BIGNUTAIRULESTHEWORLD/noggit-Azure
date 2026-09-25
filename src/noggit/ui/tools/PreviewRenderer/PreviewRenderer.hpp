@@ -13,6 +13,8 @@
 #include <QOffscreenSurface>
 #include <QPixmap>
 
+#include <optional>
+#include <string>
 #include <vector>
 
 class ModelInstance;
@@ -23,6 +25,14 @@ class QSettings;
 namespace Noggit::Ui::Tools
 {
 
+struct M2GroupPreviewInstance
+{
+  std::string filename;
+  glm::vec3 position;
+  glm::vec3 rotation;
+  float scale = 1.0f;
+};
+
 class PreviewRenderer : public Noggit::Ui::Tools::ViewportManager::Viewport
   {
     Q_OBJECT
@@ -32,10 +42,11 @@ class PreviewRenderer : public Noggit::Ui::Tools::ViewportManager::Viewport
     ~PreviewRenderer() override;
 
     void resetCamera(float x = 0.f, float y = 0.f, float z = 0.f, float roll = 0.f, float yaw = 120.f, float pitch = 20.f);
-    QPixmap* renderToPixmap();
+    QPixmap* renderToPixmap(std::string const& cache_variant = {});
 
     virtual void setModel(std::string const& filename);
     void setModelOffscreen(std::string const& filename);
+    void setM2GroupOffscreen(std::vector<M2GroupPreviewInstance> const& entries);
     virtual void setPrefab(std::string const& filename) {};
 
     void setLightDirection(float y, float z);
@@ -73,10 +84,15 @@ class PreviewRenderer : public Noggit::Ui::Tools::ViewportManager::Viewport
 
     std::vector<glm::vec3> calcSceneExtents();
     virtual void draw();
+    virtual std::optional<glm::mat4x4> modelInstanceTransform(std::size_t index) const;
     virtual void tick(float dt);
     virtual glm::mat4x4 model_view() const;
     virtual glm::mat4x4 projection() const;
     virtual float aspect_ratio() const;
+
+    QOpenGLContext& offscreenContext() { return _offscreen_context; }
+    QOffscreenSurface& offscreenSurface() { return _offscreen_surface; }
+    void clearPixmapCache() { _cache.clear(); }
 
     void update_emitters(float dt);
 

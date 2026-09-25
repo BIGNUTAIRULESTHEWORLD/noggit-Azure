@@ -207,8 +207,13 @@ public:
   std::vector<uint16_t> const& indexData() const { return _indices; }
   std::vector<scoped_blp_texture_reference> const& textureRefs() const { return _textures; }
   std::vector<uint16_t> const& textureLookup() const { return _texture_lookup; }
+  std::vector<uint16_t> const& geosetIds() const { return _geoset_ids; }
+  bool hasAttachment(unsigned id) const;
+  std::optional<glm::mat4x4> attachmentTransform(unsigned id, glm::mat4x4 const& parent_transform) const;
 
   uint32_t get_anim_lenght(int16_t anim_id);
+  [[nodiscard]] bool hasAnimation(std::uint16_t animation_id) const;
+  [[nodiscard]] std::uint32_t animationLength(std::uint16_t animation_id) const;
 
   // only useful if model has multiple anims with varying bound sizes
   // probably never happens with world objects, but this should be more accurate than global bounds
@@ -223,6 +228,7 @@ public:
   // Toggles
   // ===============================
   std::vector<bool> showGeosets;
+  std::vector<uint16_t> _geoset_ids;
 
   // ===============================
   // Texture data
@@ -231,6 +237,8 @@ public:
   std::vector<std::string> _textureFilenames;
   std::map<std::size_t, scoped_blp_texture_reference> _replaceTextures;
   std::vector<int> _specialTextures;
+  // Original M2 replaceable texture types, even when map rendering uses a fixed fallback.
+  std::vector<int> _replaceableTextureTypes;
   std::vector<bool> _useReplaceTextures;
   std::vector<int16_t> _texture_unit_lookup;
 
@@ -239,6 +247,8 @@ public:
   // ===============================
   std::vector<Bone> bones;
   std::vector<glm::mat4x4> bone_matrices;
+  std::vector<ModelAttachmentDef> _attachments;
+  std::vector<int16_t> _attachment_lookup;
   // ModelHeader header; // we really don't need to store the offsets.
   std::vector<uint16_t> blend_override;
 
@@ -290,8 +300,13 @@ private:
   void initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header);
   bool isAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& header);
   void initAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& header);
+  ModelAttachmentDef const* findAttachment(unsigned id) const;
 
-  void animate(glm::mat4x4 const& model_view, int anim_id, int anim_time);
+  void animate(glm::mat4x4 const& model_view, int anim_id, int anim_time,
+               bool upload_bones = true);
+  void animateBlended(glm::mat4x4 const& model_view,
+                      int from_anim_id, int from_anim_time,
+                      int to_anim_id, int to_anim_time, float blend);
   void calcBones(glm::mat4x4 const& model_view, int anim, int time, int animation_time);
 
   std::vector<ModelVertex> getTransformVertices() const;

@@ -83,6 +83,10 @@ uniform float inner_cursor_ratio;
 uniform vec4 cursor_color;
 uniform bool draw_stamp_protection;
 uniform bool draw_painted_stamp_selection;
+uniform vec4 painted_selection_color;
+uniform bool scatter_filter_enabled;
+uniform float scatter_coverage;
+uniform int scatter_layers[256];
 uniform vec2 painted_stamp_selection_origin;
 uniform vec3 stamp_protection_center;
 uniform float stamp_protection_radius;
@@ -600,7 +604,24 @@ void main()
     float selection_bounds = float(selection_uv.x >= 0.0 && selection_uv.x <= 1.0
         && selection_uv.y >= 0.0 && selection_uv.y <= 1.0);
     float selection = texture(stamp_brush, selection_uv).r * selection_bounds;
-    out_color.rgb = mix(out_color.rgb, vec3(0.03, 0.20, 1.0), selection * 0.34);
+    vec4 selection_color = painted_selection_color;
+    if (scatter_filter_enabled)
+    {
+      // Use the same nearest alpha texel as CPU placement eligibility.
+      ivec2 alpha_coord = clamp(ivec2((vary_texcoord / 8.0) * 64.0), ivec2(0), ivec2(63));
+      vec3 alpha = texelFetch(alphamap, ivec3(alpha_coord, instanceID), 0).rgb;
+      int count = instances[instanceID].ChunkHoles_DrawImpass_TexLayerCount_CantPaint.z;
+      if (count < 2) alpha.r = 0.0;
+      if (count < 3) alpha.g = 0.0;
+      if (count < 4) alpha.b = 0.0;
+      vec4 weights = vec4(max(0.0, 1.0 - alpha.r - alpha.g - alpha.b), alpha);
+      int layer = scatter_layers[instanceID];
+      float target = layer >= 0 && layer < 4 ? weights[layer] : 0.0;
+      float strongest = max(max(weights.x, weights.y), max(weights.z, weights.w));
+      if (layer < 0 || target + 0.00001 < scatter_coverage || target + 0.00001 < strongest)
+        selection_color = vec4(1.0, 0.40, 0.05, 0.25);
+    }
+    out_color.rgb = mix(out_color.rgb, selection_color.rgb, selection * selection_color.a);
   }
 
   if(draw_cursor_circle == 1)

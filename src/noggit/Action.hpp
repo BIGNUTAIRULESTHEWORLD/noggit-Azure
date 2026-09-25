@@ -45,6 +45,7 @@ namespace Noggit
         eSKY_TRANSFORMED          = 0x10000,
         eSKY_ADDED                = 0x20000,
         eSKY_REMOVED              = 0x40000,
+        eNPC_EDIT                 = 0x80000,
     };
 
     enum ActionModalityControllers
@@ -130,6 +131,9 @@ namespace Noggit
         void setBlockCursor(bool state);
         bool getBlockCursor() const;
         void setPostCallback(std::function<void()> function);
+        void setNpcEdit(std::uint64_t guid, unsigned domains,
+                        std::function<void(bool)> apply);
+        bool editsNpc(std::uint64_t guid, unsigned domains) const;
         bool getTag();
         void setTag(bool tag);
 
@@ -145,6 +149,7 @@ namespace Noggit
         void registerObjectTransformed(SceneObject* obj);
         void registerObjectRemoved(SceneObject* obj);
         void registerObjectAdded(SceneObject* obj);
+        void registerSelectionGroupAdded(std::vector<SceneObject*> const& objects);
         void registerChunkHoleChange(MapChunk* chunk);
         void registerChunkAreaIDChange(MapChunk* chunk);
         void registerChunkFlagChange(MapChunk* chunk);
@@ -207,8 +212,12 @@ namespace Noggit
         bool _vertex_selection_recorded = false;
 
         tsl::robin_map<unsigned, std::vector<unsigned>> _object_operations;
+        std::vector<std::vector<unsigned>> _added_selection_groups;
 
         std::function<void()> _post;
+        std::uint64_t _npc_guid = 0;
+        unsigned _npc_domains = 0;
+        std::function<void(bool)> _npc_apply;
 
     };
 }

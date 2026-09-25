@@ -5,8 +5,12 @@
 
 #include <noggit/rendering/BaseRender.hpp>
 #include <noggit/ModelHeaders.h>
+#include <noggit/scoped_blp_texture_reference.hpp>
 #include <noggit/tool_enums.hpp>
 #include <opengl/scoped.hpp>
+
+#include <map>
+#include <vector>
 
 namespace math
 {
@@ -23,6 +27,12 @@ class ModelInstance;
 
 namespace Noggit::Rendering
 {
+  struct ModelAppearanceOverride
+  {
+    std::vector<bool> const* geosets = nullptr;
+    std::map<std::size_t, scoped_blp_texture_reference> const* replacement_textures = nullptr;
+  };
+
   enum class M2Blend : uint16_t
   {
     Opaque,
@@ -85,9 +95,15 @@ namespace Noggit::Rendering
     bool invalid_texture_binding = false;
 
 
-    bool prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model *m, OpenGL::M2RenderState& model_render_state);
+    bool prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model *m,
+                     OpenGL::M2RenderState& model_render_state,
+                     ModelAppearanceOverride const* appearance = nullptr,
+                     bool force_alpha_blend = false,
+                     bool force_no_depth_write = false);
     void afterDraw();
-    bool bindTexture(size_t index, Model* m, OpenGL::M2RenderState& model_render_state, OpenGL::Scoped::use_program& m2_shader);
+    bool bindTexture(size_t index, Model* m, OpenGL::M2RenderState& model_render_state,
+                     OpenGL::Scoped::use_program& m2_shader,
+                     ModelAppearanceOverride const* appearance = nullptr);
     void initUVTypes(Model* m);
 
     bool operator< (const ModelRenderPass& m) const;
@@ -117,6 +133,11 @@ namespace Noggit::Rendering
         , display_mode display
         , bool no_cull
         , bool animate
+        , ModelAppearanceOverride const* appearance = nullptr
+        , bool force_animation = false
+        , float opacity = 1.0f
+        , bool force_alpha_blend = false
+        , bool force_no_depth_write = false
     );
 
     void draw (glm::mat4x4 const& model_view
@@ -134,6 +155,12 @@ namespace Noggit::Rendering
         , bool animate
         , bool draw_fake_geometry_box
         , bool draw_animation_box
+        , ModelAppearanceOverride const* appearance = nullptr
+        , int animation_id = 0
+        , bool force_animation = false
+        , int blend_from_animation_id = -1
+        , int blend_from_animation_time = 0
+        , float animation_blend = 1.0f
     );
 
     void drawParticles(glm::mat4x4 const& model_view
@@ -157,6 +184,7 @@ namespace Noggit::Rendering
   private:
 
     void setupVAO(OpenGL::Scoped::use_program& m2_shader);
+    void setupSingleInstanceVAO(OpenGL::Scoped::use_program& m2_shader);
     void fixShaderIdBlendOverride();
     void fixShaderIDLayer();
     void computePixelShaderIDs();
@@ -166,18 +194,19 @@ namespace Noggit::Rendering
 
     // buffers
     OpenGL::Scoped::deferred_upload_buffers<6> _buffers;
-    OpenGL::Scoped::deferred_upload_vertex_arrays<2> _vertex_arrays;
+    OpenGL::Scoped::deferred_upload_vertex_arrays<3> _vertex_arrays;
 
     std::vector<uint16_t> const _box_indices = {5, 7, 3, 2, 0, 1, 3, 1, 5, 4, 0, 4, 6, 2, 6, 7};
 
     GLuint const& _vao = _vertex_arrays[0];
+    GLuint const& _single_instance_vao = _vertex_arrays[1];
     GLuint const& _transform_buffer = _buffers[0];
     GLuint const& _vertices_buffer = _buffers[1];
     GLuint const& _indices_buffer = _buffers[3];
     GLuint const& _box_indices_buffer = _buffers[4];
     GLuint const& _bone_matrices_buffer = _buffers[5];
 
-    GLuint const& _box_vao = _vertex_arrays[1];
+    GLuint const& _box_vao = _vertex_arrays[2];
     GLuint const& _box_vbo = _buffers[2];
 
     GLuint _bone_matrices_buf_tex;
@@ -186,6 +215,7 @@ namespace Noggit::Rendering
 
     bool _uploaded = false;
     bool _vao_setup = false;
+    bool _single_instance_vao_setup = false;
   };
 }
 

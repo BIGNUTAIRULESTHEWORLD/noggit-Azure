@@ -149,7 +149,7 @@ namespace Noggit
     {
         if (_texturingTool)
         {
-            _texturingTool->texture_swap_tool()->cancel_viewport_adt_selection();
+            _texturingTool->texture_swap_tool()->cancel_viewport_selection();
             _texturingTool->unload();
         }
 
@@ -419,6 +419,13 @@ namespace Noggit
         glm::vec3 cursor_position_override{};
         bool use_cursor_position_override = false;
         glm::vec4 cursor_color{1.f, 1.f, 1.f, _texturingTool->brushOpacity()};
+        bool const chunk_selection =
+            _texturingTool->texture_swap_tool()->viewport_chunk_selection_active();
+        if (chunk_selection)
+        {
+            cursor_radius = _texturingTool->texture_swap_tool()->viewport_chunk_selection_radius();
+            cursor_color = {0.15f, 0.7f, 1.f, 0.95f};
+        }
         if (road_mode)
         {
             if ((_road_session == road_session_state::routing
@@ -467,9 +474,9 @@ namespace Noggit
                 cursor_color = {0.08f, 0.3f, 1.0f, 0.95f};
             }
         }
-        if (_texturingTool->getTexturingMode() == Noggit::Ui::texturing_mode::paint && _texturingTool->getImageMaskSelector()->isEnabled())
+        if (!chunk_selection && _texturingTool->getTexturingMode() == Noggit::Ui::texturing_mode::paint && _texturingTool->getImageMaskSelector()->isEnabled())
             cursorType = CursorType::STAMP;
-        else if (_texturingTool->getTexturingMode() == Noggit::Ui::texturing_mode::paint
+        else if (!chunk_selection && _texturingTool->getTexturingMode() == Noggit::Ui::texturing_mode::paint
                  && _texturingTool->brushShape() == BrushShape::SQUARE)
             cursorType = CursorType::SQUARE;
 
@@ -530,7 +537,7 @@ namespace Noggit
 
     void TexturingTool::onDeselected()
     {
-        _texturingTool->texture_swap_tool()->cancel_viewport_adt_selection();
+        _texturingTool->texture_swap_tool()->cancel_viewport_selection();
         _texturingTool->getGroundEffectsTool()->hide();
 
         QSignalBlocker const blocker1(_show_texture_palette_window);
@@ -545,9 +552,15 @@ namespace Noggit
     void TexturingTool::onTick(float deltaTime, TickParameters const& params)
     {
         auto mv = mapView();
-        if (_texturingTool->texture_swap_tool()->viewport_adt_selection_active())
+        if (_texturingTool->texture_swap_tool()->viewport_selection_active())
         {
-            _texturingTool->texture_swap_tool()->refresh_viewport_adt_selection();
+            auto* swapper = _texturingTool->texture_swap_tool();
+            swapper->refresh_viewport_selection();
+            if (swapper->viewport_chunk_selection_active() && params.left_mouse
+                && !params.underMap && !params.mod_alt_down)
+            {
+                swapper->paint_viewport_chunks(mv->cursorPosition(), params.mod_ctrl_down);
+            }
             return;
         }
 
@@ -723,10 +736,22 @@ namespace Noggit
             return;
         }
 
-        if (_texturingTool->texture_swap_tool()->viewport_adt_selection_active())
+        if (_texturingTool->texture_swap_tool()->viewport_selection_active())
         {
-            _texturingTool->texture_swap_tool()->refresh_viewport_adt_selection();
-            _texturingTool->texture_swap_tool()->toggle_viewport_adt(mapView()->cursorPosition());
+            auto* swapper = _texturingTool->texture_swap_tool();
+            swapper->refresh_viewport_selection();
+            if (swapper->viewport_chunk_selection_active())
+            {
+                if (!params.mod_alt_down && !params.mod_space_down)
+                {
+                    swapper->paint_viewport_chunks(
+                        mapView()->cursorPosition(), params.mod_ctrl_down);
+                }
+            }
+            else
+            {
+                swapper->toggle_viewport_adt(mapView()->cursorPosition());
+            }
             return;
         }
 
@@ -787,7 +812,7 @@ namespace Noggit
 
     void TexturingTool::onMouseMove(MouseMoveParameters const& params)
     {
-        if (_texturingTool->texture_swap_tool()->viewport_adt_selection_active())
+        if (_texturingTool->texture_swap_tool()->viewport_selection_active())
         {
             return;
         }

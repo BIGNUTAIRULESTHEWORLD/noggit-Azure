@@ -14,11 +14,13 @@
 #include <noggit/ui/texturing_tool.hpp>
 #include <noggit/ui/tools/Stamp/StampAssetBrowser.hpp>
 #include <noggit/ui/tools/UiCommon/ExtendedSlider.hpp>
+#include <noggit/ui/windows/noggitWindow/NoggitWindow.hpp>
 
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
+#include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileInfo>
@@ -267,6 +269,11 @@ BrushStack::BrushStack(MapView* map_view, QWidget* parent)
 
 }
 
+BrushStack::~BrushStack()
+{
+  delete _stamp_browser_dock.data();
+}
+
 void BrushStack::setupMapStampUi()
 {
   auto* group = new QGroupBox("Stamp workflow", this);
@@ -333,6 +340,17 @@ void BrushStack::setupMapStampUi()
       "positive mountain relief and merges overlapping features without digging. Terrain conform "
       "transfers signed relief and may intentionally raise or lower terrain.");
   placement_form->addRow("Height mode", _map_stamp_height_mode);
+
+  _map_stamp_edge_blend = new QDoubleSpinBox(_map_stamp_options);
+  _map_stamp_edge_blend->setRange(.05, .50);
+  _map_stamp_edge_blend->setDecimals(2);
+  _map_stamp_edge_blend->setSingleStep(.05);
+  _map_stamp_edge_blend->setValue(.25);
+  _map_stamp_edge_blend->setToolTip(
+      "Exact feature and Mountain blend preserve the captured core and blend outside Size. "
+      "With the experimental option, tall boundary edges automatically get more room. "
+      "Terrain conform blends inside Size.");
+  placement_form->addRow("Edge blend", _map_stamp_edge_blend);
 
   _map_stamp_height_scale = new QDoubleSpinBox(_map_stamp_options);
   _map_stamp_height_scale->setRange(-10.0, 10.0);
@@ -462,16 +480,14 @@ void BrushStack::setupMapStampUi()
   _map_stamp_position_lock->setToolTip(
       "F captures and locks the current map position. Space+F toggles the existing lock.");
   advanced_body_layout->addRow(_map_stamp_position_lock);
-  _map_stamp_edge_blend = new QDoubleSpinBox(advanced_body);
-  _map_stamp_edge_blend->setRange(.05, .50);
-  _map_stamp_edge_blend->setDecimals(2);
-  _map_stamp_edge_blend->setSingleStep(.05);
-  _map_stamp_edge_blend->setValue(.25);
-  _map_stamp_edge_blend->setToolTip(
-      "Exact mode and painted footprints place this transition outside the preserved core. "
-      "Regular conforming circles/squares place it inside Size. Heights and textures use the "
-      "same transition.");
-  advanced_body_layout->addRow("Edge blend", _map_stamp_edge_blend);
+  _map_stamp_experimental_height_blend = new QCheckBox(
+      "Try full-shape height blending (experimental)", advanced_body);
+  _map_stamp_experimental_height_blend->setToolTip(
+      "Exact feature keeps the entire captured footprint and blends outside it. "
+      "Mountain blend uses the captured perimeter as its base. "
+      "Terrain conform and saved stamp files are unchanged. Turn this off to compare "
+      "the current placement behavior.");
+  advanced_body_layout->addRow(_map_stamp_experimental_height_blend);
   advanced_layout->addWidget(advanced_body);
   advanced_body->setVisible(false);
   connect(advanced_group, &QGroupBox::toggled, advanced_body, &QWidget::setVisible);
@@ -576,6 +592,44 @@ void BrushStack::setupMapStampUi()
 
   refreshMapStampLibrary();
 
+  _stamp_browser_dock = new QDockWidget("Stamp Asset Browser", _map_view->mainWindow());
+  _stamp_browser_dock->setObjectName("mapViewStampAssetBrowserDock");
+  _stamp_browser_dock->setFeatures(QDockWidget::DockWidgetMovable
+      | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetClosable);
+  _stamp_browser_dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+  QString const stamp_directory = QString::fromStdString(
+      Noggit::Project::CurrentProject::get()->ProjectPath) + "/noggit-assets/stamps";
+  _stamp_browser = new Stamp::StampAssetBrowser(stamp_directory, _map_stamp_path,
+                                                _stamp_browser_dock);
+  _stamp_browser_dock->setWidget(_stamp_browser);
+  _map_view->mainWindow()->addDockWidget(Qt::LeftDockWidgetArea, _stamp_browser_dock);
+  _stamp_browser_dock->hide();
+
+  connect(_stamp_browser_dock, &QDockWidget::visibilityChanged, this, [this](bool visible)
+  {
+    if (!_stamp_browser)
+      return;
+    if (visible)
+      _stamp_browser->refresh();
+    else
+      _stamp_browser->pauseLoading();
+  });
+  connect(_stamp_browser, &Stamp::StampAssetBrowser::stampChosen, this,
+          [this](QString const& path)
+  {
+    if (loadMapStamp(path))
+    {
+      _map_stamp_enabled->setChecked(true);
+      _stamp_browser->setActivePath(_map_stamp_path);
+    }
+  });
+  connect(_stamp_browser, &Stamp::StampAssetBrowser::libraryChanged, this,
+          [this](QString const& active_path)
+  {
+    refreshMapStampLibrary(active_path);
+    _stamp_browser->setActivePath(_map_stamp_path);
+  });
+
   connect(_map_stamp_radius, &UiCommon::ExtendedSlider::valueChanged, this,
           [this](double value)
   {
@@ -617,7 +671,12 @@ void BrushStack::setupMapStampUi()
     }
   });
   connect(_map_stamp_height_mode, qOverload<int>(&QComboBox::currentIndexChanged), this,
-          [this](int) { markMapStampTerrainPreviewDirty(); });
+          [this](int)
+  {
+    markMapStampTerrainPreviewDirty();
+    if (hasLoadedMapStamp())
+      updateMapStampPreview();
+  });
   connect(_map_stamp_height_scale, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
           [this](double) { markMapStampTerrainPreviewDirty(false); });
   connect(_map_stamp_height_offset, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
@@ -626,6 +685,12 @@ void BrushStack::setupMapStampUi()
           [this](double) { markMapStampTerrainPreviewDirty(); });
   connect(_map_stamp_edge_blend, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
           [this](double) { markMapStampTerrainPreviewDirty(); });
+  connect(_map_stamp_experimental_height_blend, &QCheckBox::toggled, this,
+          [this](bool)
+  {
+    markMapStampTerrainPreviewDirty();
+    updateMapStampPreview();
+  });
   connect(reset_elevation, &QPushButton::clicked, this,
           [this] { _map_stamp_height_offset->setValue(0.0); });
   connect(_map_stamp_height_drag, &QCheckBox::toggled, this, [this](bool enabled)
@@ -650,13 +715,8 @@ void BrushStack::setupMapStampUi()
           [this](bool) { markMapStampTerrainPreviewDirty(); });
   connect(_map_stamp_library_browse, &QPushButton::clicked, this, [this]
   {
-    QString const directory = QString::fromStdString(
-        Noggit::Project::CurrentProject::get()->ProjectPath) + "/noggit-assets/stamps";
-    Stamp::StampAssetBrowser browser(directory, _map_stamp_path, this);
-    int const result = browser.exec();
-    QString const path = result == QDialog::Accepted
-        ? browser.selectedPath() : browser.activePath();
-    refreshMapStampLibrary(path);
+    _stamp_browser_dock->show();
+    _stamp_browser_dock->raise();
   });
   connect(_map_stamp_enabled, &QCheckBox::toggled, this, [this](bool enabled)
   {
@@ -836,6 +896,9 @@ void BrushStack::setupMapStampUi()
       _map_view->getWorld()->renderer()->clearPaintedStampSelectionOverlay();
     }
     refreshMapStampLibrary(path);
+    _stamp_browser->invalidate(path);
+    if (_stamp_browser_dock->isVisible())
+      _stamp_browser->refresh(_map_stamp_path);
     _map_stamp_rotation->setEnabled(true);
     _map_stamp_flip_x->setEnabled(true);
     _map_stamp_flip_z->setEnabled(true);
@@ -865,6 +928,8 @@ void BrushStack::refreshMapStampLibrary(QString const& active_path)
     clearMapStampTerrainPreview();
     _map_stamp = {};
     _map_stamp_path.clear();
+    if (_stamp_browser)
+      _stamp_browser->setActivePath({});
     _map_stamp_height_offset->setValue(0.0);
     _map_stamp_rotation->setEnabled(false);
     _map_stamp_flip_x->setEnabled(false);
@@ -920,6 +985,8 @@ bool BrushStack::loadMapStamp(QString const& path)
   {
     _map_stamp = {};
     _map_stamp_path.clear();
+    if (_stamp_browser)
+      _stamp_browser->setActivePath({});
     _map_stamp_status->setText(error);
     _map_stamp_rotation->setEnabled(false);
     _map_stamp_flip_x->setEnabled(false);
@@ -929,9 +996,12 @@ bool BrushStack::loadMapStamp(QString const& path)
   }
   _map_stamp = std::move(loaded);
   _map_stamp_path = QDir::cleanPath(path);
+  if (_stamp_browser)
+    _stamp_browser->setActivePath(_map_stamp_path);
   bool const exact_height = _map_stamp.supportsExactHeight();
   _map_stamp_height_mode->setEnabled(exact_height);
-  _map_stamp_height_mode->setCurrentIndex(exact_height ? 0 : 2);
+  if (!exact_height)
+    _map_stamp_height_mode->setCurrentIndex(2);
   _map_stamp_height_mode->setToolTip(exact_height
       ? "Exact feature preserves the captured shape. Mountain blend safely merges positive relief "
         "without digging. Terrain conform transfers signed relief and may raise or lower terrain."
@@ -989,7 +1059,9 @@ float BrushStack::mapStampPreviewRadius() const
   float const radius = mapStampRadius();
   return hasLoadedMapStamp()
       ? _map_stamp.footprintBoundingRadius(radius, mapStampTransform(),
-                                           mapStampHardness(), mapStampHeightMode())
+                                           mapStampHardness(), mapStampHeightMode(),
+                                           _map_stamp_experimental_height_blend
+                                               && _map_stamp_experimental_height_blend->isChecked())
       : radius;
 }
 
@@ -997,7 +1069,12 @@ float BrushStack::mapStampInnerRadiusRatio() const
 {
   float const edge_blend = 1.f - mapStampHardness();
   return mapStampHeightMode() != Stamp::MapStampHeightMode::ConformToTerrain
-      ? 1.f / (1.f + edge_blend) : 1.f - edge_blend;
+      ? 1.f / (_map_stamp_experimental_height_blend
+          && _map_stamp_experimental_height_blend->isChecked()
+          && _map_stamp.shape() != Stamp::MapStampShape::Painted
+              ? 1.f + Stamp::MapStampAsset::experimentalBlendWidth(
+                  mapStampRadius(), mapStampHardness())
+              : 1.f + edge_blend) : 1.f - edge_blend;
 }
 
 bool BrushStack::isMapStampExclusionBrushEnabled() const
@@ -1039,6 +1116,8 @@ Stamp::MapStampProtectionSettings BrushStack::mapStampProtectionSettings() const
 {
   Stamp::MapStampProtectionSettings protection;
   protection.automatic = _map_stamp_auto_protection->isChecked();
+  protection.experimental_height_blend = _map_stamp_experimental_height_blend
+      && _map_stamp_experimental_height_blend->isChecked();
   protection.slope_start_degrees = static_cast<float>(_map_stamp_protection_slope->value());
   protection.slope_full_degrees = std::min(89.f, protection.slope_start_degrees + 15.f);
   protection.relief_start = static_cast<float>(_map_stamp_protection_relief->value());
@@ -1441,10 +1520,16 @@ void BrushStack::updateMapStampPreview()
   constexpr int preview_resolution = 1024;
   Stamp::MapStampTransform const transform = mapStampTransform();
   float const extent_scale = _map_stamp.footprintBoundingRadius(
-      1.f, transform, mapStampHardness(), mapStampHeightMode());
+      1.f, transform, mapStampHardness(), mapStampHeightMode(),
+      _map_stamp_experimental_height_blend
+          && _map_stamp_experimental_height_blend->isChecked());
   int const source_size = std::clamp(
       static_cast<int>(std::lround(preview_resolution / extent_scale)), 1, preview_resolution);
-  QImage const source_preview = _map_stamp.previewImage().scaled(
+  QImage const source_preview = _map_stamp.previewImage(
+      _map_stamp_experimental_height_blend
+          && _map_stamp_experimental_height_blend->isChecked()
+          && mapStampHeightMode() != Stamp::MapStampHeightMode::ConformToTerrain,
+      mapStampHeightMode()).scaled(
       source_size, source_size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
   QImage stamp_preview(preview_resolution, preview_resolution, QImage::Format_ARGB32);
   stamp_preview.fill(qRgba(0, 0, 0, 255));

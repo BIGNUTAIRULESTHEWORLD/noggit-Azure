@@ -43,7 +43,9 @@ namespace Noggit
         {
             Q_OBJECT
         public:
-            SoundEntryPickerWindow(QPushButton* button, int sound_type_filter = -1, bool allow_none = true, QWidget* parent = nullptr);
+            SoundEntryPickerWindow(QPushButton* button, int sound_type_filter = -1,
+                                   bool allow_none = true, QWidget* parent = nullptr,
+                                   bool selection_only = false);
 
         private:
             QComboBox* _tree_filter_cbbox;

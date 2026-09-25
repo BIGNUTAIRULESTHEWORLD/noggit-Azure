@@ -12,12 +12,14 @@
         <file>segoeuisb.ttf</file>
     </qresource>
     <qresource prefix="/">
-        <file alias="icon">../media/noggit_icon_azure.png</file>
+        <file alias="icon">../media/noggit_icon_azure_dark.png</file>
         <file alias="splash">../media/splash.png</file>
         <file alias="project-selection-backdrop">../media/project-selection-amanthul.png</file>
         <file alias="project-selection-azure-artwork">../media/project-selection-azure-frame.png</file>
         <file alias="project-selection-azure-frame">../media/project-selection-azure-frame-shaped.png</file>
         <file alias="project-selection-wood">../media/project-selection-wood.png</file>
+        <file alias="map-selection-coast">../media/map-selection-coast.png</file>
+        <file alias="project-selection-canyon">../media/launcher-canyon.png</file>
         <file alias="icon-classic">../media/project-icon-classic.png</file>
         <file alias="icon-burning">../media/project-icon-burning.png</file>
         <file alias="icon-wrath">../media/project-icon-wrath.png</file>
@@ -37,6 +39,8 @@
       <file alias="detail_doodad_fs">../src/noggit/rendering/glsl/detail_doodad_frag.glsl</file>
       <file alias="particle_vs">../src/noggit/rendering/glsl/particle_vert.glsl</file>
       <file alias="particle_fs">../src/noggit/rendering/glsl/particle_frag.glsl</file>
+      <file alias="weather_vs">../src/noggit/rendering/glsl/weather_vert.glsl</file>
+      <file alias="weather_fs">../src/noggit/rendering/glsl/weather_frag.glsl</file>
       <file alias="ribbon_vs">../src/noggit/rendering/glsl/ribbon_vert.glsl</file>
       <file alias="ribbon_fs">../src/noggit/rendering/glsl/ribbon_frag.glsl</file>
       <file alias="terrain_vs">../src/noggit/rendering/glsl/terrain_vert.glsl</file>

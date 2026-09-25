@@ -15,6 +15,7 @@ in uvec4 bones_indices;
 #endif
 
 uniform samplerBuffer bone_matrices;
+uniform int bones_per_instance;
 
 out vec2 uv1;
 out vec2 uv2;
@@ -68,7 +69,7 @@ vec2 get_texture_uv(int tex_unit_lookup, vec3 vert, vec3 norm)
 mat4 get_bone_matrix(uint bone_index)
 {
   mat4 matrix;
-  int pixel_start = int(bone_index) * 4;
+  int pixel_start = (int(bone_index) + gl_InstanceID * bones_per_instance) * 4;
   matrix[0] = texelFetch(bone_matrices, pixel_start).rgba;
   matrix[1] = texelFetch(bone_matrices, pixel_start + 1).rgba;
   matrix[2] = texelFetch(bone_matrices, pixel_start + 2).rgba;

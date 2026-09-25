@@ -161,7 +161,6 @@ bool WMORender::drawSkybox(const glm::mat4x4& model_view, const glm::vec3& camer
       model_render_state.tex_unit_lookups = {-1, -1};
       gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
       gl.disable(GL_BLEND);
-      gl.depthMask(GL_TRUE);
       m2_shader.uniform("blend_mode", 0);
       m2_shader.uniform("unfogged", static_cast<int>(model_render_state.unfogged));
       m2_shader.uniform("unlit",  static_cast<int>(model_render_state.unlit));
@@ -169,6 +168,7 @@ bool WMORender::drawSkybox(const glm::mat4x4& model_view, const glm::vec3& camer
       m2_shader.uniform("tex_unit_lookup_2", 0);
       m2_shader.uniform("pixel_shader", 0);
 
+      OpenGL::Scoped::bool_setter<GL_DEPTH_TEST, GL_FALSE> const no_depth_test;
       _wmo->skybox->get()->renderer()->draw(model_view
                                            , sky
                                            , m2_shader
@@ -179,6 +179,11 @@ bool WMORender::drawSkybox(const glm::mat4x4& model_view, const glm::vec3& camer
                                            , animtime
                                            , display_mode::in_3D
                                            , true
+                                           , true
+                                           , nullptr
+                                           , true
+                                           , 1.0f
+                                           , false
                                            , true);
 
       return true;

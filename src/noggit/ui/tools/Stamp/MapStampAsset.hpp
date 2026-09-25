@@ -75,6 +75,7 @@ namespace Noggit::Ui::Tools::Stamp
   struct MapStampProtectionSettings
   {
     bool automatic = false;
+    bool experimental_height_blend = false;
     float slope_start_degrees = 32.f;
     float slope_full_degrees = 48.f;
     float relief_start = 18.f;
@@ -114,11 +115,15 @@ namespace Noggit::Ui::Tools::Stamp
     [[nodiscard]] MapStampShape shape() const;
     [[nodiscard]] std::size_t textureCount() const;
     [[nodiscard]] bool supportsExactHeight() const;
-    [[nodiscard]] QImage previewImage() const;
+    [[nodiscard]] static float experimentalBlendWidth(float radius, float hardness);
+    [[nodiscard]] QImage previewImage(
+        bool full_footprint = false,
+        MapStampHeightMode height_mode = MapStampHeightMode::ExactFeature) const;
     [[nodiscard]] float footprintBoundingRadius(float radius,
                                                 MapStampTransform const& transform,
                                                 float hardness,
-                                                MapStampHeightMode height_mode) const;
+                                                MapStampHeightMode height_mode,
+                                                bool experimental_height_blend = false) const;
 
   private:
     bool visitTerrainPlacement(
@@ -128,8 +133,10 @@ namespace Noggit::Ui::Tools::Stamp
         MapStampProtectionSettings const& protection, MapStampHeightMode height_mode,
         bool mark_tiles_changed,
         std::function<void(MapChunk*, std::size_t, float)> const& visitor) const;
-    float sampleHeight(float u, float v, MapStampHeightMode height_mode) const;
-    float sampleTexture(std::size_t layer, float u, float v) const;
+    float sampleHeight(float u, float v, MapStampHeightMode height_mode,
+                       bool ignore_uncaptured_circle = false) const;
+    float sampleTexture(std::size_t layer, float u, float v,
+                        bool ignore_uncaptured_circle = false) const;
     float exactFeatureWeight(float u, float v) const;
     float paintedFootprintWeight(float u, float v) const;
     float paintedOutsideDistance(float u, float v) const;
@@ -139,6 +146,7 @@ namespace Noggit::Ui::Tools::Stamp
     void rebuildPaintedFootprintData();
     void rebuildExactFeatureMask();
     std::optional<float> exactSourceBaseHeight() const;
+    std::optional<float> perimeterSourceBaseHeight() const;
 
     float _source_radius = 0.f;
     int _height_resolution = 0;
@@ -154,6 +162,8 @@ namespace Noggit::Ui::Tools::Stamp
     std::vector<float> _exact_feature_mask;
     mutable bool _exact_source_base_height_cached = false;
     mutable std::optional<float> _exact_source_base_height;
+    mutable bool _perimeter_source_base_height_cached = false;
+    mutable std::optional<float> _perimeter_source_base_height;
     std::vector<MapStampTexture> _textures;
   };
 }

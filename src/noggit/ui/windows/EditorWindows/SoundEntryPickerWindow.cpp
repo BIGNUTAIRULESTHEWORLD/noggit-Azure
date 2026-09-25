@@ -24,7 +24,9 @@ namespace Noggit
 {
     namespace Ui
     {
-        SoundEntryPickerWindow::SoundEntryPickerWindow(QPushButton* button, int sound_type_filter, bool allow_none, QWidget* parent)
+        SoundEntryPickerWindow::SoundEntryPickerWindow(QPushButton* button, int sound_type_filter,
+                                                       bool allow_none, QWidget* parent,
+                                                       bool selection_only)
         : QWidget(parent)
         {
             setWindowTitle("Sound Entry Picker");
@@ -79,8 +81,11 @@ namespace Noggit
 
             auto select_entry_btn = new QPushButton("Select Entry", this);
             auto select_entry_none_btn = new QPushButton("Select -NONE-", this);
+            auto preview_entry_btn = new QPushButton("Preview selected sound", this);
+            preview_entry_btn->setEnabled(false);
             auto duplicate_entry_btn = new QPushButton("Duplicate selected Entry (create new)", this);
             list_layout->addWidget(duplicate_entry_btn);
+            list_layout->addWidget(preview_entry_btn);
             list_layout->addWidget(select_entry_btn);
             list_layout->addWidget(select_entry_none_btn);
 
@@ -153,6 +158,16 @@ namespace Noggit
             auto save_music_entry_btn = new QPushButton("Save changes", this);
             Editor_layout->addWidget(save_music_entry_btn, 0, Qt::AlignRight);
 
+            if (selection_only)
+            {
+                editor_group->hide();
+                _filescount_lbl->hide();
+                add_file_button->hide();
+                _files_listview->hide();
+                save_music_entry_btn->hide();
+                duplicate_entry_btn->hide();
+            }
+
             Editor_layout->addStretch();
 
             /// check if needed
@@ -200,15 +215,58 @@ namespace Noggit
               }
             });
 
-            QObject::connect(_picker_listview, &QListWidget::itemSelectionChanged, [this]()
+            auto update_preview_button = [this, preview_entry_btn]()
+            {
+                bool can_preview = false;
+                QListWidgetItem* const item = _picker_listview->currentItem();
+                if (item)
+                {
+                    int const id = item->data(Qt::UserRole).toInt();
+                    try
+                    {
+                        DBCFile::Record const record = gSoundEntriesDB.getByID(id);
+                        for (int file = 0; file < 10; ++file)
+                        {
+                            if (*record.getString(SoundEntriesDB::Filenames + file) != '\0')
+                            {
+                                can_preview = true;
+                                break;
+                            }
+                        }
+                    }
+                    catch (SoundEntriesDB::NotFound)
+                    {
+                    }
+                }
+                preview_entry_btn->setEnabled(can_preview);
+            };
+
+            QObject::connect(_picker_listview, &QListWidget::itemSelectionChanged,
+              [this, update_preview_button]()
               {
                 QListWidgetItem* const item = _picker_listview->currentItem();
                 if (item)
                 {
                   select_entry(item->data(Qt::UserRole).toInt());
                 }
+                update_preview_button();
               }
             );
+
+            connect(preview_entry_btn, &QPushButton::clicked, this, [this]()
+            {
+                QListWidgetItem* const item = _picker_listview->currentItem();
+                if (!item)
+                    return;
+
+                auto* sound_player = new SoundEntryPlayer(this);
+                sound_player->setAttribute(Qt::WA_DeleteOnClose);
+                sound_player->setWindowFlag(Qt::Window);
+                sound_player->LoadSoundsFromSoundEntry(item->data(Qt::UserRole).toInt());
+                sound_player->show();
+            });
+
+            update_preview_button();
 
             connect(select_entry_btn, &QPushButton::clicked, [=]() {
                 // auto selection = _picker_listview->selectedItems();

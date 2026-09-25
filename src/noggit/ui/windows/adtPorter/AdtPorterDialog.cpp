@@ -37,6 +37,7 @@
 #include <cstring>
 #include <functional>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 namespace Noggit::Ui::Windows
@@ -494,8 +495,21 @@ namespace
     return true;
   }
 
+  std::uint32_t remapPlacementUid(
+      std::uint32_t source_uid,
+      std::unordered_map<std::uint32_t, std::uint32_t>& uid_remap,
+      std::uint32_t& next_uid)
+  {
+    auto const [entry, inserted] = uid_remap.try_emplace(source_uid, 0);
+    if (inserted)
+      entry->second = ++next_uid;
+    return entry->second;
+  }
+
   bool transformAdt(std::vector<char>& bytes, int source_x, int source_z,
                     int destination_x, int destination_z, std::uint32_t& next_uid,
+                    std::unordered_map<std::uint32_t, std::uint32_t>& model_uid_remap,
+                    std::unordered_map<std::uint32_t, std::uint32_t>& wmo_uid_remap,
                     int& model_count, int& wmo_count, QString& error)
   {
     float const dx = static_cast<float>(destination_x - source_x) * TILESIZE;
@@ -520,9 +534,15 @@ namespace
           model_count = static_cast<int>(size / sizeof(ENTRY_MDDF));
           for (int i = 0; i < model_count; ++i)
           {
+            std::uint32_t const source_uid = entries[i].uniqueID;
             entries[i].pos[0] += dx;
             entries[i].pos[2] += dz;
-            entries[i].uniqueID = ++next_uid;
+            // One placement can be serialized by every ADT touched by its
+            // bounds. Preserve that shared identity across the whole transfer;
+            // assigning a UID per record turns those references into stacked
+            // persistent objects when the destination tiles are loaded.
+            entries[i].uniqueID = remapPlacementUid(
+                source_uid, model_uid_remap, next_uid);
           }
         }
         else if (chunk.magic == 'MODF' && size % sizeof(ENTRY_MODF) == 0)
@@ -531,13 +551,15 @@ namespace
           wmo_count = static_cast<int>(size / sizeof(ENTRY_MODF));
           for (int i = 0; i < wmo_count; ++i)
           {
+            std::uint32_t const source_uid = entries[i].uniqueID;
             entries[i].pos[0] += dx;
             entries[i].pos[2] += dz;
             entries[i].extents[0].x += dx;
             entries[i].extents[0].z += dz;
             entries[i].extents[1].x += dx;
             entries[i].extents[1].z += dz;
-            entries[i].uniqueID = ++next_uid;
+            entries[i].uniqueID = remapPlacementUid(
+                source_uid, wmo_uid_remap, next_uid);
           }
         }
       }, error);
@@ -1054,6 +1076,11 @@ void AdtPorterDialog::portAdt()
   };
   std::vector<Transfer> transfers;
   transfers.reserve(selection.size());
+  // Source objects spanning ADT boundaries are repeated in each affected ADT
+  // with the same UID. Keep one destination UID per logical source placement
+  // for the complete batch rather than generating one per serialized record.
+  std::unordered_map<std::uint32_t, std::uint32_t> model_uid_remap;
+  std::unordered_map<std::uint32_t, std::uint32_t> wmo_uid_remap;
   int models = 0;
   int wmos = 0;
   std::set<int> destination_indices;
@@ -1072,6 +1099,7 @@ void AdtPorterDialog::portAdt()
                                            destination_alpha_format, error))
         || !transformAdt(transfer.transformed, source_tile.x(), source_tile.y(),
                         destination_tile.x(), destination_tile.y(), next_uid,
+                        model_uid_remap, wmo_uid_remap,
                         tile_models, tile_wmos, error)
         || !enableWdtTile(wdt, destination_tile.x(), destination_tile.y(), error))
     {

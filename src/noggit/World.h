@@ -24,6 +24,9 @@
 
 namespace Noggit
 {
+  struct NpcAppearance;
+  class NpcSpawnOverlay;
+  class ServerGameObjectOverlay;
   struct object_paste_params;
   struct VertexSelectionCache;
 }
@@ -84,6 +87,7 @@ public:
   std::string basename;
 
   explicit World(const std::string& name, int map_id, Noggit::NoggitRenderContext context, bool create_empty = false);
+  ~World();
 
   void LoadSavedSelectionGroups();
 
@@ -153,7 +157,7 @@ public:
   void delete_selected_models();
   // note : height is Y axis.
   glm::vec3 get_ground_height(glm::vec3 pos);
-  std::optional<glm::vec3> try_get_ground_height(glm::vec3 const& pos);
+  std::optional<glm::vec3> try_get_ground_height(glm::vec3 const& pos, glm::vec3* normal = nullptr);
   void range_add_to_selection(glm::vec3 const& pos, float radius, bool remove);
   Noggit::world_model_instances_storage& getModelInstanceStorage();;
 
@@ -286,6 +290,9 @@ public:
   std::size_t swapTexturesOnTile(
       MapTile* tile,
       std::vector<std::pair<scoped_blp_texture_reference, scoped_blp_texture_reference>> const& replacements);
+  std::size_t swapTexturesOnChunks(
+      std::vector<MapChunk*> const& chunks,
+      std::vector<std::pair<scoped_blp_texture_reference, scoped_blp_texture_reference>> const& replacements);
   void swapTextureGlobal(scoped_blp_texture_reference tex);
   void removeTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex);
   void removeTexDuplicateOnADT(glm::vec3 const& pos);
@@ -343,7 +350,8 @@ public:
   );
   ModelInstance* addChunkMoverPreviewM2(BlizzardArchive::Listfile::FileKey const& file_key,
                                        glm::vec3 newPos, float scale,
-                                       math::degrees::vec3 rotation);
+                                       math::degrees::vec3 rotation,
+                                       std::optional<Noggit::NoggitRenderContext> render_context = std::nullopt);
 
   WMOInstance* addWMOAndGetInstance ( BlizzardArchive::Listfile::FileKey const& file_key
       , glm::vec3 newPos
@@ -357,6 +365,27 @@ public:
   bool updateChunkMoverPreviewInstance(std::uint32_t uid, glm::vec3 new_pos,
                                        math::degrees::vec3 rotation, float scale);
   void deleteChunkMoverPreviewInstance(std::uint32_t uid);
+  void addNpcSpawnOverlay(std::uint64_t guid, unsigned entry, glm::vec3 const& position,
+                          float yaw, float scale, Noggit::NpcAppearance const& appearance);
+  bool updateNpcSpawnOverlay(std::uint64_t guid, glm::vec3 const& position,
+                             float yaw, float scale);
+  bool commitNpcSpawnOverlay(std::uint64_t temporary_guid, std::uint64_t guid,
+                             unsigned entry);
+  Noggit::NpcSpawnOverlay* findNpcSpawnOverlay(std::uint64_t guid);
+  Noggit::NpcSpawnOverlay* selectedNpcSpawnOverlay();
+  std::optional<std::pair<std::uint64_t, unsigned>> pickNpcSpawnOverlay(
+    math::ray const& ray, float maximum_distance);
+  void selectNpcSpawnOverlay(std::optional<std::uint64_t> guid);
+  void removeNpcSpawnOverlay(std::uint64_t guid);
+  void clearNpcSpawnOverlays();
+  void addServerGameObjectOverlay(std::uint64_t guid, unsigned entry,
+                                  std::string const& model_path,
+                                  glm::vec3 const& position, float yaw, float scale);
+  Noggit::ServerGameObjectOverlay* findServerGameObjectOverlay(std::uint64_t guid);
+  std::optional<std::pair<std::uint64_t, unsigned>> pickServerGameObjectOverlay(
+    math::ray const& ray, float maximum_distance);
+  void removeServerGameObjectOverlay(std::uint64_t guid);
+  void clearServerGameObjectOverlays();
 
   auto stamp(glm::vec3 const& pos, float dt, QImage const* img, float radiusOuter
   , float radiusInner, int BrushType, bool sculpt,
@@ -485,6 +514,7 @@ public:
 
 
   void add_object_group_from_selection();
+  void add_object_group(std::vector<SceneObject*> const& objects);
   // void remove_selection_group(selection_group* group);
 
   void clear_selection_groups();
@@ -526,6 +556,9 @@ protected:
 
   std::mutex _texture_change_mutex;
   std::unordered_set<std::uint32_t> _texture_changed_chunks;
+  std::vector<std::unique_ptr<Noggit::NpcSpawnOverlay>> _npc_spawn_overlays;
+  std::vector<std::unique_ptr<Noggit::ServerGameObjectOverlay>> _server_gameobject_overlays;
+  std::optional<std::uint64_t> _selected_npc_spawn_guid;
 
   // Debug metrics
   unsigned _n_loaded_tiles = 0;

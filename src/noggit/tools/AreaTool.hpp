@@ -4,6 +4,9 @@
 
 #include <noggit/Tool.hpp>
 
+class QLabel;
+class QPushButton;
+
 namespace Noggit
 {
     namespace Ui
@@ -37,12 +40,18 @@ namespace Noggit
 
         virtual void onDeselected();
 
+        void onTick(float deltaTime, TickParameters const& params) override;
+
         void onMouseMove(MouseMoveParameters const& params) override;
 
         void onMousePress(MousePressParameters const& params) override;
 
     private:
+        void setSelectedAreaId(int areaId);
+
         Ui::zone_id_browser* _areaTool = nullptr;
+        QLabel* _selectedAreaLabel = nullptr;
+        QPushButton* _copyAreaIdButton = nullptr;
         int _selectedAreaId = -1;
     };
 }

@@ -88,6 +88,7 @@ void ModelRender::unload()
 
   _uploaded = false;
   _vao_setup = false;
+  _single_instance_vao_setup = false;
 }
 
 void ModelRender::draw(glm::mat4x4 const& model_view
@@ -101,6 +102,11 @@ void ModelRender::draw(glm::mat4x4 const& model_view
     , display_mode display
     , bool no_cull
     , bool animate
+    , ModelAppearanceOverride const* appearance
+    , bool force_animation
+    , float opacity
+    , bool force_alpha_blend
+    , bool force_no_depth_write
 )
 {
   if (!_model->finishedLoading() || _model->loading_failed())
@@ -116,34 +122,45 @@ void ModelRender::draw(glm::mat4x4 const& model_view
   if (!_uploaded)
   {
     upload();
-
-    OpenGL::Scoped::vao_binder const _(_vao);
-
-    {
-        OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const binder(_vertices_buffer);
-        m2_shader.attrib("pos", 3, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), 0);
-        m2_shader.attrib("normal", 3, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), reinterpret_cast<void*> (sizeof(::glm::vec3) + 8));
-        m2_shader.attrib("texcoord1", 2, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), reinterpret_cast<void*> (sizeof(::glm::vec3) * 2 + 8));
-        m2_shader.attrib("texcoord2", 2, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), reinterpret_cast<void*> (sizeof(::glm::vec3) * 2 + 8 + sizeof(glm::vec2)));
-    }
-
-    {
-        OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const transform_binder(_transform_buffer);
-        m2_shader.uniform("transform", instance.transformMatrix());
-    }
   }
 
-  if (_model->animated && animate && (!_model->anim_calculated || _model->_per_instance_animation))
+  if (!_single_instance_vao_setup)
   {
-    _model->animate(model_view, 0, animtime);
+    setupSingleInstanceVAO(m2_shader);
+  }
+
+  // Single-instance users such as skyboxes move with the camera. The transform
+  // must be refreshed every draw, not only on the frame that uploads the VAO.
+  m2_shader.uniform("transform", instance.transformMatrix());
+  m2_shader.uniform("model_opacity", glm::clamp(opacity, 0.0f, 1.0f));
+
+  if (_model->animated && (animate || _model->_per_instance_animation)
+      && (force_animation || !_model->anim_calculated || _model->_per_instance_animation))
+  {
+    _model->animate(model_view * instance.transformMatrix(), 0,
+                    animate || force_animation ? animtime : 0);
     _model->anim_calculated = true;
+  }
+
+  OpenGL::Scoped::vao_binder const vao(_single_instance_vao);
+
+  if (_model->animBones)
+  {
+    gl.activeTexture(GL_TEXTURE0);
+    gl.bindTexture(GL_TEXTURE_BUFFER, _bone_matrices_buf_tex);
+    m2_shader.uniform("anim_bones", true);
+  }
+  else
+  {
+    m2_shader.uniform("anim_bones", false);
   }
 
   OpenGL::Scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> indices_binder(_indices_buffer);
 
   for (ModelRenderPass& p : _render_passes)
   {
-    if (p.prepareDraw(m2_shader, _model, model_render_state))
+    if (p.prepareDraw(m2_shader, _model, model_render_state, appearance,
+                      force_alpha_blend, force_no_depth_write))
     {
       gl.drawElements(GL_TRIANGLES, p.index_count, GL_UNSIGNED_SHORT, reinterpret_cast<void*>(p.index_start * sizeof(GLushort)));
       p.afterDraw();
@@ -170,6 +187,12 @@ void ModelRender::draw(glm::mat4x4 const& model_view
     , bool animate
     , bool draw_fake_geometry_box
     , bool draw_animation_box
+    , ModelAppearanceOverride const* appearance
+    , int animation_id
+    , bool force_animation
+    , int blend_from_animation_id
+    , int blend_from_animation_time
+    , float animation_blend
 )
 {
   ZoneScopedN(NOGGIT_CURRENT_FUNCTION);
@@ -201,11 +224,33 @@ void ModelRender::draw(glm::mat4x4 const& model_view
   {
     ZoneScopedN("Model::draw() : drawing")
 
-    if (_model->animated && animate && (!_model->anim_calculated || _model->_per_instance_animation))
+    m2_shader.uniform("model_opacity", 1.0f);
+    m2_shader.uniform("bones_per_instance", 0);
+
+    auto animate_model = [&](glm::mat4x4 const& animation_view)
     {
-      _model->animate(model_view, 0, animtime);
+      int const selected_animation = _model->_animations_seq_per_id.contains(animation_id)
+        ? animation_id : 0;
+      if (blend_from_animation_id >= 0 && animation_blend < 1.0f)
+      {
+        int const selected_blend_animation =
+          _model->_animations_seq_per_id.contains(blend_from_animation_id)
+            ? blend_from_animation_id : 0;
+        _model->animateBlended(animation_view, selected_blend_animation,
+          blend_from_animation_time, selected_animation, animtime, animation_blend);
+      }
+      else
+      {
+        _model->animate(animation_view, selected_animation,
+                        animate || force_animation ? animtime : 0);
+      }
       _model->anim_calculated = true;
-    }
+    };
+
+    bool const per_instance_billboards = _model->animated && _model->_per_instance_animation;
+    if (_model->animated && animate && !per_instance_billboards
+        && (force_animation || !_model->anim_calculated))
+      animate_model(model_view);
 
     // store the model count to draw the bounding boxes later
     if (all_boxes || _model->_hidden ) 
@@ -231,12 +276,6 @@ void ModelRender::draw(glm::mat4x4 const& model_view
 
     OpenGL::Scoped::vao_binder const _ (_vao);
 
-    {
-      OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const transform_binder (_transform_buffer);
-      gl.bufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(::glm::mat4x4), instances.data(), GL_DYNAMIC_DRAW);
-      //m2_shader.attrib("transform", 0, 1);
-    }
-
     if (_model->animBones)
     {
       gl.activeTexture(GL_TEXTURE0);
@@ -250,13 +289,69 @@ void ModelRender::draw(glm::mat4x4 const& model_view
 
     OpenGL::Scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> indices_binder(_indices_buffer);
 
-    for (ModelRenderPass& p : _render_passes)
+    if (per_instance_billboards && _model->animBones
+        && (blend_from_animation_id < 0 || animation_blend >= 1.0f))
     {
-      if (p.prepareDraw(m2_shader, _model, model_render_state))
+      // Evaluate each placement's billboard bones, then upload the matrices
+      // together. The vertex shader selects its own instance's matrices.
+      // This keeps the orientation correct without one buffer update and
+      // one draw per placement.
+      std::vector<glm::mat4x4> instance_bones;
+      std::size_t const bones_per_instance = _model->bone_matrices.size();
+      instance_bones.reserve(instances.size() * bones_per_instance);
+      int const selected_animation = _model->_animations_seq_per_id.contains(animation_id)
+        ? animation_id : 0;
+      for (auto const& transform : instances)
       {
-        gl.drawElementsInstanced(GL_TRIANGLES, p.index_count, GL_UNSIGNED_SHORT, reinterpret_cast<void*>(p.index_start * sizeof(GLushort)), static_cast<GLsizei>(instances.size()));
-        //p.after_draw();
+        _model->animate(model_view * transform, selected_animation,
+                        animate || force_animation ? animtime : 0, false);
+        instance_bones.insert(instance_bones.end(), _model->bone_matrices.begin(),
+                              _model->bone_matrices.end());
       }
+      _model->anim_calculated = true;
+      {
+        OpenGL::Scoped::buffer_binder<GL_TEXTURE_BUFFER> const bone_binder(_bone_matrices_buffer);
+        gl.bufferData(GL_TEXTURE_BUFFER, instance_bones.size() * sizeof(glm::mat4x4),
+                      instance_bones.data(), GL_STREAM_DRAW);
+      }
+      m2_shader.uniform("bones_per_instance", static_cast<int>(bones_per_instance));
+      {
+        OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const transform_binder(_transform_buffer);
+        gl.bufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(glm::mat4x4),
+                      instances.data(), GL_DYNAMIC_DRAW);
+      }
+      for (ModelRenderPass& p : _render_passes)
+        if (p.prepareDraw(m2_shader, _model, model_render_state, appearance))
+          gl.drawElementsInstanced(GL_TRIANGLES, p.index_count, GL_UNSIGNED_SHORT,
+            reinterpret_cast<void*>(p.index_start * sizeof(GLushort)), static_cast<GLsizei>(instances.size()));
+    }
+    else if (per_instance_billboards)
+    {
+      // Keep the existing path for blended preview animations, where every
+      // placement may have a different animation state.
+      for (auto const& transform : instances)
+      {
+        animate_model(model_view * transform);
+        {
+          OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const transform_binder(_transform_buffer);
+          gl.bufferData(GL_ARRAY_BUFFER, sizeof(transform), &transform, GL_DYNAMIC_DRAW);
+        }
+        for (ModelRenderPass& p : _render_passes)
+          if (p.prepareDraw(m2_shader, _model, model_render_state, appearance))
+            gl.drawElementsInstanced(GL_TRIANGLES, p.index_count, GL_UNSIGNED_SHORT,
+              reinterpret_cast<void*>(p.index_start * sizeof(GLushort)), 1);
+      }
+    }
+    else
+    {
+      {
+        OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const transform_binder(_transform_buffer);
+        gl.bufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(glm::mat4x4), instances.data(), GL_DYNAMIC_DRAW);
+      }
+      for (ModelRenderPass& p : _render_passes)
+        if (p.prepareDraw(m2_shader, _model, model_render_state, appearance))
+          gl.drawElementsInstanced(GL_TRIANGLES, p.index_count, GL_UNSIGNED_SHORT,
+            reinterpret_cast<void*>(p.index_start * sizeof(GLushort)), static_cast<GLsizei>(instances.size()));
     }
   }
 
@@ -330,6 +425,21 @@ void ModelRender::setupVAO(OpenGL::Scoped::use_program& m2_shader)
   }
 
   _vao_setup = true;
+}
+
+void ModelRender::setupSingleInstanceVAO(OpenGL::Scoped::use_program& m2_shader)
+{
+  OpenGL::Scoped::vao_binder const vao(_single_instance_vao);
+
+  OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const binder(_vertices_buffer);
+  m2_shader.attrib("pos",            3, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), 0);
+  m2_shader.attribi("bones_weight",  4, GL_UNSIGNED_BYTE,   sizeof(ModelVertex), reinterpret_cast<void*>(sizeof(glm::vec3)));
+  m2_shader.attribi("bones_indices", 4, GL_UNSIGNED_BYTE,   sizeof(ModelVertex), reinterpret_cast<void*>(sizeof(glm::vec3) + 4));
+  m2_shader.attrib("normal",         3, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), reinterpret_cast<void*>(sizeof(glm::vec3) + 8));
+  m2_shader.attrib("texcoord1",      2, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), reinterpret_cast<void*>(sizeof(glm::vec3) * 2 + 8));
+  m2_shader.attrib("texcoord2",      2, GL_FLOAT, GL_FALSE, sizeof(ModelVertex), reinterpret_cast<void*>(sizeof(glm::vec3) * 2 + 8 + sizeof(glm::vec2)));
+
+  _single_instance_vao_setup = true;
 }
 
 
@@ -799,9 +909,16 @@ ModelRenderPass::ModelRenderPass(ModelTexUnit const& tex_unit, Model* m)
 {
 }
 
-bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model *m, OpenGL::M2RenderState& model_render_state)
+bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model *m,
+                                  OpenGL::M2RenderState& model_render_state,
+                                  ModelAppearanceOverride const* appearance,
+                                  bool force_alpha_blend,
+                                  bool force_no_depth_write)
 {
-  if (invalid_texture_binding || !m->showGeosets[submesh] || !pixel_shader)
+  auto const& visible_geosets = appearance && appearance->geosets
+    ? *appearance->geosets : m->showGeosets;
+  if (invalid_texture_binding || submesh >= visible_geosets.size()
+      || !visible_geosets[submesh] || !pixel_shader)
   {
     return false;
   }
@@ -844,9 +961,14 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
   }
 
 
-  if (model_render_state.blend != renderflag.blend)
+  M2Blend const source_blend = static_cast<M2Blend>(renderflag.blend);
+  M2Blend const effective_blend = force_alpha_blend
+      && (source_blend == M2Blend::Opaque || source_blend == M2Blend::Alpha_Key)
+    ? M2Blend::Alpha : source_blend;
+
+  if (model_render_state.blend != static_cast<std::uint16_t>(effective_blend))
   {
-    switch (static_cast<M2Blend>(renderflag.blend))
+    switch (effective_blend)
     {
       default:
       case M2Blend::Opaque:
@@ -875,9 +997,11 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
         break;
     }
 
-    m2_shader.uniform("blend_mode", static_cast<int>(renderflag.blend));
-    model_render_state.blend = renderflag.blend;
+    model_render_state.blend = static_cast<std::uint16_t>(effective_blend);
   }
+  // Keep shader material semantics tied to the source blend mode even when an
+  // opaque skybox pass temporarily uses alpha blending for a transition.
+  m2_shader.uniform("blend_mode", static_cast<int>(source_blend));
 
   if (model_render_state.backface_cull != !renderflag.flags.two_sided)
   {
@@ -907,6 +1031,11 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
     model_render_state.z_buffered = renderflag.flags.z_buffered;
   }
 
+  if (force_no_depth_write)
+  {
+    gl.depthMask(GL_FALSE);
+  }
+
   if (model_render_state.unfogged != renderflag.flags.unfogged)
   {
     m2_shader.uniform("unfogged", (int)renderflag.flags.unfogged);
@@ -921,11 +1050,11 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
 
   if (texture_count > 1)
   {
-    if (!bindTexture(1, m, model_render_state, m2_shader))
+    if (!bindTexture(1, m, model_render_state, m2_shader, appearance))
       return false;
   }
 
-  if (!bindTexture(0, m, model_render_state, m2_shader))
+  if (!bindTexture(0, m, model_render_state, m2_shader, appearance))
     return false;
 
   GLint tu1 = static_cast<GLint>(tu_lookups[0]), tu2 = static_cast<GLint>(tu_lookups[1]);
@@ -985,7 +1114,10 @@ void ModelRenderPass::afterDraw()
   gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
-bool ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState& model_render_state, OpenGL::Scoped::use_program& m2_shader)
+bool ModelRenderPass::bindTexture(size_t index, Model* m,
+                                  OpenGL::M2RenderState& model_render_state,
+                                  OpenGL::Scoped::use_program& m2_shader,
+                                  ModelAppearanceOverride const* appearance)
 {
   auto fail = [&](char const* reason)
   {
@@ -1011,7 +1143,17 @@ bool ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState&
   if (tex >= m->_specialTextures.size())
     return fail("texture index out of range");
 
-  if (m->_specialTextures[tex] == -1)
+  int special_texture = m->_specialTextures[tex];
+  if (appearance && appearance->replacement_textures
+      && tex < m->_replaceableTextureTypes.size())
+  {
+    int const original_type = m->_replaceableTextureTypes[tex];
+    if (original_type >= 0
+        && appearance->replacement_textures->contains(static_cast<std::size_t>(original_type)))
+      special_texture = original_type;
+  }
+
+  if (special_texture == -1)
   {
     if (tex >= m->_textures.size())
       return fail("texture reference out of range");
@@ -1047,12 +1189,13 @@ bool ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState&
   }
   else
   {
-    int const special_texture = m->_specialTextures[tex];
     if (special_texture < 0)
       return fail("special texture index is invalid");
 
-    auto const replacement = m->_replaceTextures.find(static_cast<std::size_t>(special_texture));
-    if (replacement == m->_replaceTextures.end())
+    auto const& replacements = appearance && appearance->replacement_textures
+      ? *appearance->replacement_textures : m->_replaceTextures;
+    auto const replacement = replacements.find(static_cast<std::size_t>(special_texture));
+    if (replacement == replacements.end())
       return fail("special texture is unavailable");
 
     auto& texture = replacement->second;

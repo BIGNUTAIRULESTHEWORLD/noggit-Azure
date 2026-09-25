@@ -104,6 +104,18 @@ void ModelInstance::draw_box (glm::mat4x4 const& model_view
   gl.enable(GL_BLEND);
   gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+  if (model->loading_failed())
+  {
+    if (is_current_selection)
+    {
+      glm::vec3 const radius{Noggit::MissingObjectPlaceholder::m2_display_scale};
+      Noggit::Rendering::Primitives::WireBox::getInstance(_context).draw(
+        model_view, projection, glm::mat4x4{1.0f},
+        {1.0f, 1.0f, 1.0f, 1.0f}, pos - radius, pos + radius);
+    }
+    return;
+  }
+
   if (is_current_selection)
   {
     // draw bounding box
@@ -308,6 +320,7 @@ void ModelInstance::recalcExtents()
 
   if (model->loading_failed())
   {
+    updateTransformMatrix();
     extents[0] = extents[1] = pos;
     bounding_radius = Noggit::MissingObjectPlaceholder::m2_display_scale;
     _need_recalc_extents = false;

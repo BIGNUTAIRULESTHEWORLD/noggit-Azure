@@ -10,6 +10,7 @@
 #include <noggit/ui/texture_swapper.hpp>
 #include <noggit/ui/TexturingGUI.h>
 #include <noggit/World.h>
+#include <noggit/World.inl>
 
 #include <QtCore/QCoreApplication>
 #include <QtWidgets/QAbstractItemView>
@@ -26,6 +27,7 @@
 #include <QtWidgets/QSlider>
 
 #include <algorithm>
+#include <map>
 #include <set>
 #include <utility>
 #include <vector>
@@ -33,6 +35,9 @@
 namespace
 {
   constexpr std::size_t max_selected_adts = 5;
+  // Match the existing five-ADT operation's worst-case undo footprint while
+  // allowing a narrow painted selection to cross more than five ADT borders.
+  constexpr std::size_t max_selected_chunks = max_selected_adts * 16 * 16;
 
   std::size_t matching_chunk_count(MapTile* tile,
                                    scoped_blp_texture_reference const& texture_to_replace)
@@ -93,6 +98,19 @@ namespace
     return count;
   }
 
+  bool chunk_has_matching_texture(
+      MapChunk* chunk,
+      std::vector<std::pair<scoped_blp_texture_reference,
+                            scoped_blp_texture_reference>> const& replacements)
+  {
+    return chunk && std::any_of(
+        replacements.begin(), replacements.end(), [chunk](auto const& replacement)
+        {
+          return replacement.first != replacement.second
+              && chunk->getTextureSet()->texture_id(replacement.first) >= 0;
+        });
+  }
+
   QString texture_label(scoped_blp_texture_reference const& texture)
   {
     QString path = QString::fromStdString(texture->file_key().filepath());
@@ -129,6 +147,7 @@ namespace Noggit
       _add_batch_replacement_button = new QPushButton(
           tr("Add source -> selected replacement"), this);
       _select_adts_button = new QPushButton("Select nearby ADTs in viewport...", this);
+      _select_chunks_button = new QPushButton("Paint-select chunks in viewport...", this);
       QPushButton* remove_text_adt = new QPushButton(tr("Remove this texture from ADT"), this);
 
       select->setToolTip(tr("Capture the currently selected texture as the texture to replace."));
@@ -136,6 +155,8 @@ namespace Noggit
       _add_batch_replacement_button->setToolTip(
           tr("Add the captured source and currently selected replacement to the reusable batch list."));
       _select_adts_button->setToolTip(tr("Highlight rendered ADTs in the viewport and select up to five for one undoable replacement."));
+      _select_chunks_button->setToolTip(
+          tr("Paint an arbitrary set of rendered chunks and apply the batch mappings only there."));
 
       layout->addRow(new QLabel("Texture to swap"));
       layout->addRow(_texture_to_swap_display);
@@ -162,6 +183,7 @@ namespace Noggit
       _batch_replacement_status->setWordWrap(true);
       layout->addRow(_batch_replacement_status);
       layout->addRow(_select_adts_button);
+      layout->addRow(_select_chunks_button);
 
       _adt_selection_status = new QLabel(this);
       _adt_selection_status->setWordWrap(true);
@@ -242,10 +264,12 @@ namespace Noggit
 
       connect(_select_adts_button, &QPushButton::clicked, this,
               &texture_swapper::begin_viewport_adt_selection);
+      connect(_select_chunks_button, &QPushButton::clicked, this,
+              &texture_swapper::begin_viewport_chunk_selection);
       connect(_apply_selected_adts_button, &QPushButton::clicked, this,
-              &texture_swapper::apply_viewport_adt_selection);
+              &texture_swapper::apply_viewport_selection);
       connect(cancel_adt_selection, &QPushButton::clicked, this,
-              &texture_swapper::cancel_viewport_adt_selection);
+              &texture_swapper::cancel_viewport_selection);
 
       connect(remove_text_adt, &QPushButton::clicked, [this, camera_pos, map_view]() {
           if (_texture_to_swap)
@@ -320,7 +344,7 @@ namespace Noggit
 
     texture_swapper::~texture_swapper()
     {
-      cancel_viewport_adt_selection();
+      cancel_viewport_selection();
     }
 
     void texture_swapper::add_batch_replacement()
@@ -398,15 +422,26 @@ namespace Noggit
       _remove_batch_replacement_button->setEnabled(_batch_replacement_list->currentRow() >= 0);
       _clear_batch_replacements_button->setEnabled(!_batch_replacements.empty());
       _select_adts_button->setEnabled(!_batch_replacements.empty());
-      if (_viewport_adt_selection_active)
+      _select_chunks_button->setEnabled(!_batch_replacements.empty());
+      if (viewport_selection_active())
       {
-        update_viewport_adt_selection_ui();
+        update_viewport_selection_ui();
       }
     }
 
-    bool texture_swapper::viewport_adt_selection_active() const
+    bool texture_swapper::viewport_selection_active() const
     {
-      return _viewport_adt_selection_active;
+      return _viewport_selection_mode != viewport_selection_mode::none;
+    }
+
+    bool texture_swapper::viewport_chunk_selection_active() const
+    {
+      return _viewport_selection_mode == viewport_selection_mode::chunks;
+    }
+
+    float texture_swapper::viewport_chunk_selection_radius() const
+    {
+      return std::max(_radius, 1.f);
     }
 
     void texture_swapper::set_adt_overlay(TileIndex const& index, int value)
@@ -429,24 +464,51 @@ namespace Noggit
       }
     }
 
-    void texture_swapper::update_viewport_adt_selection_ui(QString const& feedback)
+    void texture_swapper::set_chunk_overlay(selected_chunk_index const& index, int value)
     {
-      QString status = tr("Blue ADTs are in render range and selectable. Green ADTs are selected. "
-                          "Click terrain to toggle an ADT.\n\n%1 / %2 ADTs selected.")
-                           .arg(_selected_adts.size())
-                           .arg(max_selected_adts);
+      MapTile* tile = _world->mapIndex.getTile(index.tile_index);
+      if (!tile || !tile->finishedLoading() || tile->loading_failed()
+          || index.x >= 16 || index.z >= 16)
+      {
+        return;
+      }
+
+      tile->getChunk(index.x, index.z)->setChunkMoverOverlay(value);
+    }
+
+    void texture_swapper::update_viewport_selection_ui(QString const& feedback)
+    {
+      QString status;
+      bool has_selection = false;
+      if (_viewport_selection_mode == viewport_selection_mode::adts)
+      {
+        status = tr("Blue ADTs are in render range and selectable. Green ADTs are selected. "
+                    "Click terrain to toggle an ADT.\n\n%1 / %2 ADTs selected.")
+                     .arg(_selected_adts.size())
+                     .arg(max_selected_adts);
+        has_selection = !_selected_adts.empty();
+      }
+      else if (_viewport_selection_mode == viewport_selection_mode::chunks)
+      {
+        status = tr("Blue chunks are in render range and selectable. Green chunks are selected. "
+                    "Paint with Left-drag; hold Ctrl+Left-drag to erase. The Radius setting below "
+                    "controls the selection brush.\n\n%1 / %2 chunks selected.")
+                     .arg(_selected_chunks.size())
+                     .arg(max_selected_chunks);
+        has_selection = !_selected_chunks.empty();
+      }
       if (!feedback.isEmpty())
       {
         status += QStringLiteral("\n") + feedback;
       }
       _adt_selection_status->setText(status);
       _apply_selected_adts_button->setEnabled(
-          !_selected_adts.empty() && !_batch_replacements.empty());
+          has_selection && !_batch_replacements.empty());
     }
 
-    void texture_swapper::refresh_viewport_adt_selection()
+    void texture_swapper::refresh_viewport_selection()
     {
-      if (!_viewport_adt_selection_active)
+      if (!viewport_selection_active())
       {
         return;
       }
@@ -468,23 +530,59 @@ namespace Noggit
 
       for (TileIndex const& previous : _eligible_adts)
       {
-        if (!rendered_adts.contains(previous) && !_selected_adts.contains(previous))
+        if (!rendered_adts.contains(previous))
         {
-          set_adt_overlay(previous, 0);
+          if (_viewport_selection_mode == viewport_selection_mode::adts
+              && !_selected_adts.contains(previous))
+          {
+            set_adt_overlay(previous, 0);
+          }
+          else if (_viewport_selection_mode == viewport_selection_mode::chunks)
+          {
+            for (unsigned chunk_z = 0; chunk_z < 16; ++chunk_z)
+            {
+              for (unsigned chunk_x = 0; chunk_x < 16; ++chunk_x)
+              {
+                selected_chunk_index const index{previous, chunk_x, chunk_z};
+                if (!_selected_chunks.contains(index))
+                {
+                  set_chunk_overlay(index, 0);
+                }
+              }
+            }
+          }
         }
       }
 
       for (TileIndex const& current : rendered_adts)
       {
-        set_adt_overlay(current, _selected_adts.contains(current) ? 2 : 3);
+        if (_viewport_selection_mode == viewport_selection_mode::adts)
+        {
+          set_adt_overlay(current, _selected_adts.contains(current) ? 2 : 3);
+        }
+        else
+        {
+          for (unsigned chunk_z = 0; chunk_z < 16; ++chunk_z)
+          {
+            for (unsigned chunk_x = 0; chunk_x < 16; ++chunk_x)
+            {
+              selected_chunk_index const index{current, chunk_x, chunk_z};
+              set_chunk_overlay(index, _selected_chunks.contains(index) ? 2 : 3);
+            }
+          }
+        }
       }
       for (TileIndex const& selected : _selected_adts)
       {
         set_adt_overlay(selected, 2);
       }
+      for (selected_chunk_index const& selected : _selected_chunks)
+      {
+        set_chunk_overlay(selected, 2);
+      }
 
       _eligible_adts = std::move(rendered_adts);
-      update_viewport_adt_selection_ui();
+      update_viewport_selection_ui();
       _map_view->invalidate();
     }
 
@@ -503,10 +601,12 @@ namespace Noggit
         return;
       }
 
-      _viewport_adt_selection_active = true;
+      _viewport_selection_mode = viewport_selection_mode::adts;
       _eligible_adts.clear();
       _selected_adts.clear();
+      _selected_chunks.clear();
       _select_adts_button->hide();
+      _select_chunks_button->hide();
       _adt_selection_status->show();
       _adt_selection_controls->show();
 
@@ -514,7 +614,7 @@ namespace Noggit
       terrain_params->draw_selection_overlay = true;
       _world->renderer()->markTerrainParamsUniformBlockDirty();
 
-      refresh_viewport_adt_selection();
+      refresh_viewport_selection();
 
       TileIndex const current_adt(*_camera_pos);
       if (_eligible_adts.contains(current_adt))
@@ -522,13 +622,46 @@ namespace Noggit
         _selected_adts.insert(current_adt);
         set_adt_overlay(current_adt, 2);
       }
-      update_viewport_adt_selection_ui();
+      update_viewport_selection_ui();
+      _map_view->invalidate();
+    }
+
+    void texture_swapper::begin_viewport_chunk_selection()
+    {
+      if (_batch_replacements.empty())
+      {
+        QMessageBox::information(this, tr("Texture replacement"),
+                                 tr("Add at least one source-to-replacement mapping to the batch list first."));
+        return;
+      }
+      if (ActionManager::instance()->getCurrentAction())
+      {
+        QMessageBox::warning(this, tr("Texture replacement"),
+                             tr("Finish the current editing action before selecting chunks."));
+        return;
+      }
+
+      _viewport_selection_mode = viewport_selection_mode::chunks;
+      _eligible_adts.clear();
+      _selected_adts.clear();
+      _selected_chunks.clear();
+      _select_adts_button->hide();
+      _select_chunks_button->hide();
+      _adt_selection_status->show();
+      _adt_selection_controls->show();
+
+      auto* terrain_params = _world->renderer()->getTerrainParamsUniformBlock();
+      terrain_params->draw_selection_overlay = true;
+      _world->renderer()->markTerrainParamsUniformBlockDirty();
+
+      refresh_viewport_selection();
+      update_viewport_selection_ui();
       _map_view->invalidate();
     }
 
     bool texture_swapper::toggle_viewport_adt(glm::vec3 const& cursor_pos)
     {
-      if (!_viewport_adt_selection_active)
+      if (_viewport_selection_mode != viewport_selection_mode::adts)
       {
         return false;
       }
@@ -539,32 +672,84 @@ namespace Noggit
       {
         _selected_adts.erase(selected);
         set_adt_overlay(clicked_adt, _eligible_adts.contains(clicked_adt) ? 3 : 0);
-        update_viewport_adt_selection_ui();
+        update_viewport_selection_ui();
         _map_view->invalidate();
         return true;
       }
 
       if (!_eligible_adts.contains(clicked_adt))
       {
-        update_viewport_adt_selection_ui(tr("That ADT is outside the current render range."));
+        update_viewport_selection_ui(tr("That ADT is outside the current render range."));
         return false;
       }
       if (_selected_adts.size() >= max_selected_adts)
       {
-        update_viewport_adt_selection_ui(tr("The five-ADT selection limit has been reached."));
+        update_viewport_selection_ui(tr("The five-ADT selection limit has been reached."));
         return false;
       }
 
       _selected_adts.insert(clicked_adt);
       set_adt_overlay(clicked_adt, 2);
-      update_viewport_adt_selection_ui();
+      update_viewport_selection_ui();
       _map_view->invalidate();
       return true;
     }
 
-    void texture_swapper::cancel_viewport_adt_selection()
+    bool texture_swapper::paint_viewport_chunks(glm::vec3 const& cursor_pos, bool deselect)
     {
-      if (!_viewport_adt_selection_active)
+      if (_viewport_selection_mode != viewport_selection_mode::chunks)
+      {
+        return false;
+      }
+
+      bool changed = false;
+      bool limit_reached = false;
+      _world->for_all_chunks_in_range(
+          cursor_pos, viewport_chunk_selection_radius(),
+          [this, deselect, &changed, &limit_reached](MapChunk* chunk)
+          {
+            if (!chunk || !_eligible_adts.contains(chunk->mt->index))
+            {
+              return false;
+            }
+
+            selected_chunk_index const index{
+                chunk->mt->index, static_cast<unsigned>(chunk->px),
+                static_cast<unsigned>(chunk->py)};
+            if (deselect)
+            {
+              if (_selected_chunks.erase(index))
+              {
+                set_chunk_overlay(index, 3);
+                changed = true;
+              }
+            }
+            else if (!_selected_chunks.contains(index))
+            {
+              if (_selected_chunks.size() >= max_selected_chunks)
+              {
+                limit_reached = true;
+                return false;
+              }
+              _selected_chunks.insert(index);
+              set_chunk_overlay(index, 2);
+              changed = true;
+            }
+            return false; // viewport selection must never dirty an ADT
+          });
+
+      if (changed || limit_reached)
+      {
+        update_viewport_selection_ui(
+            limit_reached ? tr("The chunk selection limit has been reached.") : QString{});
+        _map_view->invalidate();
+      }
+      return changed;
+    }
+
+    void texture_swapper::cancel_viewport_selection()
+    {
+      if (!viewport_selection_active())
       {
         return;
       }
@@ -577,11 +762,17 @@ namespace Noggit
       {
         set_adt_overlay(selected, 0);
       }
+      for (selected_chunk_index const& selected : _selected_chunks)
+      {
+        set_chunk_overlay(selected, 0);
+      }
 
       _eligible_adts.clear();
       _selected_adts.clear();
-      _viewport_adt_selection_active = false;
+      _selected_chunks.clear();
+      _viewport_selection_mode = viewport_selection_mode::none;
       _select_adts_button->show();
+      _select_chunks_button->show();
       _adt_selection_status->hide();
       _adt_selection_controls->hide();
 
@@ -591,16 +782,34 @@ namespace Noggit
       _map_view->invalidate();
     }
 
-    void texture_swapper::apply_viewport_adt_selection()
+    void texture_swapper::apply_viewport_selection()
     {
-      if (!_viewport_adt_selection_active || _selected_adts.empty())
+      if (!viewport_selection_active())
       {
         return;
       }
 
-      std::vector<TileIndex> selected_tiles(_selected_adts.begin(), _selected_adts.end());
-      cancel_viewport_adt_selection();
-      swap_selected_adts(selected_tiles, _map_view);
+      if (_viewport_selection_mode == viewport_selection_mode::adts)
+      {
+        if (_selected_adts.empty())
+        {
+          return;
+        }
+        std::vector<TileIndex> selected_tiles(_selected_adts.begin(), _selected_adts.end());
+        cancel_viewport_selection();
+        swap_selected_adts(selected_tiles, _map_view);
+      }
+      else
+      {
+        if (_selected_chunks.empty())
+        {
+          return;
+        }
+        std::vector<selected_chunk_index> selected_chunks(
+            _selected_chunks.begin(), _selected_chunks.end());
+        cancel_viewport_selection();
+        swap_selected_chunks(selected_chunks, _map_view);
+      }
     }
 
     void texture_swapper::swap_current_adt(glm::vec3 const& camera_pos, MapView* map_view)
@@ -776,6 +985,153 @@ namespace Noggit
 
       QMessageBox::information(this, tr("Texture replacement"),
                                tr("Applied %1 texture mapping%2 to %3 chunk%4 across %5 ADT%6. "
+                                  "The mapping list is still available for the next batch. "
+                                  "Use Save Changed when ready.")
+                                   .arg(_batch_replacements.size())
+                                   .arg(_batch_replacements.size() == 1 ? QString() : QStringLiteral("s"))
+                                   .arg(changed_chunks)
+                                   .arg(changed_chunks == 1 ? QString() : QStringLiteral("s"))
+                                   .arg(affected_tiles.size())
+                                   .arg(affected_tiles.size() == 1 ? QString() : QStringLiteral("s")));
+    }
+
+    void texture_swapper::swap_selected_chunks(
+        std::vector<selected_chunk_index> const& selected_chunks, MapView* map_view)
+    {
+      if (_batch_replacements.empty())
+      {
+        QMessageBox::information(this, tr("Texture replacement"),
+                                 tr("The reusable batch replacement list is empty."));
+        return;
+      }
+      if (ActionManager::instance()->getCurrentAction())
+      {
+        QMessageBox::warning(this, tr("Texture replacement"),
+                             tr("Finish the current editing action before replacing chunk textures."));
+        return;
+      }
+      if (selected_chunks.empty())
+      {
+        return;
+      }
+
+      std::map<TileIndex, std::vector<selected_chunk_index>> chunks_by_tile;
+      for (selected_chunk_index const& index : selected_chunks)
+      {
+        chunks_by_tile[index.tile_index].push_back(index);
+      }
+
+      QProgressDialog progress(tr("Loading selected chunks and scanning all texture mappings..."),
+                               tr("Cancel"), 0, static_cast<int>(chunks_by_tile.size()), map_view);
+      progress.setWindowTitle(tr("Texture replacement preflight"));
+      progress.setWindowModality(Qt::ApplicationModal);
+      progress.setMinimumDuration(0);
+
+      std::vector<MapChunk*> affected_chunks;
+      affected_chunks.reserve(selected_chunks.size());
+      std::set<TileIndex> affected_tiles;
+      std::size_t failed_tiles = 0;
+      std::size_t processed_tiles = 0;
+
+      for (auto const& [tile_index, indices] : chunks_by_tile)
+      {
+        if (progress.wasCanceled())
+        {
+          return;
+        }
+
+        progress.setLabelText(tr("Loading ADT %1_%2 (%3 of %4)...")
+                                  .arg(tile_index.x)
+                                  .arg(tile_index.z)
+                                  .arg(processed_tiles + 1)
+                                  .arg(chunks_by_tile.size()));
+        QCoreApplication::processEvents();
+
+        // Keep full model loading consistent with the ADT-scoped batch path.
+        // Saving a changed tile later rebuilds its placement tables from the
+        // live instances even though this operation only changes textures.
+        MapTile* tile = _world->mapIndex.loadTile(tile_index);
+        if (!tile)
+        {
+          ++failed_tiles;
+        }
+        else
+        {
+          tile->wait_until_loaded();
+          if (tile->loading_failed())
+          {
+            ++failed_tiles;
+          }
+          else
+          {
+            for (selected_chunk_index const& index : indices)
+            {
+              if (index.x >= 16 || index.z >= 16)
+              {
+                continue;
+              }
+              MapChunk* chunk = tile->getChunk(index.x, index.z);
+              if (chunk_has_matching_texture(chunk, _batch_replacements))
+              {
+                affected_chunks.push_back(chunk);
+                affected_tiles.insert(tile_index);
+              }
+            }
+          }
+        }
+
+        progress.setValue(static_cast<int>(++processed_tiles));
+        QCoreApplication::processEvents();
+      }
+
+      if (progress.wasCanceled())
+      {
+        return;
+      }
+      progress.close();
+
+      if (affected_chunks.empty())
+      {
+        QString message = tr("None of the mapped source textures were found on the selected chunks.");
+        if (failed_tiles)
+        {
+          message += tr("\n\n%1 ADT%2 could not be loaded.")
+                         .arg(failed_tiles)
+                         .arg(failed_tiles == 1 ? QString() : QStringLiteral("s"));
+        }
+        QMessageBox::information(this, tr("Texture replacement"), message);
+        return;
+      }
+
+      QString confirmation =
+          tr("Apply %1 texture mapping%2 to %3 matching selected chunk%4 across %5 ADT%6?\n\n"
+             "Only the painted chunk selection will be changed. This creates one undo step. "
+             "The ADTs will remain changed but will not be saved automatically.")
+              .arg(_batch_replacements.size())
+              .arg(_batch_replacements.size() == 1 ? QString() : QStringLiteral("s"))
+              .arg(affected_chunks.size())
+              .arg(affected_chunks.size() == 1 ? QString() : QStringLiteral("s"))
+              .arg(affected_tiles.size())
+              .arg(affected_tiles.size() == 1 ? QString() : QStringLiteral("s"));
+      if (failed_tiles)
+      {
+        confirmation += tr("\n\n%1 ADT%2 containing selected chunks could not be loaded and will be skipped.")
+                            .arg(failed_tiles)
+                            .arg(failed_tiles == 1 ? QString() : QStringLiteral("s"));
+      }
+      if (QMessageBox::question(this, tr("Replace textures on selected chunks"), confirmation,
+                                QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+      {
+        return;
+      }
+
+      ActionManager::instance()->beginAction(map_view, ActionFlags::eCHUNKS_TEXTURE);
+      std::size_t const changed_chunks =
+          _world->swapTexturesOnChunks(affected_chunks, _batch_replacements);
+      ActionManager::instance()->endAction();
+
+      QMessageBox::information(this, tr("Texture replacement"),
+                               tr("Applied %1 texture mapping%2 to %3 selected chunk%4 across %5 ADT%6. "
                                   "The mapping list is still available for the next batch. "
                                   "Use Save Changed when ready.")
                                    .arg(_batch_replacements.size())

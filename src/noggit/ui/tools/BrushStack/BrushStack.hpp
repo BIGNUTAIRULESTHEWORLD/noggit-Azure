@@ -11,6 +11,7 @@
 
 #include <QWidget>
 #include <QJsonObject>
+#include <QPointer>
 #include <QString>
 
 #include <glm/vec3.hpp>
@@ -28,6 +29,7 @@ class QButtonGroup;
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
+class QDockWidget;
 class QGroupBox;
 class QLabel;
 class QPushButton;
@@ -40,12 +42,14 @@ namespace Noggit::Ui::Tools::UiCommon
 
 namespace Noggit::Ui::Tools
 {
+  namespace Stamp { class StampAssetBrowser; }
   class BrushStackItem;
 
   class BrushStack : public QWidget
   {
   public:
     BrushStack(MapView* map_view, QWidget* parent = nullptr);
+    ~BrushStack() override;
 
     void execute(glm::vec3 const& cursor_pos, World* world, float dt, bool mod_shift_down, bool mod_alt_down, bool mod_ctrl_down, bool is_under_map);
 
@@ -125,6 +129,8 @@ namespace Noggit::Ui::Tools
     QLabel* _map_stamp_library_name = nullptr;
     QPushButton* _map_stamp_library_browse = nullptr;
     QString _map_stamp_path;
+    QPointer<QDockWidget> _stamp_browser_dock;
+    QPointer<Stamp::StampAssetBrowser> _stamp_browser;
     QComboBox* _map_stamp_shape = nullptr;
     QWidget* _map_stamp_painted_controls = nullptr;
     QCheckBox* _map_stamp_painted_selection = nullptr;
@@ -133,6 +139,7 @@ namespace Noggit::Ui::Tools
     QCheckBox* _map_stamp_position_lock = nullptr;
     UiCommon::ExtendedSlider* _map_stamp_radius = nullptr;
     QDoubleSpinBox* _map_stamp_edge_blend = nullptr;
+    QCheckBox* _map_stamp_experimental_height_blend = nullptr;
     QDoubleSpinBox* _map_stamp_height_scale = nullptr;
     QDoubleSpinBox* _map_stamp_height_offset = nullptr;
     QCheckBox* _map_stamp_height_drag = nullptr;

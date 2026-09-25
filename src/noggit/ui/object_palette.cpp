@@ -2,27 +2,86 @@
 
 #include "object_palette.hpp"
 
+#include <noggit/application/NoggitApplication.hpp>
 #include <noggit/MapView.h>
 #include <noggit/project/ApplicationProject.h>
-#include <noggit/ui/FontAwesome.hpp>
-#include <noggit/ui/tools/AssetBrowser/Ui/AssetBrowser.hpp>
 #include <noggit/ui/tools/PreviewRenderer/PreviewRenderer.hpp>
 #include <noggit/World.h>
+#include <noggit/ModelInstance.h>
 
 #include <QDockWidget>
-#include <QMimeData>
-#include <QtGui/QDrag>
-#include <QtGui/QDragEnterEvent>
-#include <QtGui/QDropEvent>
-#include <QtGui/QMouseEvent>
-#include <QtWidgets/QApplication>
-#include <QtWidgets/QGridLayout>
+#include <QDialog>
+#include <QCheckBox>
+#include <QDir>
+#include <QFile>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QInputDialog>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QSaveFile>
+#include <QTimer>
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QListWidgetItem>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QVBoxLayout>
 
+#include <cmath>
+#include <exception>
+#include <limits>
 #include <string>
-#include <unordered_set>
+
+namespace
+{
+  QString groupLibraryPath(Noggit::Project::NoggitProject const& project)
+  {
+    return QDir(QString::fromStdString(project.ProjectPath)).filePath("noggit_m2_groups.json");
+  }
+
+  bool loadGroupLibrary(QString const& path, QJsonArray& groups, QString& error)
+  {
+    QFile file(path);
+    if (!file.exists()) return true;
+    if (!file.open(QIODevice::ReadOnly))
+    {
+      error = file.errorString();
+      return false;
+    }
+    QJsonParseError parse_error;
+    auto const document = QJsonDocument::fromJson(file.readAll(), &parse_error);
+    if (parse_error.error != QJsonParseError::NoError || !document.isObject()
+        || !document.object().value("groups").isArray())
+    {
+      error = "The saved groups file is invalid.";
+      return false;
+    }
+    groups = document.object().value("groups").toArray();
+    return true;
+  }
+
+  bool writeGroupLibrary(QString const& path, QJsonArray const& groups, QString& error)
+  {
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly))
+    {
+      error = file.errorString();
+      return false;
+    }
+    QJsonObject root;
+    root.insert("version", 1);
+    root.insert("groups", groups);
+    auto const data = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    if (file.write(data) != data.size() || !file.commit())
+    {
+      error = file.errorString();
+      return false;
+    }
+    return true;
+  }
+}
 
 
 namespace Noggit
@@ -30,226 +89,345 @@ namespace Noggit
   namespace Ui
   {
 
-    ObjectList::ObjectList(QWidget* parent) : QListWidget(parent)
-    {
-      setIconSize(QSize(100, 100));
-      setViewMode(QListWidget::IconMode);
-      setFlow(QListWidget::LeftToRight);
-      setWrapping(true);
-      setSelectionMode(QAbstractItemView::SingleSelection);
-      setSelectionBehavior(QAbstractItemView::SelectItems);
-      setAcceptDrops(false);
-      setMovement(Movement::Static);
-      setResizeMode(QListView::Adjust);
-    }
-
-    void ObjectList::mousePressEvent(QMouseEvent* event)
-    {
-      if (event->button() == Qt::LeftButton)
-        _start_pos = event->pos();
-
-      QListWidget::mousePressEvent(event);
-    }
-
-    void ObjectList::mouseMoveEvent(QMouseEvent* event)
-    {
-      QListWidget::mouseMoveEvent(event);
-
-      if (!(event->buttons() & Qt::LeftButton))
-        return;
-      if ((event->pos() - _start_pos).manhattanLength()
-          < QApplication::startDragDistance())
-        return;
-
-      const QList<QListWidgetItem*> selected_items = selectedItems();
-
-      for (auto item: selected_items)
-      {
-        QMimeData* mimeData = new QMimeData;
-        mimeData->setText(item->toolTip());
-
-
-        QDrag* drag = new QDrag(this);
-        drag->setMimeData(mimeData);
-        drag->setPixmap(item->icon().pixmap(100, 100));
-        drag->exec();
-        return;   // we assume only one item can be selected
-      }
-
-    }
-
     ObjectPalette::ObjectPalette(MapView* map_view, std::shared_ptr<Noggit::Project::NoggitProject> Project, QWidget* parent)
-        : widget(parent), layout(new ::QGridLayout(this)), _map_view(map_view), _project(Project)
+        : widget(parent), _map_view(map_view), _project(Project)
     {
-      setWindowTitle("Object Palette");
+      setWindowTitle("Object Group Browser");
       setWindowFlags(Qt::Tool | Qt::WindowStaysOnTopHint);
-      setMinimumSize(330, 100);
-      setAcceptDrops(true);
+      setMinimumSize(180, 80);
 
-      _object_paths = std::unordered_set<std::string>();
-      _object_list = new ObjectList(this);
+      auto* button_layout = new QVBoxLayout(this);
 
-      layout->addWidget(_object_list, 0, 0);
+      _save_group_button = new QPushButton("Save selected group", this);
+      _save_group_button->setToolTip("Save the selected M2s to this project's group browser");
+      button_layout->addWidget(_save_group_button);
+      connect(_save_group_button, &QAbstractButton::clicked, this, &ObjectPalette::saveSelectedGroup);
 
-      _preview_renderer = new Noggit::Ui::Tools::PreviewRenderer(_object_list->iconSize().width(),
-                                                                 _object_list->iconSize().height(),
-                                                                 Noggit::NoggitRenderContext::OBJECT_PALETTE_PREVIEW,
-                                                                 this);
-      _preview_renderer->setVisible(false);
-
-      // just to initialize context, ugly-ish
-      _preview_renderer->setModelOffscreen("world/wmo/azeroth/buildings/human_farm/farm.wmo");
-      _preview_renderer->renderToPixmap();
-
-      QObject::connect(_object_list, &QListWidget::itemSelectionChanged, [this]()
-        {
-          QListWidgetItem* const item = _object_list->currentItem();
-          if (item)
-          {
-            emit selected(item->toolTip().toStdString());
-          }
-        }
-      );
-
-      QVBoxLayout* button_layout = new QVBoxLayout(this);
-
-      _add_button = new QPushButton(this);
-      _add_button->setToolTip("Add from Asset Browser");
-      _add_button->setIcon(FontAwesomeIcon(FontAwesome::plus));
-      button_layout->addWidget(_add_button);
-      connect(_add_button, &QAbstractButton::clicked, this, &ObjectPalette::addObjectFromAssetBrowser);
-
-      _remove_button = new QPushButton(this);
-      _remove_button->setToolTip("Remove selected Object");
-      _remove_button->setIcon(FontAwesomeIcon(FontAwesome::times));
-      button_layout->addWidget(_remove_button);
-      connect(_remove_button, &QAbstractButton::clicked, this, &ObjectPalette::removeSelectedTexture);
+      _browse_groups_button = new QPushButton("Browse groups", this);
+      button_layout->addWidget(_browse_groups_button);
+      connect(_browse_groups_button, &QAbstractButton::clicked, this, &ObjectPalette::browseSavedGroups);
 
       button_layout->addStretch();
 
-      layout->addLayout(button_layout, 0, 1);
-
-      LoadSavedPalette();
     }
 
-
-    void ObjectPalette::LoadSavedPalette()
+    void ObjectPalette::saveSelectedGroup()
     {
-      unsigned int map_id = _map_view->getWorld()->getMapID();
-      for (auto const& palette : _project->ObjectPalettes)
+      World* const world = _map_view->getWorld();
+      selection_group const* selected_group = nullptr;
+      for (auto const& group : world->_selection_groups)
       {
-        if (palette.MapId == map_id)
+        if (!group.isSelected()) continue;
+        if (selected_group)
         {
-          for (auto const& filename : palette.Filepaths)
-              addObjectByFilename(filename.c_str(), false);
-          break;
-        }
-
-      }
-    }
-
-    void ObjectPalette::SavePalette()
-    {
-        auto palette_obj = Noggit::Project::NoggitProjectObjectPalette();
-        palette_obj.MapId = _map_view->getWorld()->getMapID();
-        for (auto& path : _object_paths)
-            palette_obj.Filepaths.push_back(path);
-
-        _project->saveObjectPalette(palette_obj);
-    }
-
-    void ObjectPalette::addObjectFromAssetBrowser()
-    {
-
-      std::string const& display_name = reinterpret_cast<Noggit::Ui::Tools::AssetBrowser::Ui::AssetBrowserWidget*>(
-          _map_view->getAssetBrowser()->widget())->getFilename();
-
-      addObjectByFilename(display_name.c_str());
-    }
-
-
-    void ObjectPalette::removeObject(QString filename)
-    {
-
-      QList<QListWidgetItem*> objects = _object_list->findItems(filename, Qt::MatchExactly);
-
-      for (auto obj: objects)
-        if (obj->toolTip() == filename)
-        {
-          _object_paths.erase(filename.toStdString());
-          _object_list->removeItemWidget(obj);
-          _add_button->setDisabled(false);
-          delete obj;
+          QMessageBox::information(this, "Save M2 group", "Select one group to save.");
           return;
         }
-
-
-    }
-
-    void ObjectPalette::removeSelectedTexture()
-    {
-
-      QList<QListWidgetItem*> selected_items = _object_list->selectedItems();
-
-      for (auto item: selected_items)
+        selected_group = &group;
+      }
+      std::vector<ModelInstance*> models;
+      glm::vec3 pivot(0.0f);
+      if (selected_group)
       {
-
-        for (auto path: _object_paths)
-          if (path == item->toolTip().toStdString())
+        for (auto const uid : selected_group->getMembers())
+        {
+          auto const selection = world->get_model(uid);
+          if (!selection || selection->index() != eEntry_Object
+              || std::get<selected_object_type>(*selection)->which() != eMODEL)
           {
-            _object_paths.erase(path);
-            _object_list->removeItemWidget(item);
-            _add_button->setDisabled(false);
-            delete item;
+            QMessageBox::warning(this, "Save M2 group", "All group members must be loaded M2s.");
             return;
           }
-
+          models.push_back(static_cast<ModelInstance*>(std::get<selected_object_type>(*selection)));
+        }
       }
-    }
-
-    void ObjectPalette::dragEnterEvent(QDragEnterEvent* event)
-    {
-      if (event->mimeData()->hasText()
-          && (_object_paths.find(event->mimeData()->text().toStdString()) == _object_paths.end())
-          )
-        event->accept();
-    }
-
-    void ObjectPalette::addObjectByFilename(QString const& filename, bool save_palette)
-    {
-      if (filename.isEmpty())
+      else
+      {
+        // Saving an arrangement does not require creating a persistent scene group.
+        for (auto* object : world->get_selected_objects())
+        {
+          if (!object || object->which() != eMODEL)
+          {
+            QMessageBox::warning(this, "Save M2 group", "Select only M2s to save a group.");
+            return;
+          }
+          models.push_back(static_cast<ModelInstance*>(object));
+        }
+      }
+      if (models.size() < 2)
+      {
+        QMessageBox::information(this, "Save M2 group", "Select at least two M2s in the viewport.");
         return;
+      }
+      for (auto const* model : models)
+        pivot += model->pos;
+      pivot /= static_cast<float>(models.size());
 
-      for (auto path: _object_paths)
-        if (path == filename.toStdString())
+      QJsonArray objects;
+      for (auto const* model : models)
+      {
+        QJsonObject object;
+        object.insert("path", QString::fromStdString(model->instance_model()->file_key().filepath()));
+        object.insert("offset", QJsonArray{model->pos.x - pivot.x, model->pos.y - pivot.y, model->pos.z - pivot.z});
+        object.insert("rotation", QJsonArray{float(model->dir.x), float(model->dir.y), float(model->dir.z)});
+        object.insert("scale", model->scale);
+        objects.append(object);
+      }
+
+      QString error;
+      QJsonArray groups;
+      auto const path = groupLibraryPath(*_project);
+      if (!loadGroupLibrary(path, groups, error))
+      {
+        QMessageBox::warning(this, "Save M2 group", error);
+        return;
+      }
+      bool accepted = false;
+      auto const name = QInputDialog::getText(this, "Save M2 group", "Group name:",
+                                             QLineEdit::Normal, QString(), &accepted).trimmed();
+      if (!accepted || name.isEmpty()) return;
+      for (auto const& entry : groups)
+      {
+        if (entry.toObject().value("name").toString().compare(name, Qt::CaseInsensitive) == 0)
+        {
+          QMessageBox::warning(this, "Save M2 group", "A saved group already has that name.");
           return;
-
-      _object_paths.emplace(filename.toStdString());
-
-      QListWidgetItem* list_item = new QListWidgetItem(_object_list);
-      _preview_renderer->setModelOffscreen(filename.toStdString());
-      list_item->setIcon(*_preview_renderer->renderToPixmap());
-      list_item->setData(Qt::DisplayRole, filename);
-      list_item->setToolTip(filename);
-      list_item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
-      list_item->setText("");
-
-      _object_list->addItem(list_item);
-
-      // auto saving whenever an object is added, could change it to manually save
-      if (save_palette)
-        SavePalette();
+        }
+      }
+      QJsonObject group;
+      group.insert("name", name);
+      group.insert("objects", objects);
+      groups.append(group);
+      if (!writeGroupLibrary(path, groups, error))
+        QMessageBox::warning(this, "Save M2 group", error);
     }
 
-    void ObjectPalette::dropEvent(QDropEvent* event)
+    void ObjectPalette::browseSavedGroups()
     {
-      addObjectByFilename(event->mimeData()->text());
-      event->accept();
-    }
+      if (_saved_groups_dialog)
+      {
+        if (_saved_groups_dialog->isMinimized()) _saved_groups_dialog->showNormal();
+        _saved_groups_dialog->raise();
+        _saved_groups_dialog->activateWindow();
+        return;
+      }
 
-    ObjectPalette::~ObjectPalette()
-    {
-      delete _preview_renderer;
+      QString error;
+      auto groups = std::make_shared<QJsonArray>();
+      auto const path = groupLibraryPath(*_project);
+      if (!loadGroupLibrary(path, *groups, error))
+      {
+        QMessageBox::warning(this, "Saved M2 groups", error);
+        return;
+      }
+
+      auto* dialog = new QDialog(_map_view, Qt::Window | Qt::WindowTitleHint
+          | Qt::WindowSystemMenuHint | Qt::WindowMinimizeButtonHint
+          | Qt::WindowMaximizeButtonHint | Qt::WindowCloseButtonHint);
+      _saved_groups_dialog = dialog;
+      dialog->setAttribute(Qt::WA_DeleteOnClose);
+      dialog->setWindowTitle("Saved M2 Groups");
+      dialog->resize(780, 500);
+      auto* layout = new QVBoxLayout(dialog);
+      auto* search = new QLineEdit(dialog);
+      search->setPlaceholderText("Search saved groups or model paths");
+      layout->addWidget(search);
+      auto* browser_content = new QHBoxLayout();
+      auto* list = new QListWidget(dialog);
+      browser_content->addWidget(list, 1);
+      auto* preview = new QLabel("Select a group to preview", dialog);
+      preview->setAlignment(Qt::AlignCenter);
+      preview->setMinimumSize(400, 320);
+      preview->setFrameShape(QFrame::StyledPanel);
+      browser_content->addWidget(preview);
+      layout->addLayout(browser_content, 1);
+      auto* keep_grouped = new QCheckBox("Keep objects grouped after placement", dialog);
+      keep_grouped->setChecked(true);
+      keep_grouped->setToolTip("Uncheck to place the preset as separate M2s that can be moved individually.");
+      layout->addWidget(keep_grouped);
+      auto* buttons = new QHBoxLayout();
+      auto* load = new QPushButton("Load for placement", dialog);
+      auto* rename = new QPushButton("Rename", dialog);
+      auto* remove = new QPushButton("Delete", dialog);
+      buttons->addWidget(load);
+      buttons->addWidget(rename);
+      buttons->addWidget(remove);
+      layout->addLayout(buttons);
+
+      // Model VAOs belong to their offscreen GL context, so this browser cannot
+      // share the palette thumbnail renderer's model cache.
+      auto* preview_renderer = new Noggit::Ui::Tools::PreviewRenderer(
+        400, 320, Noggit::NoggitRenderContext::M2_GROUP_PREVIEW, dialog);
+      preview_renderer->hide();
+      auto* preview_timer = new QTimer(dialog);
+      preview_timer->setSingleShot(true);
+      preview_timer->setInterval(100);
+      connect(preview_timer, &QTimer::timeout, dialog, [groups, list, preview, preview_renderer]()
+      {
+        auto* item = list->currentItem();
+        if (!item || item->isHidden())
+        {
+          preview->setText("Select a group to preview");
+          return;
+        }
+
+        auto const objects = groups->at(item->data(Qt::UserRole).toInt())
+                                  .toObject().value("objects").toArray();
+        std::vector<Noggit::Ui::Tools::M2GroupPreviewInstance> entries;
+        entries.reserve(objects.size());
+        for (auto const& value : objects)
+        {
+          auto const object = value.toObject();
+          auto const path = object.value("path").toString();
+          auto const offset = object.value("offset").toArray();
+          auto const rotation = object.value("rotation").toArray();
+          double const scale = object.value("scale").toDouble();
+          if (!path.endsWith(".m2", Qt::CaseInsensitive)
+              || !Noggit::Application::NoggitApplication::instance()->clientData()->exists(path.toStdString())
+              || offset.size() != 3 || rotation.size() != 3
+              || !std::isfinite(scale) || scale <= 0.0
+              || scale > std::numeric_limits<float>::max()
+              || !offset.at(0).isDouble() || !offset.at(1).isDouble() || !offset.at(2).isDouble()
+              || !rotation.at(0).isDouble() || !rotation.at(1).isDouble() || !rotation.at(2).isDouble())
+          {
+            preview->setText("Preview unavailable: missing or invalid M2 data");
+            return;
+          }
+          auto const position = glm::vec3(offset.at(0).toDouble(), offset.at(1).toDouble(),
+                                          offset.at(2).toDouble());
+          auto const direction = glm::vec3(rotation.at(0).toDouble(), rotation.at(1).toDouble(),
+                                           rotation.at(2).toDouble());
+          if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)
+              || !std::isfinite(direction.x) || !std::isfinite(direction.y) || !std::isfinite(direction.z))
+          {
+            preview->setText("Preview unavailable: invalid M2 transform");
+            return;
+          }
+          entries.push_back({path.toStdString(), position, direction, static_cast<float>(scale)});
+        }
+        if (entries.empty())
+        {
+          preview->setText("Preview unavailable: empty group");
+          return;
+        }
+        try
+        {
+          preview_renderer->setM2GroupOffscreen(entries);
+          preview->setPixmap(*preview_renderer->renderToPixmap());
+        }
+        catch (std::exception const&)
+        {
+          preview->setText("Preview unavailable: could not render this group");
+        }
+      });
+      connect(list, &QListWidget::currentItemChanged, dialog,
+              [=](QListWidgetItem*, QListWidgetItem*)
+      {
+        preview->setText("Loading preview...");
+        preview_timer->start();
+      });
+
+      auto populate = [groups, list, search, preview](int selected_index = -1)
+      {
+        list->clear();
+        for (int i = 0; i < groups->size(); ++i)
+        {
+          auto const group = groups->at(i).toObject();
+          auto const objects = group.value("objects").toArray();
+          auto* item = new QListWidgetItem(
+            QString("%1 (%2 M2s)").arg(group.value("name").toString()).arg(objects.size()), list);
+          item->setData(Qt::UserRole, i);
+          QStringList paths;
+          for (auto const& object : objects) paths.append(object.toObject().value("path").toString());
+          item->setToolTip(paths.join('\n'));
+          item->setHidden(!item->text().contains(search->text(), Qt::CaseInsensitive)
+                          && !item->toolTip().contains(search->text(), Qt::CaseInsensitive));
+        }
+        for (int i = 0; i < list->count(); ++i)
+          if (!list->item(i)->isHidden()
+              && list->item(i)->data(Qt::UserRole).toInt() == selected_index)
+          {
+            list->setCurrentItem(list->item(i));
+            break;
+          }
+        for (int i = 0; !list->currentItem() && i < list->count(); ++i)
+          if (!list->item(i)->isHidden())
+          {
+            list->setCurrentItem(list->item(i));
+            break;
+          }
+        if (!list->currentItem()) preview->setText("No matching groups");
+      };
+      connect(search, &QLineEdit::textChanged, dialog, [populate](QString const&) { populate(); });
+      auto load_group = [this, groups, list, keep_grouped]()
+      {
+        auto* item = list->currentItem();
+        if (!item || item->isHidden()) return;
+        emit savedGroupSelected(groups->at(item->data(Qt::UserRole).toInt())
+                                    .toObject().value("objects").toArray(),
+                                keep_grouped->isChecked());
+      };
+      connect(load, &QPushButton::clicked, this, load_group);
+      connect(list, &QListWidget::itemDoubleClicked, this, [load_group](QListWidgetItem* item)
+      {
+        if (item && !item->isHidden()) load_group();
+      });
+      connect(rename, &QPushButton::clicked, dialog, [groups, list, dialog, path, populate]()
+      {
+        auto* item = list->currentItem();
+        if (!item || item->isHidden()) return;
+        auto const index = item->data(Qt::UserRole).toInt();
+        auto group = groups->at(index).toObject();
+        bool accepted = false;
+        auto const name = QInputDialog::getText(dialog, "Rename group", "Group name:",
+                                               QLineEdit::Normal,
+                                               group.value("name").toString(), &accepted).trimmed();
+        if (!accepted) return;
+        if (name.isEmpty())
+        {
+          QMessageBox::warning(dialog, "Rename group", "Enter a group name.");
+          return;
+        }
+        for (int i = 0; i < groups->size(); ++i)
+        {
+          if (i != index && groups->at(i).toObject().value("name").toString()
+                                .compare(name, Qt::CaseInsensitive) == 0)
+          {
+            QMessageBox::warning(dialog, "Rename group", "A saved group already has that name.");
+            return;
+          }
+        }
+        if (group.value("name").toString() == name) return;
+        group.insert("name", name);
+        auto updated = *groups;
+        updated.replace(index, group);
+        QString save_error;
+        if (!writeGroupLibrary(path, updated, save_error))
+        {
+          QMessageBox::warning(dialog, "Rename group", save_error);
+          return;
+        }
+        *groups = updated;
+        populate(index);
+      });
+      connect(remove, &QPushButton::clicked, dialog, [groups, list, dialog, path, populate]()
+      {
+        auto* item = list->currentItem();
+        if (!item || item->isHidden()) return;
+        auto const index = item->data(Qt::UserRole).toInt();
+        auto updated = *groups;
+        updated.removeAt(index);
+        QString save_error;
+        if (!writeGroupLibrary(path, updated, save_error))
+        {
+          QMessageBox::warning(dialog, "Saved M2 groups", save_error);
+          return;
+        }
+        *groups = updated;
+        populate();
+      });
+      populate();
+      dialog->show();
     }
 
   }

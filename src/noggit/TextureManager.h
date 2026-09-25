@@ -139,7 +139,7 @@ namespace Noggit
     BLPRenderer( const BLPRenderer&) = delete;
     BLPRenderer& operator=( BLPRenderer& ) = delete;
 
-    std::map<std::tuple<std::string, int, int>, QPixmap> _cache;
+    std::map<std::tuple<std::string, int, int, bool>, QPixmap> _cache;
 
     std::unique_ptr<QOpenGLContext> _context;
     std::unique_ptr<QOpenGLFramebufferObjectFormat> _fmt;
@@ -154,7 +154,8 @@ namespace Noggit
   public:
     static BLPRenderer& getInstance();
 
-    QPixmap* render_blp_to_pixmap ( std::string const& blp_filename, int width = -1, int height = -1);
+    QPixmap* render_blp_to_pixmap ( std::string const& blp_filename, int width = -1,
+                                    int height = -1, bool preserve_alpha = false);
     void unload();
     void upload();
 

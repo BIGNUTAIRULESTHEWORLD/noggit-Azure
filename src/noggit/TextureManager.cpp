@@ -46,6 +46,9 @@ void TextureManager::unload_all(Noggit::NoggitRenderContext context)
   {
     gl.deleteTextures(static_cast<GLuint>(pair.second.arrays.size()), pair.second.arrays.data());
   }
+  // OpenGL may reuse these names for map textures after the preview closes.
+  // A later preview unload must not delete those newly allocated textures.
+  arrays_for_context.clear();
 }
 
 TexArrayParams& TextureManager::get_tex_array(int width, int height, int mip_level,
@@ -590,6 +593,7 @@ namespace Noggit
     QPixmap* BLPRenderer::render_blp_to_pixmap ( std::string const& blp_filename
                                                , int width
                                                , int height
+                                               , bool preserve_alpha
                                                )
   {
     if (!_uploaded)
@@ -598,7 +602,8 @@ namespace Noggit
       upload();
     }
 
-    std::tuple<std::string, int, int> const curEntry{blp_filename, width, height};
+    std::tuple<std::string, int, int, bool> const curEntry{
+      blp_filename, width, height, preserve_alpha};
     auto it{_cache.find(curEntry)};
 
     if(it != _cache.end())
@@ -633,6 +638,7 @@ namespace Noggit
     shader.uniform("tex", 0);
     shader.uniform("width", w);
     shader.uniform("height", h);
+    shader.uniform("preserve_alpha", preserve_alpha ? 1 : 0);
 
     gl.bindTexture(GL_TEXTURE_2D_ARRAY, texture.texture_array());
     shader.uniform("tex_index", texture.array_index());
@@ -742,6 +748,7 @@ namespace Noggit
 
                                   uniform sampler2DArray tex;
                                   uniform int tex_index;
+                                  uniform int preserve_alpha;
 
                                   in vec2 f_tex_coord;
 
@@ -749,7 +756,8 @@ namespace Noggit
 
                                   void main()
                                   {
-                                    out_color = vec4(texture(tex, vec3(f_tex_coord/2.f + vec2(0.5), tex_index)).rgb, 1.);
+                                    vec4 sampled = texture(tex, vec3(f_tex_coord/2.f + vec2(0.5), tex_index));
+                                    out_color = vec4(sampled.rgb, preserve_alpha != 0 ? sampled.a : 1.);
                                   }
                                   )code"
                                }

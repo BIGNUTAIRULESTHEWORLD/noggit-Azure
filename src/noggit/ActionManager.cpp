@@ -162,6 +162,10 @@ void ActionManager::undo()
   _undo_index++;
   emit currentActionChanged(_undo_index);
   emit historyNavigated();
+  if (action->getFlags() & (ActionFlags::eOBJECTS_ADDED
+                            | ActionFlags::eOBJECTS_REMOVED
+                            | ActionFlags::eOBJECTS_TRANSFORMED))
+    emit objectHistoryNavigated();
 }
 
 void ActionManager::redo()
@@ -182,6 +186,10 @@ void ActionManager::redo()
   _undo_index--;
   emit currentActionChanged(_undo_index);
   emit historyNavigated();
+  if (action->getFlags() & (ActionFlags::eOBJECTS_ADDED
+                            | ActionFlags::eOBJECTS_REMOVED
+                            | ActionFlags::eOBJECTS_TRANSFORMED))
+    emit objectHistoryNavigated();
 }
 
 void ActionManager::remapObjectUID(unsigned old_uid, unsigned new_uid,
@@ -196,6 +204,32 @@ void ActionManager::remapObjectUID(unsigned old_uid, unsigned new_uid,
   for (Action* action : _action_stack)
     if (action != source_action)
       action->remapObjectUID(old_uid, new_uid);
+}
+
+void ActionManager::discardNpcEdits(std::uint64_t guid, unsigned domains)
+{
+  // Saving one NPC field group commits only that group. Preserve unrelated
+  // terrain history and any still-unsaved edits to this or other NPCs.
+  unsigned const applied_count = static_cast<unsigned>(_action_stack.size()) - _undo_index;
+  unsigned kept_applied = 0;
+  std::deque<Action*> kept;
+  for (unsigned i = 0; i < _action_stack.size(); ++i)
+  {
+    Action* action = _action_stack[i];
+    if (action->editsNpc(guid, domains))
+      delete action;
+    else
+    {
+      kept.push_back(action);
+      if (i < applied_count) ++kept_applied;
+    }
+  }
+  if (kept.size() == _action_stack.size()) return;
+  _action_stack = std::move(kept);
+  _undo_index = static_cast<unsigned>(_action_stack.size()) - kept_applied;
+  emit purged();
+  for (Action* action : _action_stack) emit addedAction(action);
+  emit currentActionChanged(_undo_index);
 }
 
 ActionManager::~ActionManager()

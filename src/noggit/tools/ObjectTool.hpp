@@ -59,6 +59,7 @@ namespace Noggit
         void onSelected() override;
 
         void onDeselected() override;
+        void unload() override;
 
         void onTick(float deltaTime, TickParameters const& params) override;
 
@@ -90,8 +91,11 @@ namespace Noggit
         float _keyx = 0, _keyy = 0, _keyz = 0, _keyr = 0, _keys = 0;
         float _mh = 0, _mv = 0, _rh = 0, _rv = 0; // mh = left click x, rv = right click y
         bool _moveObject = false;
+        enum class ScatterGesture { Paint, Resize, Pick };
+        ScatterGesture _scatterGesture = ScatterGesture::Paint;
 
         void setupHotkeys();
+        void addHotkey(StringHash name, Hotkey hotkey);
         void updateRotationEditor();
     };
 }

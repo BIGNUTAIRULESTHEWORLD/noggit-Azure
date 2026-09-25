@@ -18,6 +18,7 @@ class StackedWidget;
 class World;
 
 class QListWidget;
+class QStackedWidget;
 
 namespace Noggit::Application
 {
@@ -74,7 +75,6 @@ namespace Noggit::Ui::Windows
 
       QMenuBar* _menuBar;
 
-      QToolBar* _app_toolbar;
 
       // std::unique_ptr<World> _world;
 
@@ -123,6 +123,7 @@ namespace Noggit::Ui::Windows
       QListWidget* _continents_table;
       QString _filter_name;
       QTabWidget* _right_side;
+      QStackedWidget* _map_preview_stack = nullptr;
 
       void applyFilterSearch(const QString& name, int type, int expansion, bool wmo_maps);
 

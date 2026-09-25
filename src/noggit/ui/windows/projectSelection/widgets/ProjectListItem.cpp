@@ -15,8 +15,8 @@ namespace Noggit::Ui::Widget
     setAttribute(Qt::WA_StyledBackground, false);
 
     auto layout = new QHBoxLayout(this);
-    layout->setContentsMargins(68, 15, 12, 10);
-    layout->setSpacing(0);
+    layout->setContentsMargins(12, 8, 10, 8);
+    layout->setSpacing(10);
 
     QIcon icon;
     if (data.project_version == Project::ProjectVersion::WOTLK)
@@ -24,21 +24,23 @@ namespace Noggit::Ui::Widget
     if (data.project_version == Project::ProjectVersion::SL)
       icon = QIcon(":/icon-shadow");
     _project_version_icon = new QLabel(this);
-    _project_version_icon->setFixedSize(0, 0);
+    _project_version_icon->setFixedSize(36, 36);
     _project_version_icon->setAlignment(Qt::AlignCenter);
-    _project_version_icon->hide();
+    _project_version_icon->setPixmap(icon.pixmap(QSize(36, 36)));
 
     auto project_name = toCamelCase(QString(data.project_name));
     _project_name_label = new QLabel(project_name, this);
     _project_name_label->setObjectName("project-title-label");
-    _project_name_label->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+    _project_name_label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    _project_name_label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    _project_name_label->setToolTip(project_name);
 
     _project_directory_label = new QLabel(data.project_directory, this);
     _project_directory_label->setObjectName("project-information");
     _project_directory_label->setToolTip(data.project_directory);
-    _project_directory_label->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+    _project_directory_label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     _project_directory_label->setText(
-        _project_directory_label->fontMetrics().elidedText(data.project_directory, Qt::ElideMiddle, 165));
+        _project_directory_label->fontMetrics().elidedText(data.project_directory, Qt::ElideMiddle, 190));
 
     QString version;
     if (data.project_version == Project::ProjectVersion::WOTLK)
@@ -48,7 +50,7 @@ namespace Noggit::Ui::Widget
 
     _project_version_label = new QLabel(version, this);
     _project_version_label->setObjectName("project-information");
-    _project_version_label->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+    _project_version_label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
     auto information_layout = new QVBoxLayout();
     information_layout->setContentsMargins(0, 0, 0, 0);
@@ -91,13 +93,14 @@ namespace Noggit::Ui::Widget
 
     setContextMenuPolicy(Qt::CustomContextMenu);
 
+    layout->addWidget(_project_version_icon);
     layout->addLayout(information_layout, 1);
     layout->addLayout(trailing_layout, 0);
   }
 
   QSize ProjectListItem::minimumSizeHint() const
   {
-    return QSize(250, 108);
+    return QSize(250, 78);
   }
 
   QString ProjectListItem::toCamelCase(const QString& s)

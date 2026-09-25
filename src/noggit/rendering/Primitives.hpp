@@ -111,6 +111,9 @@ namespace Noggit::Rendering::Primitives
              , math::radians inclination
              , math::radians orientation
              , glm::vec4  const& color
+             , bool water_grid_preview = false
+             , float inner_radius_ratio = 0.f
+             , int brush_falloff = 1
              );
     void unload();
   private:

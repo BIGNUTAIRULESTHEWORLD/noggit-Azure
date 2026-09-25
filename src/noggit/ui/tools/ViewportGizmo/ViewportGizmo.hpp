@@ -11,6 +11,7 @@
 
 class MapView;
 class World;
+namespace Noggit { class NpcSpawnOverlay; }
 
 namespace Noggit
 {
@@ -40,6 +41,9 @@ namespace Noggit
 
             void handleTransformGizmo(MapView* map_view
                 , std::vector<selection_type> const& selection
+                , glm::mat4x4 const& model_view
+                , glm::mat4x4 const& projection);
+            bool handleNpcTransformGizmo(Noggit::NpcSpawnOverlay& overlay
                 , glm::mat4x4 const& model_view
                 , glm::mat4x4 const& projection);
 

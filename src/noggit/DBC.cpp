@@ -14,6 +14,7 @@ LoadingScreensDB gLoadingScreensDB;
 LightDB gLightDB;
 LightParamsDB gLightParamsDB;
 LightSkyboxDB gLightSkyboxDB;
+WeatherDB gWeatherDB;
 LightIntBandDB gLightIntBandDB;
 LightFloatBandDB gLightFloatBandDB;
 GroundEffectDoodadDB gGroundEffectDoodadDB;
@@ -26,6 +27,8 @@ ZoneMusicDB gZoneMusicDB;
 ZoneIntroMusicTableDB gZoneIntroMusicTableDB;
 SoundEntriesDB gSoundEntriesDB;
 WMOAreaTableDB gWMOAreaTableDB;
+FactionDB gFactionDB;
+FactionTemplateDB gFactionTemplateDB;
 
 void OpenDBs(std::shared_ptr<BlizzardArchive::ClientData> clientData)
 {
@@ -52,6 +55,9 @@ void OpenDBs(std::shared_ptr<BlizzardArchive::ClientData> clientData)
     gZoneIntroMusicTableDB.open(clientData);
     gSoundEntriesDB.open(clientData);
     gWMOAreaTableDB.open(clientData);
+    gFactionDB.open(clientData);
+    gFactionTemplateDB.open(clientData);
+    gWeatherDB.open(clientData);
   }
   catch (BlizzardArchive::Exceptions::FileReadFailedError const& e)
   {

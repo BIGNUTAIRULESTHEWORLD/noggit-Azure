@@ -329,7 +329,13 @@ std::optional<SkyParam*> Sky::getParam(int param_index) const
 
 std::optional<SkyParam*> Sky::getCurrentParam() const
 {
-  return getParam(curr_sky_param);
+  auto current = getParam(curr_sky_param);
+  if (current.has_value() || curr_sky_param == SKY_PARAM_CLEAR)
+    return current;
+
+  // Some lights omit one or more weather variants. The client retains the
+  // light's clear profile in that case instead of dropping all lighting data.
+  return getParam(SKY_PARAM_CLEAR);
 }
 
 float Sky::floatParamFor(int r, int t) const
@@ -783,7 +789,7 @@ Sky* Skies::findSkyWeights(glm::vec3 pos)
 
   for (auto& sky : skies)
   {
-    if (sky.pos == glm::vec3(0, 0, 0))
+    if (sky.global)
     {
       default_sky_id = sky.Id;
       break;
@@ -799,18 +805,21 @@ Sky* Skies::findSkyWeights(glm::vec3 pos)
   {
     float distance_to_light = glm::distance(pos, sky.pos);
 
-    if (sky.Id == default_sky_id || distance_to_light > sky.r2)
+    if (sky.global || distance_to_light > sky.r2)
     {
       sky.weight = 0.f;
       continue;
     }
 
     float length_of_falloff = sky.r2 - sky.r1;
-    sky.weight = (sky.r2 - distance_to_light) / length_of_falloff;
-
-    if (distance_to_light <= sky.r1)
+    if (distance_to_light <= sky.r1 || length_of_falloff <= 0.0f)
     {
       sky.weight = 1.0f;
+    }
+    else
+    {
+      sky.weight = glm::clamp((sky.r2 - distance_to_light) / length_of_falloff,
+                              0.0f, 1.0f);
     }
 
   }
@@ -876,13 +885,17 @@ Sky* Skies::findClosestSkyByDistance(glm::vec3 pos)
 
 void Skies::setCurrentParam(int param_id)
 {
-  assert(param_id < NUM_SkyParamsNames);
+  assert(param_id >= 0 && param_id < NUM_SkyParamsNames);
+
+  active_param = static_cast<SkyParamsNames>(param_id);
 
   for (auto& sky : skies)
   {
       Sky* skyptr = &sky;
       skyptr->curr_sky_param = param_id;
   }
+
+  force_update();
 }
 
 void Skies::update_sky_colors(glm::vec3 pos, int time, bool global_only)
@@ -894,6 +907,15 @@ void Skies::update_sky_colors(glm::vec3 pos, int time, bool global_only)
   _force_update = false;
 
   Sky* default_sky = findSkyWeights(pos);
+
+  // The global-lighting preference also governs model skyboxes. Previously it
+  // skipped local color blending but left local skybox weights active.
+  if (global_only)
+  {
+    for (Sky& sky : skies)
+      if (!sky.global)
+        sky.weight = 0.0f;
+  }
 
   // initialize lightning with default(global) light
   if (default_sky && default_sky->getCurrentParam().has_value())
@@ -1019,20 +1041,10 @@ void Skies::update_sky_colors(glm::vec3 pos, int time, bool global_only)
     }
   }
 
-  const float fogEnd = _fog_distance / 36.f;
-  const float fogStart = _fog_multiplier * fogEnd;
-  const float fogRange = fogEnd - fogStart;
-
-  // constexpr float fogFarClip = 500.f; // Max fog farclip possible
-  constexpr float fogFarClip = 1583.333374f; // 1583.333374 for wrath/tbc zones, 791.666687 for vanilla zones
-
-  if (fogRange <= fogFarClip)
-  {
-    _fog_rate = ((1.0f - (fogRange / fogFarClip)) * 5.5f) + 1.5f;
-  } else
-  {
-    _fog_rate = 1.5f;
-  }
+  // LightFloatBand defines the fog start and end distances. Applying the old
+  // distance-dependent exponent on top made short-range zone lights nearly
+  // opaque well before their authored fog end (notably Arathi and Wetlands).
+  _fog_rate = 1.0f;
 
   _last_pos = pos;
   _last_time = time;
@@ -1082,77 +1094,162 @@ bool Skies::draw(glm::mat4x4 const& model_view
       shader.uniform("model_view_projection", projection * model_view);
       shader.uniform("camera_pos", glm::vec3(camera_pos.x, camera_pos.y, camera_pos.z));
 
+      int wrapped_time = time % DAY_DURATION;
+      if (wrapped_time < 0)
+        wrapped_time += DAY_DURATION;
+      float const day_fraction = static_cast<float>(wrapped_time) / DAY_DURATION;
+      float const solar_angle = day_fraction * (glm::pi<float>() * 2.0f)
+        - glm::pi<float>() * 0.5f;
+      float const solar_azimuth = glm::radians(-45.0f);
+      glm::vec3 const sun_direction = glm::normalize(glm::vec3(
+        glm::cos(solar_angle) * glm::cos(solar_azimuth),
+        glm::sin(solar_angle),
+        glm::cos(solar_angle) * glm::sin(solar_azimuth)));
+
+      shader.uniform("sun_direction", sun_direction);
+      shader.uniform("sun_color", color_set[SUN_COLOR]);
+      shader.uniform("sun_halo_color", color_set[SUN_CLOUD_COLOR]);
+      shader.uniform("cloud_emissive_color", color_set[CLOUD_EMISSIVE_COLOR]);
+      shader.uniform("cloud_layer1_color", color_set[CLOUD_LAYER1_AMBIENT_COLOR]);
+      shader.uniform("cloud_layer2_color", color_set[CLOUD_LAYER2_AMBIENT_COLOR]);
+      shader.uniform("celestial_glow", _celestial_glow);
+      shader.uniform("cloud_density", _cloud_density);
+      shader.uniform("night_intensity", light_stats.nightIntensity);
+      shader.uniform("day_fraction", day_fraction);
+
       gl.drawElements(GL_TRIANGLES, _indices_count, GL_UNSIGNED_SHORT, nullptr);
     }
   }
 
   if (draw_skybox)
   {
-    bool combine_flag = false;
-    bool has_skybox = false;
-
-    // only draw one skybox model ?
-    for (Sky& sky : skies)
+    struct SkyboxLayer
     {
-      auto param_opt = sky.getCurrentParam();
-      if (sky.weight > 0.f && param_opt.has_value() && param_opt.value()->skybox)
-      {
-        has_skybox = true;
+      SkyParam* param = nullptr;
+      float contribution = 0.0f;
+      float opacity = 0.0f;
+    };
 
-        SkyParam* curr_param = param_opt.value();
+    // update_sky_colors applies local lights from lowest to highest priority.
+    // Convert those sequential blends into final contributions so missing
+    // skyboxes reveal the procedural sky and overlapping skyboxes sum to one.
+    std::vector<float> contributions(skies.size(), 0.0f);
+    float remaining = 1.0f;
+    for (std::size_t reverse_index = skies.size(); reverse_index > 0; --reverse_index)
+    {
+      std::size_t const index = reverse_index - 1;
+      if (skies[index].global)
+        continue;
 
-        if ((curr_param->skyboxFlags & LIGHT_SKYBOX_COMBINE))
-            combine_flag = true; // flag 0x2 = still render stars, sun and moons and clouds
-    
-        auto& model = curr_param->skybox.value();
-        model.model->trans = sky.weight;
-        model.pos = camera_pos;
-        model.scale = 0.1f;
-        model.recalcExtents();
-    
-        OpenGL::M2RenderState model_render_state;
-        model_render_state.tex_arrays = {0, 0};
-        model_render_state.tex_indices = {0, 0};
-        model_render_state.tex_unit_lookups = {-1, -1};
-        gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        gl.disable(GL_BLEND);
-        gl.depthMask(GL_TRUE);
-        m2_shader.uniform("blend_mode", 0);
-        m2_shader.uniform("unfogged", static_cast<int>(model_render_state.unfogged));
-        m2_shader.uniform("unlit",  static_cast<int>(model_render_state.unlit));
-        m2_shader.uniform("tex_unit_lookup_1", 0);
-        m2_shader.uniform("tex_unit_lookup_2", 0);
-        m2_shader.uniform("pixel_shader", 0);
-
-        int skyboxtime = animtime;
-        if ((curr_param->skyboxFlags & LIGHT_SKYBOX_FULL_DAY))
-        {
-          unsigned int anim_lenght = model.model->get_anim_lenght(0);
-
-          // Calculate the normalized time within the day (0.0 to 1.0)
-          float day_fraction = static_cast<float>(time % DAY_DURATION) / DAY_DURATION;
-
-          // animation time from day time %
-          skyboxtime = static_cast<int>(day_fraction * anim_lenght);
-        }
-    
-        model.model->renderer()->draw(model_view
-                                     , model
-                                     , m2_shader
-                                     , model_render_state
-                                     , frustum
-                                     , 1000000
-                                     , camera_pos
-                                     , skyboxtime
-                                     , display_mode::in_3D
-                                     , true
-                                     , true);
-      }
+      float const weight = glm::clamp(skies[index].weight, 0.0f, 1.0f);
+      contributions[index] = weight * remaining;
+      remaining *= 1.0f - weight;
     }
-    // if it's night, draw the stars
-    if (light_stats.nightIntensity > 0 && (combine_flag || !has_skybox))
+
+    std::vector<SkyboxLayer> layers;
+    float procedural_celestial_contribution = 0.0f;
+    auto add_layer = [&](Sky& sky, float contribution)
     {
-      stars.model->trans = light_stats.nightIntensity;
+      if (contribution <= 0.0001f)
+        return;
+
+      auto const param_opt = sky.getCurrentParam();
+      SkyParam* const param = param_opt.has_value() ? param_opt.value() : nullptr;
+      bool const has_skybox = param && param->skybox.has_value();
+      bool const combines_procedural = has_skybox
+        && (param->skyboxFlags & LIGHT_SKYBOX_COMBINE);
+
+      if (!has_skybox || combines_procedural)
+        procedural_celestial_contribution += contribution;
+      if (has_skybox)
+        layers.push_back({param, contribution, 0.0f});
+    };
+
+    Sky* global_sky = nullptr;
+    for (Sky& sky : skies)
+      if (sky.global)
+      {
+        global_sky = &sky;
+        break;
+      }
+
+    if (global_sky)
+      add_layer(*global_sky, remaining);
+    else
+      procedural_celestial_contribution += remaining;
+
+    for (std::size_t index = 0; index < skies.size(); ++index)
+      if (!skies[index].global)
+        add_layer(skies[index], contributions[index]);
+
+    // Convert final contributions to source-alpha values for ordered
+    // low-to-high-priority compositing over the procedural sky dome.
+    float later_skybox_contribution = 0.0f;
+    for (std::size_t reverse_index = layers.size(); reverse_index > 0; --reverse_index)
+    {
+      SkyboxLayer& layer = layers[reverse_index - 1];
+      float const available = std::max(1.0f - later_skybox_contribution, 0.0001f);
+      layer.opacity = glm::clamp(layer.contribution / available, 0.0f, 1.0f);
+      later_skybox_contribution += layer.contribution;
+    }
+
+    OpenGL::Scoped::bool_setter<GL_DEPTH_TEST, GL_FALSE> const no_depth_test;
+    for (SkyboxLayer const& layer : layers)
+    {
+      auto& model = layer.param->skybox.value();
+      model.pos = camera_pos;
+      model.scale = 0.1f;
+      model.recalcExtents();
+
+      OpenGL::M2RenderState model_render_state;
+      model_render_state.tex_arrays = {0, 0};
+      model_render_state.tex_indices = {0, 0};
+      model_render_state.tex_unit_lookups = {-1, -1};
+      gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      gl.disable(GL_BLEND);
+      m2_shader.uniform("blend_mode", 0);
+      m2_shader.uniform("unfogged", static_cast<int>(model_render_state.unfogged));
+      m2_shader.uniform("unlit",  static_cast<int>(model_render_state.unlit));
+      m2_shader.uniform("tex_unit_lookup_1", 0);
+      m2_shader.uniform("tex_unit_lookup_2", 0);
+      m2_shader.uniform("pixel_shader", 0);
+
+      int skybox_time = animtime;
+      if ((layer.param->skyboxFlags & LIGHT_SKYBOX_FULL_DAY)
+          && model.model->finishedLoading())
+      {
+        unsigned int const animation_length = model.model->animationLength(0);
+        int wrapped_time = time % DAY_DURATION;
+        if (wrapped_time < 0)
+          wrapped_time += DAY_DURATION;
+        float const day_fraction = static_cast<float>(wrapped_time) / DAY_DURATION;
+        skybox_time = static_cast<int>(day_fraction * animation_length);
+      }
+
+      model.model->renderer()->draw(model_view
+                                   , model
+                                   , m2_shader
+                                   , model_render_state
+                                   , frustum
+                                   , 1000000
+                                   , camera_pos
+                                   , skybox_time
+                                   , display_mode::in_3D
+                                   , true
+                                   , true
+                                   , nullptr
+                                   , true
+                                   , layer.opacity
+                                   , layer.opacity < 0.9999f
+                                   , true);
+    }
+
+    // LIGHT_SKYBOX_COMBINE retains procedural celestial elements. Blend stars
+    // by the same effective contributions so boundaries do not pop.
+    float const star_opacity = light_stats.nightIntensity
+      * glm::clamp(procedural_celestial_contribution, 0.0f, 1.0f);
+    if (star_opacity > 0.0001f)
+    {
       stars.pos = camera_pos;
       stars.scale = 0.1f;
       stars.recalcExtents();
@@ -1181,6 +1278,11 @@ bool Skies::draw(glm::mat4x4 const& model_view
                                    , animtime
                                    , display_mode::in_3D
                                    , true
+                                   , true
+                                   , nullptr
+                                   , true
+                                   , star_opacity
+                                   , star_opacity < 0.9999f
                                    , true);
     }
   }
@@ -1337,24 +1439,146 @@ in vec3 position;
 in vec3 color;
 
 out vec3 f_color;
+out vec3 f_direction;
 
 void main()
 {
   vec4 pos = vec4(position + camera_pos, 1.f);
   gl_Position = model_view_projection * pos;
   f_color = color;
+  f_direction = normalize(position);
 }
 )code" }
         , {GL_FRAGMENT_SHADER, R"code(
 #version 330 core
 
 in vec3 f_color;
+in vec3 f_direction;
+
+uniform vec3 sun_direction;
+uniform vec3 sun_color;
+uniform vec3 sun_halo_color;
+uniform vec3 cloud_emissive_color;
+uniform vec3 cloud_layer1_color;
+uniform vec3 cloud_layer2_color;
+uniform float celestial_glow;
+uniform float cloud_density;
+uniform float night_intensity;
+uniform float day_fraction;
 
 out vec4 out_color;
 
+float hash31(vec3 p)
+{
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+
+float value_noise(vec3 p)
+{
+  vec3 cell = floor(p);
+  vec3 local = fract(p);
+  local = local * local * (3.0 - 2.0 * local);
+
+  float n000 = hash31(cell + vec3(0.0, 0.0, 0.0));
+  float n100 = hash31(cell + vec3(1.0, 0.0, 0.0));
+  float n010 = hash31(cell + vec3(0.0, 1.0, 0.0));
+  float n110 = hash31(cell + vec3(1.0, 1.0, 0.0));
+  float n001 = hash31(cell + vec3(0.0, 0.0, 1.0));
+  float n101 = hash31(cell + vec3(1.0, 0.0, 1.0));
+  float n011 = hash31(cell + vec3(0.0, 1.0, 1.0));
+  float n111 = hash31(cell + vec3(1.0, 1.0, 1.0));
+
+  float z0 = mix(mix(n000, n100, local.x),
+                 mix(n010, n110, local.x), local.y);
+  float z1 = mix(mix(n001, n101, local.x),
+                 mix(n011, n111, local.x), local.y);
+  return mix(z0, z1, local.z);
+}
+
+float cloud_noise(vec3 p)
+{
+  float result = 0.0;
+  float amplitude = 0.55;
+  for (int octave = 0; octave < 4; ++octave)
+  {
+    result += value_noise(p) * amplitude;
+    p = p * 2.03 + vec3(19.1, 7.7, 13.4);
+    amplitude *= 0.5;
+  }
+  return result;
+}
+
 void main()
 {
-  out_color = vec4(f_color, 1.);
+  const float PI = 3.14159265358979323846;
+  vec3 direction = normalize(f_direction);
+  vec3 color = f_color;
+  float glow = clamp(celestial_glow, 0.0, 4.0);
+  float daylight = 1.0 - clamp(night_intensity, 0.0, 1.0);
+
+  float upper_sky = smoothstep(-0.08, 0.22, direction.y);
+  // Sample clouds from the normalized dome direction rather than spherical
+  // longitude/latitude. Longitude has a wrap seam and is undefined at the
+  // pole, which creates full-height triangular discontinuities on the dome.
+  // A full rotation per day also keeps the animation continuous at midnight.
+  float cloud_angle = day_fraction * 2.0 * PI;
+  float cloud_cos = cos(cloud_angle);
+  float cloud_sin = sin(cloud_angle);
+  vec3 cloud_direction = vec3(
+    direction.x * cloud_cos - direction.z * cloud_sin,
+    direction.y,
+    direction.x * cloud_sin + direction.z * cloud_cos);
+
+  float density = clamp(cloud_density, 0.0, 1.0);
+  float cloud_value = cloud_noise(cloud_direction * vec3(3.8, 2.4, 3.8));
+  float cloud_threshold = mix(0.78, 0.34, density);
+  float cloud_alpha = smoothstep(cloud_threshold, cloud_threshold + 0.18,
+                                 cloud_value) * upper_sky;
+  float cloud_edge = smoothstep(cloud_threshold, cloud_threshold + 0.055,
+                                cloud_value) * (1.0 - smoothstep(
+                                  cloud_threshold + 0.055,
+                                  cloud_threshold + 0.18, cloud_value));
+  vec3 cloud_tint = max(
+    mix(cloud_layer2_color, cloud_layer1_color, cloud_value), vec3(0.0));
+  float tint_luminance = dot(cloud_tint, vec3(0.2126, 0.7152, 0.0722));
+  // Light*Band cloud colors are ambient tints, not final opaque cloud RGB.
+  // Preserve their hue while deriving visible brightness from the local sky.
+  vec3 cloud_chroma = tint_luminance > 0.01
+    ? cloud_tint / tint_luminance : vec3(1.0);
+  cloud_chroma = mix(vec3(1.0), cloud_chroma, 0.45);
+
+  float sky_luminance = dot(max(color, vec3(0.0)),
+                            vec3(0.2126, 0.7152, 0.0722));
+  float shaded_luminance = max(sky_luminance * mix(0.62, 0.92, cloud_value),
+                               mix(0.035, 0.10, daylight));
+  vec3 cloud_body = cloud_chroma * shaded_luminance;
+  cloud_body += sun_color * daylight * max(sun_direction.y, 0.0) * 0.16;
+  cloud_body += cloud_emissive_color * cloud_edge * (0.20 + glow * 0.08);
+  cloud_body = max(cloud_body, color * mix(0.20, 0.48, daylight));
+
+  float visible_cloud_alpha = cloud_alpha * mix(0.48, 0.72, density);
+  color = mix(color, cloud_body, visible_cloud_alpha);
+
+  float sun_dot = dot(direction, normalize(sun_direction));
+  float sun_disc = smoothstep(0.99935, 0.99978, sun_dot);
+  float sun_halo = pow(max(sun_dot, 0.0), 180.0) * 0.8
+                 + pow(max(sun_dot, 0.0), 28.0) * 0.18;
+  color += sun_halo_color * sun_halo * glow * daylight * upper_sky;
+  color = mix(color, sun_color * (1.0 + glow * 0.35),
+              sun_disc * daylight * upper_sky);
+
+  vec3 moon_direction = -normalize(sun_direction);
+  float moon_dot = dot(direction, moon_direction);
+  float moon_disc = smoothstep(0.99915, 0.99972, moon_dot);
+  float moon_halo = pow(max(moon_dot, 0.0), 48.0) * 0.22;
+  vec3 moon_color = mix(cloud_layer2_color, vec3(0.72, 0.80, 1.0), 0.7);
+  color += moon_color * moon_halo * glow * night_intensity * upper_sky;
+  color = mix(color, moon_color * (0.75 + glow * 0.2),
+              moon_disc * night_intensity * upper_sky);
+
+  out_color = vec4(max(color, vec3(0.0)), 1.0);
 }
 )code" }
     }

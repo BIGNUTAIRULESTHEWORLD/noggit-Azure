@@ -29,6 +29,7 @@
 #include <memory>
 #include <optional>
 #include <queue>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -89,6 +90,65 @@ namespace
                                           : std::max(std::abs(nx), std::abs(nz));
   }
 
+  template<typename Value>
+  float sampleCapturedCircle(std::vector<Value> const& values, int resolution,
+                             float extent, float u, float v)
+  {
+    float const fx = std::clamp(((u * 2.f - 1.f) / extent + 1.f) * .5f,
+                                0.f, 1.f) * (resolution - 1);
+    float const fy = std::clamp(((v * 2.f - 1.f) / extent + 1.f) * .5f,
+                                0.f, 1.f) * (resolution - 1);
+    int const x0 = static_cast<int>(std::floor(fx));
+    int const y0 = static_cast<int>(std::floor(fy));
+    int const x1 = std::min(x0 + 1, resolution - 1);
+    int const y1 = std::min(y0 + 1, resolution - 1);
+    float const tx = fx - x0;
+    float const ty = fy - y0;
+    float total = 0.f;
+    float weight = 0.f;
+    auto add = [&](int x, int y, float contribution)
+    {
+      float const nx = (static_cast<float>(x) / (resolution - 1) * 2.f - 1.f)
+          * extent;
+      float const nz = (static_cast<float>(y) / (resolution - 1) * 2.f - 1.f)
+          * extent;
+      if (shapeDistance(nx, nz, MapStampShape::Circle) > 1.f + 1e-5f)
+        return;
+      total += static_cast<float>(values[static_cast<std::size_t>(y) * resolution + x])
+          * contribution;
+      weight += contribution;
+    };
+    add(x0, y0, (1.f - tx) * (1.f - ty));
+    add(x1, y0, tx * (1.f - ty));
+    add(x0, y1, (1.f - tx) * ty);
+    add(x1, y1, tx * ty);
+    if (weight > 0.f)
+      return total / weight;
+
+    // A circle may cross a grid cell without containing any of its four corners.
+    // In that case use the nearest captured sample rather than the zero-filled exterior.
+    float nearest_distance = std::numeric_limits<float>::max();
+    float nearest_value = 0.f;
+    for (int y = std::max(0, y0 - 2); y <= std::min(resolution - 1, y1 + 2); ++y)
+      for (int x = std::max(0, x0 - 2); x <= std::min(resolution - 1, x1 + 2); ++x)
+      {
+        float const nx = (static_cast<float>(x) / (resolution - 1) * 2.f - 1.f)
+            * extent;
+        float const nz = (static_cast<float>(y) / (resolution - 1) * 2.f - 1.f)
+            * extent;
+        if (shapeDistance(nx, nz, MapStampShape::Circle) > 1.f + 1e-5f)
+          continue;
+        float const distance = (fx - x) * (fx - x) + (fy - y) * (fy - y);
+        if (distance < nearest_distance)
+        {
+          nearest_distance = distance;
+          nearest_value = static_cast<float>(
+              values[static_cast<std::size_t>(y) * resolution + x]);
+        }
+      }
+    return nearest_value;
+  }
+
   float rotatedFootprintBoundingRadius(float radius, float rotation_degrees,
                                        MapStampShape shape)
   {
@@ -134,7 +194,8 @@ namespace
   }
 
   float paintedExactSkirtBlend(float outside_distance, float radius, float hardness,
-                               float opacity, float boundary_displacement)
+                               float opacity, float boundary_displacement,
+                               float maximum_width = .5f)
   {
     if (!std::isfinite(outside_distance) || radius <= 0.f)
       return 0.f;
@@ -146,7 +207,8 @@ namespace
     float const requested_width = std::clamp(1.f - hardness, .05f, .5f);
     float const slope_limited_width = std::abs(boundary_displacement) / radius;
     float const width = std::clamp(std::max(requested_width, slope_limited_width),
-                                   requested_width, .5f);
+                                   requested_width,
+                                   std::max(requested_width, maximum_width));
     if (outside_distance >= width)
       return 0.f;
     float const t = std::clamp(1.f - outside_distance / width, 0.f, 1.f);
@@ -335,6 +397,28 @@ namespace
     return std::get<selected_chunk_type>(hits.front().second).position.y;
   }
 
+  std::optional<float> terrainHeightAt(World* world, glm::vec3 const& position)
+  {
+    MapChunk* chunk = nullptr;
+    world->for_maybe_chunk_at(position, [&](MapChunk* found)
+    {
+      chunk = found;
+      return true;
+    });
+    return terrainHeightAt(chunk, position);
+  }
+
+  std::optional<float> destinationHeightAtFootprintBoundary(
+      World* world, glm::vec3 const& center, float world_x, float world_z,
+      float normalized_distance)
+  {
+    if (normalized_distance <= 0.f)
+      return std::nullopt;
+    return terrainHeightAt(world, {center.x + (world_x - center.x) / normalized_distance,
+                                   center.y,
+                                   center.z + (world_z - center.z) / normalized_distance});
+  }
+
   void normalizeHeightDatum(std::vector<float>& heights, int resolution, MapStampShape shape,
                             float sample_extent = 1.f)
   {
@@ -418,6 +502,19 @@ namespace
     for (int i = 0; i < quadratic_coefficient_count; ++i)
       result += coefficients[i] * basis[i];
     return result;
+  }
+
+  float groundedTargetBase(std::optional<QuadraticCoefficients> const& surface,
+                           float nx, float nz, float anchor_height,
+                           bool anchor_at_cursor)
+  {
+    if (!surface)
+      return anchor_height;
+    float const fitted_height = static_cast<float>(evaluateQuadratic(*surface, nx, nz));
+    return anchor_at_cursor
+        ? anchor_height + fitted_height
+            - static_cast<float>(evaluateQuadratic(*surface, 0.0, 0.0))
+        : fitted_height;
   }
 
   void detrendHeightRelief(std::vector<float>& heights, int resolution, MapStampShape shape,
@@ -1019,12 +1116,15 @@ bool MapStampAsset::capture(World* world, MapStampPaintedSelection const& select
   return valid();
 }
 
-float MapStampAsset::sampleHeight(float u, float v, MapStampHeightMode height_mode) const
+float MapStampAsset::sampleHeight(float u, float v, MapStampHeightMode height_mode,
+                                  bool ignore_uncaptured_circle) const
 {
   std::vector<float> const& heights = height_mode == MapStampHeightMode::ExactFeature
       && !_height_is_relief ? _relative_heights : _relief_heights;
   if (heights.empty() || _height_resolution < 2)
     return 0.f;
+  if (ignore_uncaptured_circle && _shape == MapStampShape::Circle)
+    return sampleCapturedCircle(heights, _height_resolution, _sample_extent, u, v);
   u = std::clamp(((u * 2.f - 1.f) / _sample_extent + 1.f) * .5f, 0.f, 1.f)
       * (_height_resolution - 1);
   v = std::clamp(((v * 2.f - 1.f) / _sample_extent + 1.f) * .5f, 0.f, 1.f)
@@ -1042,11 +1142,15 @@ float MapStampAsset::sampleHeight(float u, float v, MapStampHeightMode height_mo
   return std::lerp(top, bottom, ty);
 }
 
-float MapStampAsset::sampleTexture(std::size_t layer, float u, float v) const
+float MapStampAsset::sampleTexture(std::size_t layer, float u, float v,
+                                   bool ignore_uncaptured_circle) const
 {
   if (layer >= _textures.size() || _textures[layer].weights.empty()
       || _texture_resolution < 2)
     return 0.f;
+  if (ignore_uncaptured_circle && _shape == MapStampShape::Circle)
+    return sampleCapturedCircle(_textures[layer].weights, _texture_resolution,
+                                _sample_extent, u, v);
   u = std::clamp(((u * 2.f - 1.f) / _sample_extent + 1.f) * .5f, 0.f, 1.f);
   v = std::clamp(((v * 2.f - 1.f) / _sample_extent + 1.f) * .5f, 0.f, 1.f);
   float const fx = u * (_texture_resolution - 1);
@@ -1263,6 +1367,8 @@ void MapStampAsset::rebuildExactFeatureMask()
 {
   _exact_source_base_height_cached = false;
   _exact_source_base_height.reset();
+  _perimeter_source_base_height_cached = false;
+  _perimeter_source_base_height.reset();
   _exact_feature_mask.clear();
   if (_height_is_relief || _height_resolution < 3
       || _relative_heights.size()
@@ -1576,6 +1682,39 @@ std::optional<float> MapStampAsset::exactSourceBaseHeight() const
   return _exact_source_base_height;
 }
 
+std::optional<float> MapStampAsset::perimeterSourceBaseHeight() const
+{
+  if (_perimeter_source_base_height_cached)
+    return _perimeter_source_base_height;
+  _perimeter_source_base_height_cached = true;
+  if (_height_is_relief || _height_resolution < 3 || _shape == MapStampShape::Painted)
+    return std::nullopt;
+
+  std::vector<float> perimeter;
+  perimeter.reserve(static_cast<std::size_t>(_height_resolution) * 4);
+  for (int y = 0; y < _height_resolution; ++y)
+    for (int x = 0; x < _height_resolution; ++x)
+    {
+      float const nx = static_cast<float>(x) / (_height_resolution - 1) * 2.f - 1.f;
+      float const nz = static_cast<float>(y) / (_height_resolution - 1) * 2.f - 1.f;
+      float const distance = shapeDistance(nx, nz, _shape);
+      if (distance >= .9f && distance <= 1.f)
+        perimeter.push_back(_relative_heights[
+            static_cast<std::size_t>(y) * _height_resolution + x]);
+    }
+  if (perimeter.empty())
+    return std::nullopt;
+
+  // A few foothills may touch the selection edge. The lower quarter represents
+  // contact ground without letting one unusually low sample set the whole base.
+  std::size_t const contact_count = std::max<std::size_t>(1, perimeter.size() / 4);
+  std::nth_element(perimeter.begin(), perimeter.begin() + contact_count - 1,
+                   perimeter.end());
+  perimeter.resize(contact_count);
+  _perimeter_source_base_height = medianValue(std::move(perimeter));
+  return _perimeter_source_base_height;
+}
+
 bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
                           MapStampTransform const& transform, float hardness, float height_scale,
                           float height_offset, float opacity, MapStampHeightMode height_mode)
@@ -1606,6 +1745,9 @@ bool MapStampAsset::visitTerrainPlacement(
     return false;
   float const anchor_height = *sampled_anchor;
   bool const mountain_blend = height_mode == MapStampHeightMode::MountainBlend;
+  bool const improved_regular = protection.experimental_height_blend
+      && _shape != MapStampShape::Painted
+      && height_mode != MapStampHeightMode::ConformToTerrain;
   if ((height_mode == MapStampHeightMode::ExactFeature || mountain_blend)
       && !supportsExactHeight())
     return false;
@@ -1613,7 +1755,8 @@ bool MapStampAsset::visitTerrainPlacement(
   float exact_source_base_height = 0.f;
   if (height_mode == MapStampHeightMode::ExactFeature || mountain_blend)
   {
-    if (std::optional<float> const source_base = exactSourceBaseHeight())
+    if (std::optional<float> const source_base = improved_regular
+        ? perimeterSourceBaseHeight() : exactSourceBaseHeight())
       exact_source_base_height = *source_base;
     // Snap the captured contact/base datum to the terrain directly beneath the
     // placement cursor. The previous perimeter upper-envelope fit could raise
@@ -1644,7 +1787,9 @@ bool MapStampAsset::visitTerrainPlacement(
   if (height_mode == MapStampHeightMode::ConformToTerrain && !target_macro)
     return false;
   float const traversal_radius = rotatedFootprintBoundingRadius(
-      radius * (_shape == MapStampShape::Painted
+      radius * (improved_regular
+          ? 1.f + experimentalBlendWidth(radius, hardness)
+          : _shape == MapStampShape::Painted
           ? (height_mode == MapStampHeightMode::ExactFeature
               ? 1.5f : 1.f + std::clamp(1.f - hardness, .05f, .5f))
           : placementExtent(hardness, height_mode)), transform.rotation_degrees, _shape);
@@ -1679,7 +1824,8 @@ bool MapStampAsset::visitTerrainPlacement(
       bool const painted_exact_skirt = height_mode == MapStampHeightMode::ExactFeature
           && _shape == MapStampShape::Painted && paintedFootprintWeight(uv.x, uv.y) < .5f;
       float const source_height = sampleHeight(sample_uv.x, sample_uv.y,
-          mountain_blend ? MapStampHeightMode::ExactFeature : height_mode);
+          mountain_blend ? MapStampHeightMode::ExactFeature : height_mode,
+          improved_regular);
       float const saved_height = source_height * height_scale;
       float target = 0.f;
       if (height_mode == MapStampHeightMode::ConformToTerrain)
@@ -1689,9 +1835,8 @@ bool MapStampAsset::visitTerrainPlacement(
       }
       else if (mountain_blend)
       {
-        float const destination_base = target_macro
-            ? static_cast<float>(evaluateQuadratic(*target_macro, nx, nz))
-            : anchor_height;
+        float const destination_base = groundedTargetBase(
+            target_macro, nx, nz, anchor_height, improved_regular);
         float const positive_relief = std::max(
             0.f, (source_height - exact_source_base_height) * height_scale);
         // Mountain composition is a height union. It can add a captured feature,
@@ -1703,6 +1848,7 @@ bool MapStampAsset::visitTerrainPlacement(
         target = exact_anchor_height + saved_height + height_offset;
       }
       float const feature_weight = height_mode == MapStampHeightMode::ExactFeature
+          && !improved_regular
           ? exactFeatureWeight(uv.x, uv.y) : 1.f;
       float coverage = placementCoverage(uv.x, uv.y, hardness, opacity, height_mode);
       if (painted_exact_skirt)
@@ -1718,6 +1864,33 @@ bool MapStampAsset::visitTerrainPlacement(
         // Apply the measured boundary displacement on top of the unmodified local
         // destination. This follows hills beneath the skirt instead of flattening them.
         target = vertex.y + boundary_displacement;
+      }
+      else if (improved_regular)
+      {
+        float const distance = shapeDistance(nx, nz, _shape);
+        if (distance > 1.f)
+        {
+          float const boundary_destination = destinationHeightAtFootprintBoundary(
+              world, center, vertex.x, vertex.z, distance).value_or(anchor_height);
+          float boundary_displacement = 0.f;
+          if (mountain_blend)
+          {
+            float const boundary_nx = sample_uv.x * 2.f - 1.f;
+            float const boundary_nz = sample_uv.y * 2.f - 1.f;
+            float const boundary_base = groundedTargetBase(target_macro,
+                boundary_nx, boundary_nz, anchor_height, improved_regular);
+            float const positive_relief = std::max(
+                0.f, (source_height - exact_source_base_height) * height_scale);
+            boundary_displacement = std::max(0.f,
+                boundary_base + positive_relief + height_offset - boundary_destination);
+          }
+          else
+            boundary_displacement = target - boundary_destination;
+          coverage = paintedExactSkirtBlend(distance - 1.f, radius, hardness,
+              opacity, boundary_displacement,
+              experimentalBlendWidth(radius, hardness));
+          target = vertex.y + boundary_displacement;
+        }
       }
       coverage *= feature_weight * (1.f - protectionAt(vertex.x, vertex.z, uv));
       if (coverage <= 0.f)
@@ -1759,6 +1932,9 @@ bool MapStampAsset::previewTerrain(
   bool const painted_exact = height_mode == MapStampHeightMode::ExactFeature
       && _shape == MapStampShape::Painted;
   bool const mountain_blend = height_mode == MapStampHeightMode::MountainBlend;
+  bool const improved_regular = protection.experimental_height_blend
+      && _shape != MapStampShape::Painted
+      && height_mode != MapStampHeightMode::ConformToTerrain;
   std::optional<QuadraticCoefficients> const texture_target_macro =
       update_textures && !_textures.empty()
           && (protection.automatic || painted_exact || mountain_blend)
@@ -1775,9 +1951,10 @@ bool MapStampAsset::previewTerrain(
       : std::optional<QuadraticCoefficients>{};
   float texture_exact_anchor_height = center.y;
   float texture_source_base_height = 0.f;
-  if (painted_exact || mountain_blend)
+  if (painted_exact || mountain_blend || improved_regular)
   {
-    texture_source_base_height = exactSourceBaseHeight().value_or(0.f);
+    texture_source_base_height = (improved_regular
+        ? perimeterSourceBaseHeight() : exactSourceBaseHeight()).value_or(0.f);
     MapChunk* anchor_chunk = nullptr;
     world->for_maybe_chunk_at(center, [&](MapChunk* chunk)
     {
@@ -1785,7 +1962,8 @@ bool MapStampAsset::previewTerrain(
       return true;
     });
     if (std::optional<float> const anchor = terrainHeightAt(anchor_chunk, center))
-      texture_exact_anchor_height = painted_exact
+      texture_exact_anchor_height = (painted_exact
+          || (improved_regular && !mountain_blend))
           ? *anchor - texture_source_base_height * height_scale : *anchor;
   }
   ProtectionGrid const texture_automatic_protection =
@@ -1869,6 +2047,7 @@ bool MapStampAsset::previewTerrain(
           glm::vec2 const uv = sourceCoordinates(
               world_x, world_z, center, radius, transform);
           float const feature_weight = height_mode == MapStampHeightMode::ExactFeature
+              && !improved_regular
               ? exactFeatureWeight(uv.x, uv.y) : 1.f;
           glm::vec2 const texture_uv = _shape == MapStampShape::Painted
               ? clampToPaintedBoundary(uv)
@@ -1880,11 +2059,11 @@ bool MapStampAsset::previewTerrain(
             coverage *= 1.f - textureProtectionAt(world_x, world_z, uv);
             float const nx = uv.x * 2.f - 1.f;
             float const nz = uv.y * 2.f - 1.f;
-            float const destination_base = texture_target_macro
-                ? static_cast<float>(evaluateQuadratic(*texture_target_macro, nx, nz))
-                : texture_exact_anchor_height;
+            float const destination_base = groundedTargetBase(texture_target_macro,
+                nx, nz, texture_exact_anchor_height, improved_regular);
             float const source_height = sampleHeight(
-                texture_uv.x, texture_uv.y, MapStampHeightMode::ExactFeature);
+                texture_uv.x, texture_uv.y, MapStampHeightMode::ExactFeature,
+                improved_regular);
             float const positive_relief = std::max(
                 0.f, (source_height - texture_source_base_height) * height_scale);
             float const desired_height = destination_base + positive_relief + height_offset;
@@ -1900,7 +2079,8 @@ bool MapStampAsset::previewTerrain(
             float const boundary_nx = texture_uv.x * 2.f - 1.f;
             float const boundary_nz = texture_uv.y * 2.f - 1.f;
             float const boundary_target = texture_exact_anchor_height
-                + sampleHeight(texture_uv.x, texture_uv.y, height_mode) * height_scale
+                + sampleHeight(texture_uv.x, texture_uv.y, height_mode,
+                               improved_regular) * height_scale
                 + height_offset;
             float const destination_boundary = texture_target_macro
                 ? static_cast<float>(evaluateQuadratic(
@@ -1911,6 +2091,44 @@ bool MapStampAsset::previewTerrain(
                 paintedOutsideDistance(uv.x, uv.y), radius, hardness, opacity,
                 boundary_displacement);
             coverage = heightContributionTextureBlend(skirt_blend, boundary_displacement);
+          }
+          if (improved_regular)
+          {
+            float const distance = shapeDistance(uv.x * 2.f - 1.f,
+                                                  uv.y * 2.f - 1.f, _shape);
+            if (distance > 1.f)
+            {
+              float const boundary_destination = destinationHeightAtFootprintBoundary(
+                  world, center, world_x, world_z, distance).value_or(
+                      texture_exact_anchor_height);
+              float const source_height = sampleHeight(
+                  texture_uv.x, texture_uv.y, MapStampHeightMode::ExactFeature,
+                  improved_regular);
+              float boundary_displacement = 0.f;
+              if (mountain_blend)
+              {
+                float const boundary_nx = texture_uv.x * 2.f - 1.f;
+                float const boundary_nz = texture_uv.y * 2.f - 1.f;
+                float const boundary_base = groundedTargetBase(texture_target_macro,
+                    boundary_nx, boundary_nz, texture_exact_anchor_height,
+                    improved_regular);
+                float const positive_relief = std::max(0.f,
+                    (source_height - texture_source_base_height) * height_scale);
+                boundary_displacement = std::max(0.f, boundary_base + positive_relief
+                    + height_offset - boundary_destination);
+              }
+              else
+                boundary_displacement = texture_exact_anchor_height
+                    + source_height * height_scale + height_offset
+                    - boundary_destination;
+              coverage = heightContributionTextureBlend(
+                  paintedExactSkirtBlend(distance - 1.f, radius, hardness, opacity,
+                      boundary_displacement,
+                      experimentalBlendWidth(radius, hardness)),
+                  boundary_displacement);
+              if (mountain_blend)
+                coverage *= 1.f - textureProtectionAt(world_x, world_z, uv);
+            }
           }
           if (!mountain_blend)
             coverage *= feature_weight
@@ -1929,7 +2147,8 @@ bool MapStampAsset::previewTerrain(
             float sampled_total = 0.f;
             for (std::size_t layer = 0; layer < _textures.size(); ++layer)
             {
-              sampled_weights[layer] = sampleTexture(layer, texture_uv.x, texture_uv.y);
+              sampled_weights[layer] = sampleTexture(
+                  layer, texture_uv.x, texture_uv.y, improved_regular);
               sampled_total += sampled_weights[layer];
             }
             float const source_scale = sampled_total > .01f ? 255.f / sampled_total : 0.f;
@@ -2000,6 +2219,9 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
   bool const painted_exact = height_mode == MapStampHeightMode::ExactFeature
       && _shape == MapStampShape::Painted;
   bool const mountain_blend = height_mode == MapStampHeightMode::MountainBlend;
+  bool const improved_regular = protection.experimental_height_blend
+      && _shape != MapStampShape::Painted
+      && height_mode != MapStampHeightMode::ConformToTerrain;
   std::optional<QuadraticCoefficients> const texture_target_macro =
       !_textures.empty() && (protection.automatic || painted_exact || mountain_blend)
       ? fitTargetMacroSurface(world, center, radius, transform, _shape,
@@ -2015,9 +2237,10 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
       : std::optional<QuadraticCoefficients>{};
   float texture_exact_anchor_height = center.y;
   float texture_source_base_height = 0.f;
-  if (painted_exact || mountain_blend)
+  if (painted_exact || mountain_blend || improved_regular)
   {
-    texture_source_base_height = exactSourceBaseHeight().value_or(0.f);
+    texture_source_base_height = (improved_regular
+        ? perimeterSourceBaseHeight() : exactSourceBaseHeight()).value_or(0.f);
     MapChunk* anchor_chunk = nullptr;
     world->for_maybe_chunk_at(center, [&](MapChunk* chunk)
     {
@@ -2025,7 +2248,8 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
       return true;
     });
     if (std::optional<float> const anchor = terrainHeightAt(anchor_chunk, center))
-      texture_exact_anchor_height = painted_exact
+      texture_exact_anchor_height = (painted_exact
+          || (improved_regular && !mountain_blend))
           ? *anchor - texture_source_base_height * height_scale : *anchor;
   }
   ProtectionGrid const texture_automatic_protection =
@@ -2044,12 +2268,14 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
   };
 
   float const traversal_radius = rotatedFootprintBoundingRadius(
-      radius * (_shape == MapStampShape::Painted
+      radius * (improved_regular
+          ? 1.f + experimentalBlendWidth(radius, hardness)
+          : _shape == MapStampShape::Painted
           ? (height_mode == MapStampHeightMode::ExactFeature
               ? 1.5f : 1.f + std::clamp(1.f - hardness, .05f, .5f))
           : placementExtent(hardness, height_mode)), transform.rotation_degrees, _shape);
   std::unordered_map<MapChunk*, std::array<float, 64 * 64>> mountain_texture_coverage;
-  if (mountain_blend && !_textures.empty())
+  if ((mountain_blend || improved_regular) && !_textures.empty())
   {
     world->for_all_chunks_in_rect(center, traversal_radius, [&](MapChunk* chunk)
     {
@@ -2072,11 +2298,49 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
             continue;
           float const nx = uv.x * 2.f - 1.f;
           float const nz = uv.y * 2.f - 1.f;
-          float const destination_base = texture_target_macro
-              ? static_cast<float>(evaluateQuadratic(*texture_target_macro, nx, nz))
-              : texture_exact_anchor_height;
+          float const distance = shapeDistance(nx, nz, _shape);
+          if (improved_regular && distance > 1.f)
+          {
+            float const boundary_destination = destinationHeightAtFootprintBoundary(
+                world, center, world_x, world_z, distance).value_or(
+                    texture_exact_anchor_height);
+            float const source_height = sampleHeight(
+                source_uv.x, source_uv.y, MapStampHeightMode::ExactFeature,
+                improved_regular);
+            float boundary_displacement = 0.f;
+            if (mountain_blend)
+            {
+              float const boundary_nx = source_uv.x * 2.f - 1.f;
+              float const boundary_nz = source_uv.y * 2.f - 1.f;
+              float const boundary_base = groundedTargetBase(texture_target_macro,
+                  boundary_nx, boundary_nz, texture_exact_anchor_height,
+                  improved_regular);
+              float const positive_relief = std::max(0.f,
+                  (source_height - texture_source_base_height) * height_scale);
+              boundary_displacement = std::max(0.f, boundary_base + positive_relief
+                  + height_offset - boundary_destination);
+            }
+            else
+              boundary_displacement = texture_exact_anchor_height
+                  + source_height * height_scale + height_offset
+                  - boundary_destination;
+            chunk_coverage[pixel] = heightContributionTextureBlend(
+                paintedExactSkirtBlend(distance - 1.f, radius, hardness, opacity,
+                    boundary_displacement, experimentalBlendWidth(radius, hardness)),
+                boundary_displacement)
+                * (1.f - textureProtectionAt(world_x, world_z, uv));
+            continue;
+          }
+          if (!mountain_blend)
+          {
+            chunk_coverage[pixel] = coverage;
+            continue;
+          }
+          float const destination_base = groundedTargetBase(texture_target_macro,
+              nx, nz, texture_exact_anchor_height, improved_regular);
           float const source_height = sampleHeight(
-              source_uv.x, source_uv.y, MapStampHeightMode::ExactFeature);
+              source_uv.x, source_uv.y, MapStampHeightMode::ExactFeature,
+              improved_regular);
           float const positive_relief = std::max(
               0.f, (source_height - texture_source_base_height) * height_scale);
           float const desired_height = destination_base + positive_relief + height_offset;
@@ -2094,10 +2358,18 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
 
   std::vector<MapChunk*> terrain_chunks;
   std::unordered_map<MapChunk*, bool> registered_chunks;
+  std::vector<std::tuple<MapChunk*, std::size_t, float>> pending_terrain;
   if (!visitTerrainPlacement(world, center, radius, transform, hardness,
                              height_scale, height_offset, opacity, protection, height_mode, true,
       [&](MapChunk* chunk, std::size_t index, float height)
       {
+        // The improved skirt samples the original destination at its boundary.
+        // Apply its vertices together so traversal order cannot change that sample.
+        if (improved_regular)
+        {
+          pending_terrain.emplace_back(chunk, index, height);
+          return;
+        }
         if (registered_chunks.emplace(chunk, true).second)
         {
           NOGGIT_CUR_ACTION->registerChunkTerrainChange(chunk);
@@ -2107,6 +2379,16 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
       }))
   {
     return false;
+  }
+
+  for (auto const& [chunk, index, height] : pending_terrain)
+  {
+    if (registered_chunks.emplace(chunk, true).second)
+    {
+      NOGGIT_CUR_ACTION->registerChunkTerrainChange(chunk);
+      terrain_chunks.push_back(chunk);
+    }
+    chunk->mVertices[index].y = height;
   }
 
   for (MapChunk* chunk : terrain_chunks)
@@ -2170,13 +2452,14 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
         float const world_z = chunk->zbase + (z + .5f) * CHUNKSIZE / 64.f;
         glm::vec2 const uv = sourceCoordinates(world_x, world_z, center, radius, transform);
         float const feature_weight = height_mode == MapStampHeightMode::ExactFeature
+            && !improved_regular
             ? exactFeatureWeight(uv.x, uv.y) : 1.f;
         glm::vec2 const texture_uv = _shape == MapStampShape::Painted
             ? clampToPaintedBoundary(uv)
             : (height_mode != MapStampHeightMode::ConformToTerrain
                 ? clampToShapeBoundary(uv, _shape) : uv);
         float coverage = 0.f;
-        if (mountain_blend)
+        if (mountain_blend || improved_regular)
         {
           auto const found = mountain_texture_coverage.find(chunk);
           if (found != mountain_texture_coverage.end())
@@ -2190,7 +2473,8 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
             float const boundary_nx = texture_uv.x * 2.f - 1.f;
             float const boundary_nz = texture_uv.y * 2.f - 1.f;
             float const boundary_target = texture_exact_anchor_height
-                + sampleHeight(texture_uv.x, texture_uv.y, height_mode) * height_scale
+                + sampleHeight(texture_uv.x, texture_uv.y, height_mode,
+                               improved_regular) * height_scale
                 + height_offset;
             float const destination_boundary = texture_target_macro
                 ? static_cast<float>(evaluateQuadratic(
@@ -2220,7 +2504,8 @@ bool MapStampAsset::apply(World* world, glm::vec3 const& center, float radius,
           float sampled_total = 0.f;
           for (std::size_t layer = 0; layer < _textures.size(); ++layer)
           {
-            sampled_weights[layer] = sampleTexture(layer, texture_uv.x, texture_uv.y);
+            sampled_weights[layer] = sampleTexture(
+                layer, texture_uv.x, texture_uv.y, improved_regular);
             sampled_total += sampled_weights[layer];
           }
           float const source_scale = sampled_total > .01f ? 255.f / sampled_total : 0.f;
@@ -2555,25 +2840,40 @@ bool MapStampAsset::supportsExactHeight() const
 float MapStampAsset::footprintBoundingRadius(float radius,
                                              MapStampTransform const& transform,
                                              float hardness,
-                                             MapStampHeightMode height_mode) const
+                                             MapStampHeightMode height_mode,
+                                             bool experimental_height_blend) const
 {
   return rotatedFootprintBoundingRadius(
-      radius * (_shape == MapStampShape::Painted
+      radius * (experimental_height_blend && _shape != MapStampShape::Painted
+          && height_mode != MapStampHeightMode::ConformToTerrain
+          ? 1.f + experimentalBlendWidth(radius, hardness)
+          : _shape == MapStampShape::Painted
           ? (height_mode == MapStampHeightMode::ExactFeature
               ? 1.5f : 1.f + std::clamp(1.f - hardness, .05f, .5f))
           : placementExtent(hardness, height_mode)), transform.rotation_degrees, _shape);
 }
 
-QImage MapStampAsset::previewImage() const
+float MapStampAsset::experimentalBlendWidth(float radius, float hardness)
+{
+  float const requested = std::clamp(1.f - hardness, .05f, .5f);
+  if (!std::isfinite(radius) || radius <= 0.f)
+    return requested;
+  return std::max(requested, std::min(2.f, 150.f / radius));
+}
+
+QImage MapStampAsset::previewImage(bool full_footprint,
+                                   MapStampHeightMode height_mode) const
 {
   constexpr int preview_resolution = 129;
   QImage image(preview_resolution, preview_resolution, QImage::Format_RGBA8888);
   image.fill(Qt::black);
   if (!valid())
     return image;
-  bool const exact_height = !_height_is_relief;
-  MapStampHeightMode const preview_mode = exact_height
-      ? MapStampHeightMode::ExactFeature : MapStampHeightMode::ConformToTerrain;
+  MapStampHeightMode const preview_mode = _height_is_relief
+      ? MapStampHeightMode::ConformToTerrain : height_mode;
+  MapStampHeightMode const sample_mode = preview_mode == MapStampHeightMode::MountainBlend
+      ? MapStampHeightMode::ExactFeature : preview_mode;
+  bool const exact_feature = preview_mode == MapStampHeightMode::ExactFeature;
 
   float maximum = 0.f;
   for (int y = 0; y < preview_resolution; ++y)
@@ -2582,11 +2882,12 @@ QImage MapStampAsset::previewImage() const
       float const u = static_cast<float>(x) / (preview_resolution - 1);
       float const v = static_cast<float>(y) / (preview_resolution - 1);
       float const coverage = placementCoverage(u, v, .75f, 1.f, preview_mode)
-          * (exact_height ? exactFeatureWeight(u, v) : 1.f);
+          * (exact_feature && !full_footprint ? exactFeatureWeight(u, v) : 1.f);
       glm::vec2 const sample_uv = _shape == MapStampShape::Painted
           ? clampToPaintedBoundary({u, v}) : glm::vec2{u, v};
       maximum = std::max(maximum,
-          std::abs(sampleHeight(sample_uv.x, sample_uv.y, preview_mode)) * coverage);
+          std::abs(sampleHeight(sample_uv.x, sample_uv.y, sample_mode,
+                                full_footprint)) * coverage);
     }
   maximum = std::max(maximum, .001f);
   for (int y = 0; y < preview_resolution; ++y)
@@ -2597,11 +2898,11 @@ QImage MapStampAsset::previewImage() const
       float const nx = u * 2.f - 1.f;
       float const nz = v * 2.f - 1.f;
       float const coverage = placementCoverage(u, v, .75f, 1.f, preview_mode)
-          * (exact_height ? exactFeatureWeight(u, v) : 1.f);
+          * (exact_feature && !full_footprint ? exactFeatureWeight(u, v) : 1.f);
       glm::vec2 const sample_uv = _shape == MapStampShape::Painted
           ? clampToPaintedBoundary({u, v}) : glm::vec2{u, v};
       float const normalized = std::clamp(.5f + sampleHeight(
-          sample_uv.x, sample_uv.y, preview_mode)
+          sample_uv.x, sample_uv.y, sample_mode, full_footprint)
           / (2.f * maximum), 0.f, 1.f);
       float const distance = shapeDistance(nx, nz, _shape);
       float const outline_width = 2.5f / (preview_resolution - 1);

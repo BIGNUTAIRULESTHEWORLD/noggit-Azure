@@ -256,8 +256,15 @@ void WMOInstance::intersect (math::ray const& ray, selection_result* results, bo
 
   if (wmo->loading_failed())
   {
-    auto const& bounds = getExtents();
     glm::vec3 const radius{Noggit::MissingObjectPlaceholder::wmo_display_scale};
+    if (auto const distance = ray.intersect_bounds(pos - radius, pos + radius);
+        distance && *distance >= 0.0f)
+    {
+      results->emplace_back(*distance, this);
+      return;
+    }
+
+    auto const& bounds = getExtents();
     glm::vec3 const min = Noggit::MissingObjectPlaceholder::valid_bounds(bounds[0], bounds[1])
         ? bounds[0]
         : pos - radius;
@@ -396,6 +403,7 @@ void WMOInstance::recalcExtents()
 
   if (wmo->loading_failed())
   {
+      updateTransformMatrix();
       // MODF stores WMO extents, so retain the last saved box when the WMO
       // itself is unavailable. Collapsing it here would corrupt that box and
       // the chunk references produced from it on save.

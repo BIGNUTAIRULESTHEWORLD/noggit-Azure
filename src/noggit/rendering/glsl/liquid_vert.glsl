@@ -78,10 +78,17 @@ int get_texture_frame(int n_frames)
 
 void main()
 {
-  uint vertex_x = uint(position.x / UNITSIZE);
-  uint vertex_y = uint(position.y / UNITSIZE);
+  // Match the two triangles emitted by WorldRender::setupLiquidChunkBuffers.
+  // Recovering indices by truncating position / UNITSIZE can select the
+  // preceding texel after GPU floating-point rounding, distorting UVs/heights.
+  const ivec2 corner_offsets[6] = ivec2[6](
+    ivec2(0, 0), ivec2(0, 1), ivec2(1, 0),
+    ivec2(1, 0), ivec2(0, 1), ivec2(1, 1));
+  int cell_index = gl_VertexID / 6;
+  ivec2 grid_vertex = ivec2(cell_index % 8, cell_index / 8)
+                    + corner_offsets[gl_VertexID % 6];
 
-  vec4 v_data = texelFetch(vertex_data, ivec3(vertex_x, vertex_y, gl_InstanceID), 0);
+  vec4 v_data = texelFetch(vertex_data, ivec3(grid_vertex, gl_InstanceID), 0);
 
   LiquidChunkInstanceDataUniformBlock params = layer_params[gl_InstanceID];
 
@@ -111,7 +118,7 @@ void main()
 
   vec4 rendered_pos = use_transform == 1 ? transform * final_pos : final_pos;
   world_pos_ = rendered_pos.xyz;
-  liquid_grid_pos_ = position / UNITSIZE;
+  liquid_grid_pos_ = vec2(grid_vertex);
   surface_token_ = uvec2(params._pad1, params._pad2);
   fishable_mask_ = uvec2(params._pad3, params._pad4);
   fatigue_mask_ = uvec2(params._pad5, params._pad6);

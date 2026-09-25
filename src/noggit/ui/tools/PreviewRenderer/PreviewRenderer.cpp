@@ -10,6 +10,7 @@
 #include <noggit/WMOInstance.h>
 
 #include <math/frustum.hpp>
+#include <math/bounding_box.hpp>
 
 #include <cmath>
 #include <exception>
@@ -42,9 +43,13 @@ PreviewRenderer::PreviewRenderer(int width, int height, Noggit::NoggitRenderCont
   _offscreen_context.setFormat(QSurfaceFormat::defaultFormat());
   _offscreen_surface.setFormat(QSurfaceFormat::defaultFormat());
 
-  if (auto* share_context = QOpenGLContext::globalShareContext())
+  // Saved groups use their own model and texture cache. Keep their temporary
+  // OpenGL objects out of the map's share group so preview cleanup cannot
+  // invalidate a texture still used by the map.
+  if (context != Noggit::NoggitRenderContext::M2_GROUP_PREVIEW)
   {
-    _offscreen_context.setShareContext(share_context);
+    if (auto* share_context = QOpenGLContext::globalShareContext())
+      _offscreen_context.setShareContext(share_context);
   }
 
   OpenGL::context::save_current_context const context_save (::gl);
@@ -142,6 +147,49 @@ void PreviewRenderer::setModelOffscreen(std::string const& filename)
   setModel(filename);
 }
 
+void PreviewRenderer::setM2GroupOffscreen(std::vector<M2GroupPreviewInstance> const& entries)
+{
+  if (entries.empty())
+    throw std::invalid_argument("Cannot preview an empty M2 group");
+
+  OpenGL::context::save_current_context const context_save(::gl);
+  _offscreen_context.makeCurrent(&_offscreen_surface);
+  OpenGL::context::scoped_setter const context_set(::gl, &_offscreen_context);
+
+  // setModel configures the preview lighting and creates the first instance.
+  setModel(entries.front().filename);
+  for (std::size_t i = 0; i < entries.size(); ++i)
+  {
+    ModelInstance* instance;
+    if (i == 0)
+      instance = &_model_instances.front();
+    else
+    {
+      instance = &_model_instances.emplace_back(entries[i].filename, _context);
+      instance->model->wait_until_loaded();
+    }
+    instance->pos = entries[i].position;
+    instance->dir = math::degrees::vec3(entries[i].rotation.x,
+                                        entries[i].rotation.y,
+                                        entries[i].rotation.z);
+    instance->scale = entries[i].scale;
+    instance->recalcExtents();
+  }
+
+  // M2 texture references are created by the renderer's first upload. Create
+  // them here, then wait for every texture before taking the group snapshot.
+  for (auto& instance : _model_instances)
+  {
+    if (!instance.model->renderer()->uploaded())
+      instance.model->renderer()->upload();
+    instance.model->waitForChildrenLoaded();
+  }
+
+  _filename = "saved-m2-group";
+  clearPixmapCache();
+  resetCamera();
+}
+
 
 void PreviewRenderer::resetCamera(float x, float y, float z, float roll, float yaw, float pitch)
 {
@@ -157,6 +205,11 @@ void PreviewRenderer::resetCamera(float x, float y, float z, float roll, float y
 
 }
 
+
+std::optional<glm::mat4x4> PreviewRenderer::modelInstanceTransform(std::size_t index) const
+{
+  return _model_instances[index].transformMatrix();
+}
 
 void PreviewRenderer::draw()
 {
@@ -272,12 +325,15 @@ void PreviewRenderer::draw()
     std::vector<ModelInstance*> instance{ nullptr };
     std::vector<glm::mat4x4> instance_mtx{ glm::mat4x4(1)};
 
-    for (auto& model_instance : _model_instances)
+    for (std::size_t index = 0; index < _model_instances.size(); ++index)
     {
+      auto& model_instance = _model_instances[index];
       model_instance.model->wait_until_loaded();
       model_instance.model->waitForChildrenLoaded();
+      auto const transform = modelInstanceTransform(index);
+      if (!transform) continue;
       instance[0] = &model_instance;
-      instance_mtx[0] = model_instance.transformMatrix();
+      instance_mtx[0] = *transform;
 
       model_instance.model->renderer()->draw(
         mv
@@ -414,7 +470,14 @@ glm::mat4x4 PreviewRenderer::model_view() const
 glm::mat4x4 PreviewRenderer::projection() const
 {
   float far_z = _settings->value("view_distance", 2000.f).toFloat();
-  return glm::perspective(_camera.fov()._, aspect_ratio(), 1.f, far_z);
+  float const near_z = (_context == Noggit::NoggitRenderContext::NPC_BROWSER
+                         || _context == Noggit::NoggitRenderContext::NPC_BROWSER_PREVIEW
+                         || _context == Noggit::NoggitRenderContext::NPC_SPAWN_CACHE
+                        || _context == Noggit::NoggitRenderContext::NPC_CREATOR
+                        || _context == Noggit::NoggitRenderContext::OBJECT_PALETTE_PREVIEW
+                        || _context == Noggit::NoggitRenderContext::M2_GROUP_PREVIEW)
+    ? 0.05f : 1.f;
+  return glm::perspective(_camera.fov()._, aspect_ratio(), near_z, far_z);
 }
 
 float PreviewRenderer::aspect_ratio() const
@@ -424,13 +487,41 @@ float PreviewRenderer::aspect_ratio() const
 
 std::vector<glm::vec3> PreviewRenderer::calcSceneExtents()
 {
+  if ((_context == Noggit::NoggitRenderContext::NPC_BROWSER
+       || _context == Noggit::NoggitRenderContext::NPC_BROWSER_PREVIEW
+       || _context == Noggit::NoggitRenderContext::NPC_SPAWN_CACHE
+       || _context == Noggit::NoggitRenderContext::NPC_CREATOR)
+      && !_model_instances.empty())
+  {
+    // Creature animation bounds frequently include large movement envelopes,
+    // which makes the actual NPC a tiny speck in catalogue thumbnails. Frame
+    // the visible body mesh instead; equipment attachments remain close to
+    // this body and do not need to enlarge the camera envelope.
+    ModelInstance& body = _model_instances.front();
+    if (body.model.get() && body.model->finishedLoading() && !body.model->loading_failed())
+    {
+      auto const& mesh_bounds = body.model->vertices_bounds;
+      bool valid_mesh_bounds = true;
+      for (int axis = 0; axis < 3; ++axis)
+        valid_mesh_bounds &= std::isfinite(mesh_bounds[0][axis])
+          && std::isfinite(mesh_bounds[1][axis])
+          && mesh_bounds[1][axis] >= mesh_bounds[0][axis];
+      math::aabb const visible_body(
+        valid_mesh_bounds ? mesh_bounds[0] : body.model->bounding_box_min,
+        valid_mesh_bounds ? mesh_bounds[1] : body.model->bounding_box_max);
+      auto const corners = visible_body.rotated_corners(body.transformMatrix(), true);
+      math::aabb const framed(std::vector<glm::vec3>(corners.begin(), corners.end()));
+      return {framed.min, framed.max};
+    }
+  }
+
   glm::vec3 min = {std::numeric_limits<float>::max(),
                          std::numeric_limits<float>::max(),
                          std::numeric_limits<float>::max()};
 
-  glm::vec3 max = {std::numeric_limits<float>::min(),
-                         std::numeric_limits<float>::min(),
-                         std::numeric_limits<float>::min()};
+  glm::vec3 max = {std::numeric_limits<float>::lowest(),
+                         std::numeric_limits<float>::lowest(),
+                         std::numeric_limits<float>::lowest()};
 
   for (auto& instance : _model_instances)
   {
@@ -453,9 +544,11 @@ std::vector<glm::vec3> PreviewRenderer::calcSceneExtents()
   return std::move(std::vector<glm::vec3>{min, max});
 }
 
-QPixmap* PreviewRenderer::renderToPixmap()
+QPixmap* PreviewRenderer::renderToPixmap(std::string const& cache_variant)
 {
-  std::tuple<std::string, int, int> const curEntry{_filename, _width, _height};
+  std::string const cache_name = cache_variant.empty()
+    ? _filename : _filename + '\x1f' + cache_variant;
+  std::tuple<std::string, int, int> const curEntry{cache_name, _width, _height};
   auto it{_cache.find(curEntry)};
 
   if(it != _cache.end())
@@ -468,7 +561,10 @@ QPixmap* PreviewRenderer::renderToPixmap()
   OpenGL::context::scoped_setter const context_set (::gl, &_offscreen_context);
 
   QOpenGLFramebufferObject pixel_buffer(_width, _height, _fmt);
-  pixel_buffer.bind();
+  if (!pixel_buffer.isValid())
+    throw std::runtime_error("failed creating the preview framebuffer");
+  if (!pixel_buffer.bind())
+    throw std::runtime_error("failed binding the preview framebuffer");
 
   gl.viewport(0, 0, _width, _height);
   gl.clearColor(_background_color.r, _background_color.g, _background_color.b, 1.f);
@@ -680,8 +776,6 @@ void PreviewRenderer::upload()
     liquid_render.uniform("texture_samplers", samplers);
 
   }
-
-  setModel("world/wmo/azeroth/buildings/human_farm/farm.wmo");
 
   auto background_color = _settings->value("assetBrowser/background_color",
     QVariant::fromValue(QColor(127, 127, 127))).value<QColor>();

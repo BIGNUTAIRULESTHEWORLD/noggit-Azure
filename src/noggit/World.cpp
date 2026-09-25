@@ -9,9 +9,12 @@
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
+#include <noggit/MissingObjectPlaceholder.hpp>
 #include <noggit/Misc.h>
 #include <noggit/Model.h>
 #include <noggit/ModelInstance.h>
+#include <noggit/NpcSpawnOverlay.hpp>
+#include <noggit/ServerGameObjectOverlay.hpp>
 #include <noggit/ModelManager.h> // ModelManager
 #include <noggit/object_paste_params.hpp>
 #include <noggit/project/CurrentProject.hpp>
@@ -347,6 +350,8 @@ Noggit::Rendering::WorldRender* World::renderer()
 {
   return &_renderer;
 }
+
+World::~World() = default;
 
 void World::notifyTextureChange(int global_chunk_x, int global_chunk_z)
 {
@@ -985,7 +990,7 @@ glm::vec3 World::get_ground_height(glm::vec3 pos)
   return std::get<selected_chunk_type>(hits[0].second).position;
 }
 
-std::optional<glm::vec3> World::try_get_ground_height(glm::vec3 const& pos)
+std::optional<glm::vec3> World::try_get_ground_height(glm::vec3 const& pos, glm::vec3* normal)
 {
   MapTile* tile = mapIndex.getTile(pos);
   if (!tile || !tile->finishedLoading())
@@ -1004,7 +1009,18 @@ std::optional<glm::vec3> World::try_get_ground_height(glm::vec3 const& pos)
   if (hits.empty())
     return std::nullopt;
 
-  return std::get<selected_chunk_type>(hits[0].second).position;
+  auto const& hit = std::get<selected_chunk_type>(hits[0].second);
+  if (normal)
+  {
+    auto const& vertices = hit.chunk->mVertices;
+    auto const& a = vertices[std::get<0>(hit.triangle)];
+    auto const& b = vertices[std::get<1>(hit.triangle)];
+    auto const& c = vertices[std::get<2>(hit.triangle)];
+    auto n = glm::cross(b - a, c - a);
+    if (n.y < 0) n = -n;
+    *normal = glm::length(n) > 1e-6f ? glm::normalize(n) : glm::vec3(0, 1, 0);
+  }
+  return hit.position;
 }
 
 void World::snap_selected_models_to_the_ground()
@@ -1495,7 +1511,32 @@ selection_result World::intersect (glm::mat4x4 const& model_view
 
       if (!ray.intersect_bounds(tile->getCombinedExtents()[0], tile->getCombinedExtents()[1]))
       {
-        continue;
+        // Failed assets draw a diagnostic cube that can extend beyond the
+        // saved object bounds (and even beyond the terrain height). Keep the
+        // tile in the picking pass when the ray hits one of those cubes.
+        bool hits_missing_placeholder = false;
+        for (auto const& [asset, instances] : tile->getObjectInstances())
+        {
+          if (!asset->finishedLoading() || !asset->loading_failed())
+            continue;
+
+          for (SceneObject const* instance : instances)
+          {
+            float const scale = instance->which() == eMODEL
+              ? Noggit::MissingObjectPlaceholder::m2_display_scale
+              : Noggit::MissingObjectPlaceholder::wmo_display_scale;
+            glm::vec3 const radius{scale};
+            if (ray.intersect_bounds(instance->pos - radius, instance->pos + radius))
+            {
+              hits_missing_placeholder = true;
+              break;
+            }
+          }
+          if (hits_missing_placeholder)
+            break;
+        }
+        if (!hits_missing_placeholder)
+          continue;
       }
 
       for (auto& pair : tile->getObjectInstances())
@@ -1610,13 +1651,13 @@ void World::setAreaID(glm::vec3 const& pos, int id, bool adt, float radius)
 
     if (radius >= 0)
     {
-      for_all_chunks_in_range(pos, radius,
-                              [&] (MapChunk* chunk)
-                              {
-                                NOGGIT_CUR_ACTION->registerChunkAreaIDChange(chunk);
-                                chunk->setAreaID(id);
-                                return true;
-                              }
+      for_all_chunks_in_rect(pos, radius,
+                             [&] (MapChunk* chunk)
+                             {
+                               NOGGIT_CUR_ACTION->registerChunkAreaIDChange(chunk);
+                               chunk->setAreaID(id);
+                               return true;
+                             }
       );
 
     }
@@ -2998,9 +3039,10 @@ ModelInstance* World::addM2AndGetInstance ( BlizzardArchive::Listfile::FileKey c
 
 ModelInstance* World::addChunkMoverPreviewM2(
     BlizzardArchive::Listfile::FileKey const& file_key, glm::vec3 newPos, float scale,
-    math::degrees::vec3 rotation)
+    math::degrees::vec3 rotation,
+    std::optional<Noggit::NoggitRenderContext> render_context)
 {
-  ModelInstance model_instance(file_key, _context);
+  ModelInstance model_instance(file_key, render_context.value_or(_context));
   model_instance.uid = _model_instance_storage.new_preview_uid();
   model_instance.pos = newPos;
   model_instance.scale = scale;
@@ -3173,6 +3215,216 @@ void World::deleteChunkMoverPreviewInstance(std::uint32_t uid)
     if (tile)
       tile->remove_model(object);
   _model_instance_storage.delete_preview_instance(uid);
+}
+
+void World::addNpcSpawnOverlay(std::uint64_t guid, unsigned entry,
+                               glm::vec3 const& position, float yaw, float scale,
+                               Noggit::NpcAppearance const& appearance)
+{
+  auto* previous = findNpcSpawnOverlay(guid);
+  bool const had_previous = previous != nullptr;
+  bool const show_main_off_hand = had_previous && previous->showsMainOffHand();
+  bool const show_ranged = had_previous && previous->showsRangedWeapon();
+  removeNpcSpawnOverlay(guid);
+  _npc_spawn_overlays.push_back(std::make_unique<Noggit::NpcSpawnOverlay>(
+    guid, entry, position, yaw, scale, appearance, _context));
+  if (had_previous)
+    _npc_spawn_overlays.back()->setWeaponVisibility(show_main_off_hand, show_ranged);
+  need_model_updates = true;
+}
+
+bool World::updateNpcSpawnOverlay(std::uint64_t guid, glm::vec3 const& position,
+                                  float yaw, float scale)
+{
+  auto const overlay = std::find_if(_npc_spawn_overlays.begin(), _npc_spawn_overlays.end(),
+    [guid](auto const& candidate) { return candidate && candidate->guid() == guid; });
+  if (overlay == _npc_spawn_overlays.end())
+    return false;
+  (*overlay)->setTransform(position, yaw, scale);
+  return true;
+}
+
+bool World::commitNpcSpawnOverlay(std::uint64_t temporary_guid, std::uint64_t guid,
+                                  unsigned entry)
+{
+  removeNpcSpawnOverlay(guid);
+  auto const overlay = std::find_if(_npc_spawn_overlays.begin(), _npc_spawn_overlays.end(),
+    [temporary_guid](auto const& candidate)
+    {
+      return candidate && candidate->guid() == temporary_guid;
+    });
+  if (overlay == _npc_spawn_overlays.end())
+    return false;
+  (*overlay)->setIdentity(guid, entry);
+  return true;
+}
+
+Noggit::NpcSpawnOverlay* World::findNpcSpawnOverlay(std::uint64_t guid)
+{
+  auto const found = std::find_if(_npc_spawn_overlays.begin(), _npc_spawn_overlays.end(),
+    [guid](auto const& overlay) { return overlay && overlay->guid() == guid; });
+  return found == _npc_spawn_overlays.end() ? nullptr : found->get();
+}
+
+Noggit::NpcSpawnOverlay* World::selectedNpcSpawnOverlay()
+{
+  return _selected_npc_spawn_guid ? findNpcSpawnOverlay(*_selected_npc_spawn_guid) : nullptr;
+}
+
+void World::selectNpcSpawnOverlay(std::optional<std::uint64_t> guid)
+{
+  if (guid)
+    reset_selection();
+  _selected_npc_spawn_guid = guid;
+}
+
+std::optional<std::pair<std::uint64_t, unsigned>> World::pickNpcSpawnOverlay(
+  math::ray const& ray, float maximum_distance)
+{
+  std::optional<std::pair<std::uint64_t, unsigned>> picked;
+  float closest = maximum_distance;
+  for (auto const& overlay : _npc_spawn_overlays)
+  {
+    if (!overlay || overlay->guid() == std::numeric_limits<std::uint64_t>::max())
+      continue;
+    ModelInstance& body = overlay->body();
+    if (!body.finishedLoading()) continue;
+    auto const valid_bounds = [](std::array<glm::vec3, 2> const& candidate)
+    {
+      for (auto const& corner : candidate)
+      {
+        if (!std::isfinite(corner.x) || !std::isfinite(corner.y) || !std::isfinite(corner.z))
+          return false;
+      }
+      return candidate[0].x <= candidate[1].x
+        && candidate[0].y <= candidate[1].y
+        && candidate[0].z <= candidate[1].z;
+    };
+
+    // Animated creature vertices are already converted into Noggit's model
+    // coordinates. The base vertices_bounds are captured before that
+    // conversion, so using them directly makes the visible body and clickable
+    // box disagree (most noticeably by swapping character height and depth).
+    auto const source = valid_bounds(body.model->vertices_bounds)
+      ? body.model->vertices_bounds
+      : std::array<glm::vec3, 2>{body.model->bounding_box_min,
+                                 body.model->bounding_box_max};
+    glm::vec3 const first = fixCoordSystem(source[0]);
+    glm::vec3 const second = fixCoordSystem(source[1]);
+    std::array<glm::vec3, 2> const fixed_bounds = {
+      glm::min(first, second), glm::max(first, second)};
+
+    std::array<glm::vec3, 2> bounds = fixed_bounds;
+    if (body.model->animated_mesh() && body.model->mesh_bounds_ratio < 1.0f)
+    {
+      auto const animated_bounds = body.model->getAnimatedBoundingBox();
+      if (valid_bounds(animated_bounds))
+      {
+        // Keep the coordinate-correct base bounds in the hit target too. This
+        // covers frames whose current pose is narrower than the visible mesh,
+        // and the fallback returned while animated geometry is unavailable.
+        bounds[0] = glm::min(bounds[0], animated_bounds[0]);
+        bounds[1] = glm::max(bounds[1], animated_bounds[1]);
+      }
+    }
+    if (!valid_bounds(bounds))
+      continue;
+
+    glm::vec3 const size = bounds[1] - bounds[0];
+    float const horizontal_padding = std::clamp(
+      std::max(size.x, size.z) * 0.15f, 0.15f, 0.5f);
+    float const vertical_padding = std::clamp(size.y * 0.075f, 0.08f, 0.3f);
+    glm::vec3 const padding(horizontal_padding, vertical_padding, horizontal_padding);
+    bounds[0] -= padding;
+    bounds[1] += padding;
+
+    math::ray const model_ray(body.transformMatrixInverted(), ray);
+    auto const local_distance = model_ray.intersect_bounds(bounds[0], bounds[1]);
+    float const distance = local_distance ? *local_distance * std::max(body.scale, 0.001f) : -1.0f;
+    if (local_distance && distance >= 0.0f && distance < closest)
+    {
+      closest = distance;
+      picked = std::make_pair(overlay->guid(), overlay->entry());
+    }
+  }
+  return picked;
+}
+
+void World::removeNpcSpawnOverlay(std::uint64_t guid)
+{
+  if (_selected_npc_spawn_guid == guid) _selected_npc_spawn_guid.reset();
+  std::erase_if(_npc_spawn_overlays, [guid](auto const& overlay)
+  {
+    return overlay && overlay->guid() == guid;
+  });
+}
+
+void World::clearNpcSpawnOverlays()
+{
+  _npc_spawn_overlays.clear();
+  _selected_npc_spawn_guid.reset();
+}
+
+void World::addServerGameObjectOverlay(std::uint64_t guid, unsigned entry,
+                                       std::string const& model_path,
+                                       glm::vec3 const& position, float yaw, float scale)
+{
+  removeServerGameObjectOverlay(guid);
+  _server_gameobject_overlays.push_back(std::make_unique<Noggit::ServerGameObjectOverlay>(
+    guid, entry, model_path, position, yaw, scale, _context));
+  need_model_updates = true;
+}
+
+Noggit::ServerGameObjectOverlay* World::findServerGameObjectOverlay(std::uint64_t guid)
+{
+  auto const found = std::find_if(_server_gameobject_overlays.begin(),
+    _server_gameobject_overlays.end(), [guid](auto const& overlay)
+    {
+      return overlay && overlay->guid() == guid;
+    });
+  return found == _server_gameobject_overlays.end() ? nullptr : found->get();
+}
+
+std::optional<std::pair<std::uint64_t, unsigned>> World::pickServerGameObjectOverlay(
+  math::ray const& ray, float maximum_distance)
+{
+  std::optional<std::pair<std::uint64_t, unsigned>> picked;
+  float closest = maximum_distance;
+  for (auto const& overlay : _server_gameobject_overlays)
+  {
+    if (!overlay) continue;
+    std::array<glm::vec3, 2> const* bounds = nullptr;
+    if (ModelInstance* model = overlay->model(); model && model->finishedLoading())
+      bounds = &model->getExtents();
+    else if (WMOInstance* wmo = overlay->wmo(); wmo && wmo->finishedLoading())
+      bounds = &wmo->getExtents();
+    if (!bounds) continue;
+    bool valid = true;
+    for (glm::vec3 const& corner : *bounds)
+      valid = valid && std::isfinite(corner.x) && std::isfinite(corner.y)
+        && std::isfinite(corner.z);
+    if (!valid) continue;
+    auto const distance = ray.intersect_bounds((*bounds)[0], (*bounds)[1]);
+    if (distance && *distance >= 0.0f && *distance < closest)
+    {
+      closest = *distance;
+      picked = std::make_pair(overlay->guid(), overlay->entry());
+    }
+  }
+  return picked;
+}
+
+void World::removeServerGameObjectOverlay(std::uint64_t guid)
+{
+  std::erase_if(_server_gameobject_overlays, [guid](auto const& overlay)
+  {
+    return overlay && overlay->guid() == guid;
+  });
+}
+
+void World::clearServerGameObjectOverlays()
+{
+  _server_gameobject_overlays.clear();
 }
 
 
@@ -3822,43 +4074,58 @@ std::size_t World::swapTexturesOnTile(
     return 0;
   }
 
-  std::size_t changed_chunks = 0;
+  std::vector<MapChunk*> chunks;
+  chunks.reserve(16 * 16);
   for (unsigned chunk_z = 0; chunk_z < 16; ++chunk_z)
   {
     for (unsigned chunk_x = 0; chunk_x < 16; ++chunk_x)
     {
-      MapChunk* chunk = tile->getChunk(chunk_x, chunk_z);
-      if (!chunk)
-      {
-        continue;
-      }
-
-      bool has_source = false;
-      for (auto const& replacement : replacements)
-      {
-        if (replacement.first != replacement.second
-            && chunk->getTextureSet()->texture_id(replacement.first) >= 0)
-        {
-          has_source = true;
-          break;
-        }
-      }
-      if (!has_source)
-      {
-        continue;
-      }
-
-      NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
-      if (chunk->switchTextures(replacements))
-      {
-        ++changed_chunks;
-      }
+      chunks.push_back(tile->getChunk(chunk_x, chunk_z));
     }
   }
+  return swapTexturesOnChunks(chunks, replacements);
+}
 
-  if (changed_chunks)
+std::size_t World::swapTexturesOnChunks(
+    std::vector<MapChunk*> const& chunks,
+    std::vector<std::pair<scoped_blp_texture_reference, scoped_blp_texture_reference>> const& replacements)
+{
+  ZoneScoped;
+  if (replacements.empty())
   {
-    mapIndex.setChanged(tile);
+    return 0;
+  }
+
+  std::size_t changed_chunks = 0;
+  std::unordered_set<MapChunk*> visited;
+  for (MapChunk* chunk : chunks)
+  {
+    if (!chunk || !visited.emplace(chunk).second)
+    {
+      continue;
+    }
+
+    bool has_source = false;
+    for (auto const& replacement : replacements)
+    {
+      if (replacement.first != replacement.second
+          && chunk->getTextureSet()->texture_id(replacement.first) >= 0)
+      {
+        has_source = true;
+        break;
+      }
+    }
+    if (!has_source)
+    {
+      continue;
+    }
+
+    NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+    if (chunk->switchTextures(replacements))
+    {
+      ++changed_chunks;
+      mapIndex.setChanged(chunk->mt);
+    }
   }
 
   return changed_chunks;
@@ -5409,6 +5676,13 @@ void World::select_objects_in_area(
       break;
     }
 
+    // The render buffer can outlive a tile unload or reload between frames.
+    // Check the index before touching the cached tile pointer.
+    TileIndex const index{static_cast<std::size_t>(map_object.first.first),
+                          static_cast<std::size_t>(map_object.first.second)};
+    if (!mapIndex.tileLoaded(index) || mapIndex.getTile(index) != tile)
+      continue;
+
     // some optimizations to see if the tile is in selection before iterating objects in it
     {
       // tile not in screen, skip
@@ -5803,13 +6077,16 @@ bool World::is_point_occluded_by_terrain(const glm::vec3& point,
 
 void World::add_object_group_from_selection()
 {
-    // create group from selected objects
-    selection_group selection_group(get_selected_objects(), this);
-    selection_group._is_selected = true;
+    auto const objects = get_selected_objects();
+    if (objects.size() < 2) return;
+    add_object_group(objects);
+    _selection_groups.back()._is_selected = true;
+}
 
-    _selection_groups.push_back(selection_group);
-
-    // write group to project
+void World::add_object_group(std::vector<SceneObject*> const& objects)
+{
+    if (objects.size() < 2) return;
+    _selection_groups.emplace_back(objects, this);
     saveSelectionGroups();
 }
 

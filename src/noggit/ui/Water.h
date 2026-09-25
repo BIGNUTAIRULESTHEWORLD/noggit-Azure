@@ -3,6 +3,8 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
+#include <glm/vec3.hpp>
 #include <noggit/BoolToggleProperty.hpp>
 #include <noggit/TileIndex.hpp>
 
@@ -34,6 +36,8 @@ namespace Noggit
 
       void updatePos(TileIndex const& newTile);
       void updateData();
+      void showHoveredWaterPosition(std::optional<glm::vec3> position);
+      int targetLayer() const;
 
       void changeWaterType(int waterint);
 
@@ -59,6 +63,7 @@ namespace Noggit
       bool locked() const;
       bool use_ref_pos() const;
       bool showLiquidVertices() const;
+      bool showLockedPlaneGrid() const;
       int liquidAttributeOverlay() const;
       int heightFalloff() const;
       std::uint64_t surfaceToken() const;
@@ -74,6 +79,7 @@ namespace Noggit
       void clear_all_liquid_flags();
       void clear_fishing_flags_outside_liquid();
       void regenerate_liquid_flags();
+      void detect_hovered_water_height();
 
     private:
       static constexpr float RIVER_OPACITY_VALUE = 0.0337f;
@@ -117,6 +123,9 @@ namespace Noggit
       QDoubleSpinBox* _x_spin;
       QDoubleSpinBox* _z_spin;
       QDoubleSpinBox* _h_spin;
+      QLabel* _hovered_water_height_label;
+      QPushButton* _use_hovered_height_button;
+      std::optional<glm::vec3> _hovered_water_position;
 
       QRadioButton* river_button;
       QRadioButton* ocean_button;

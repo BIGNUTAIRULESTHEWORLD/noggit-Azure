@@ -1016,6 +1016,7 @@ void MapTile::remove_model(uint32_t uid)
 
     instance->derefTile(this);
     _requires_object_extents_recalc = true;
+    tagCombinedExtents(true);
   }
 }
 
@@ -1044,6 +1045,7 @@ void MapTile::remove_model(SceneObject* instance)
     }
 
     _requires_object_extents_recalc = true;
+    tagCombinedExtents(true);
   }
 }
 
@@ -1079,6 +1081,7 @@ void MapTile::add_model(uint32_t uid)
     else
     {
       _requires_object_extents_recalc = true;
+      tagCombinedExtents(true);
     }
 
     instance->refTile(this);
@@ -1112,6 +1115,7 @@ void MapTile::add_model(SceneObject* instance)
     else
     {
       _requires_object_extents_recalc = true;
+      tagCombinedExtents(true);
     }
 
     instance->refTile(this);
@@ -1905,6 +1909,14 @@ void MapTile::markExtentsDirty()
 void MapTile::tagCombinedExtents(bool state)
 {
   _combined_extents_dirty = state;
+  if (state)
+  {
+    // Object/preview changes invalidate occlusion just like terrain changes.
+    // The outstanding query may describe the old, smaller bounding box.
+    // Ignore that result and keep rendering until a fresh query can be used.
+    _renderer.setOverrideOcclusionCulling(true);
+    _renderer.setOccluded(false);
+  }
 }
 
 Noggit::Rendering::TileRender* MapTile::renderer()

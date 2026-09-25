@@ -357,6 +357,9 @@ namespace Noggit
     {
       const int smaller_side ((qMin (rect().width(), rect().height()) / 64) * 64);
       const int tile_size (smaller_side / 64);
+      if (tile_size == 0 || event->pos().x() < 0 || event->pos().y() < 0
+          || event->pos().x() >= smaller_side || event->pos().y() >= smaller_side)
+        return QPoint(-1, -1);
       //! \note event->pos() / tile_size seems to be using floating point arithmetic, therefore getting wrong results.
       const QPoint tile ( event->pos().x() / float(tile_size)
           , event->pos().y() / float(tile_size)
@@ -374,6 +377,12 @@ namespace Noggit
       }
 
       QPoint tile = locateTile(event);
+
+      if (tile.x() < 0)
+      {
+        event->ignore();
+        return;
+      }
 
       if (!world()->mapIndex.hasTile (TileIndex (tile.x(), tile.y())) && !_world->mapIndex.hasAGlobalWMO())
       {
@@ -405,6 +414,11 @@ namespace Noggit
       }
 
       QPoint tile = locateTile(event);
+      if (tile.x() < 0)
+      {
+        event->ignore();
+        return;
+      }
       emit tile_clicked(tile);
       _is_selecting = true;
 
@@ -433,6 +447,8 @@ namespace Noggit
       }
 
       QPoint tile = locateTile(event);
+      if (tile.x() < 0)
+        return;
 
       std::string str("ADT: " + std::to_string(tile.x()) + "_" + std::to_string(tile.y()));
 

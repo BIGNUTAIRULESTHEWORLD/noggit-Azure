@@ -108,6 +108,14 @@ namespace Noggit
                 mv->getWorld()->regenerateLiquidAttributes(mv->getCamera()->position);
                 NOGGIT_ACTION_MGR->endAction();
             });
+        QObject::connect(_guiWater, &Noggit::Ui::water::detect_hovered_water_height,
+            [this, mv]
+            {
+                auto const liquid_position = mv->getWorld()->intersectLiquid(
+                    mv->intersect_ray(), _guiWater->targetLayer(),
+                    _guiWater->targetLayer() >= 0 ? _guiWater->surfaceToken() : 0);
+                _guiWater->showHoveredWaterPosition(liquid_position);
+            });
     }
 
     ToolDrawParameters WaterTool::drawParameters() const
@@ -123,6 +131,7 @@ namespace Noggit
             .use_ref_pos = _guiWater->use_ref_pos(),
             .project_cursor_on_water = !_guiWater->locked(),
             .show_liquid_vertices = _guiWater->showLiquidVertices(),
+            .liquid_locked_plane_grid = _guiWater->showLockedPlaneGrid(),
             .liquid_attribute_overlay = _guiWater->liquidAttributeOverlay(),
             .liquid_edit_layer = static_cast<int>(_displayedWaterLayer.get()),
             .liquid_surface_token = _guiWater->surfaceToken(),

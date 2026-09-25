@@ -1,24 +1,71 @@
 #include "BrowserModelView.hpp"
 
 #include <noggit/ContextObject.hpp>
+#include <noggit/Model.h>
+#include <noggit/ModelInstance.h>
+#include <noggit/ModelManager.h>
+#include <noggit/TextureManager.h>
+#include <noggit/scoped_blp_texture_reference.hpp>
 #include <noggit/WMOInstance.h>
 
 #include <QFocusEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QOpenGLContext>
 #include <QSettings>
+#include <QSurface>
 #include <QWheelEvent>
+
+#include <glm/geometric.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <stdexcept>
 
 using namespace Noggit::Ui::Tools::AssetBrowser;
 
-ModelViewer::ModelViewer(QWidget* parent, Noggit::NoggitRenderContext context)
- : PreviewRenderer(0, 0, context, parent)
+namespace
+{
+  // Selection changes happen outside paintGL. Return to the editor's context
+  // after loading a preview model so later editor work does not run in this widget.
+  struct RestoreCurrentContext
+  {
+    explicit RestoreCurrentContext(bool enabled)
+      : enabled(enabled)
+      , previous(enabled ? QOpenGLContext::currentContext() : nullptr)
+      , surface(previous ? previous->surface() : nullptr)
+    {}
+
+    bool enabled;
+    QOpenGLContext* previous;
+    QSurface* surface;
+
+    ~RestoreCurrentContext()
+    {
+      if (!enabled) return;
+      if (previous && surface && QOpenGLContext::currentContext() != previous)
+        previous->makeCurrent(surface);
+      else if (!previous && QOpenGLContext::currentContext())
+        QOpenGLContext::currentContext()->doneCurrent();
+    }
+  };
+}
+
+ModelViewer::ModelViewer(QWidget* parent, Noggit::NoggitRenderContext context,
+                         int offscreen_width, int offscreen_height)
+ : PreviewRenderer(offscreen_width, offscreen_height, context, parent)
  , look(false)
  , mousedir(-1.0f)
 {
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking (true);
-  _offscreen_mode = false;
+  // The NPC browser no longer embeds an interactive client-model viewport.
+  // Its ModelViewer is exclusively a thumbnail renderer, so model resources
+  // must be created and destroyed in the same offscreen GL context used by
+  // renderToPixmap(). VAOs are not shared between OpenGL contexts.
+  _offscreen_mode = context == Noggit::NoggitRenderContext::NPC_BROWSER
+    || context == Noggit::NoggitRenderContext::NPC_SPAWN_CACHE;
 
   _startup_time.start();
   moving = strafing = updown = lookat = turn = 0.0f;
@@ -103,13 +150,338 @@ void ModelViewer::tick(float dt)
 
 }
 
+blp_texture* ModelViewer::prefetchCreatureTexture(std::string const& path)
+{
+  if (_context != Noggit::NoggitRenderContext::NPC_SPAWN_CACHE || path.empty())
+    return nullptr;
+  auto found = _deferred_creature_textures.find(path);
+  if (found == _deferred_creature_textures.end())
+  {
+    if (_deferred_creature_textures.size() >= 256)
+    {
+      auto const ready = std::find_if(_deferred_creature_textures.begin(),
+        _deferred_creature_textures.end(), [](auto const& entry)
+        {
+          return entry.second->get()->finishedLoading();
+        });
+      if (ready != _deferred_creature_textures.end())
+        _deferred_creature_textures.erase(ready);
+    }
+    found = _deferred_creature_textures.emplace(path,
+      std::make_unique<scoped_blp_texture_reference>(path, _context)).first;
+  }
+  return found->second->get();
+}
+
 void ModelViewer::setModel(std::string const& filename)
 {
-  OpenGL::context::scoped_setter const _ (::gl, context());
-  makeCurrent();
-  PreviewRenderer::setModel(filename);
+  auto load_model = [this, &filename]
+  {
+    _npc_attachment_ids.clear();
+    _npc_attachment_render_ids.clear();
+    _creature_assets_pending = false;
+    if (_context == Noggit::NoggitRenderContext::NPC_SPAWN_CACHE)
+      prefetchCreatureTexture("tileset/generic/black.blp");
+    PreviewRenderer::setModel(filename);
+    if ((_context == Noggit::NoggitRenderContext::NPC_BROWSER
+         || _context == Noggit::NoggitRenderContext::NPC_SPAWN_CACHE
+         || _context == Noggit::NoggitRenderContext::NPC_CREATOR)
+        && !_model_instances.empty())
+    {
+      // Model resources can be shared by multiple display IDs. Clear the last
+      // selection's replacements before applying this display's textures.
+      Model* model = _model_instances.front().model.get();
+      std::fill(model->showGeosets.begin(), model->showGeosets.end(), true);
+      for (auto& replacement : model->_replaceTextures)
+        replacement.second = scoped_blp_texture_reference("tileset/generic/black.blp", _context);
+    }
+  };
+
+  if (_offscreen_mode)
+  {
+    RestoreCurrentContext const restore_context(true);
+    if (!offscreenContext().makeCurrent(&offscreenSurface()))
+      throw std::runtime_error("could not activate the NPC thumbnail OpenGL context");
+    OpenGL::context::scoped_setter const context_set(::gl, &offscreenContext());
+    load_model();
+  }
+  else
+  {
+    RestoreCurrentContext const restore_context(
+      _context == Noggit::NoggitRenderContext::NPC_CREATOR);
+    OpenGL::context::scoped_setter const context_set(::gl, context());
+    makeCurrent();
+    load_model();
+  }
   emit model_set(filename);
   _last_selected_model = filename;
+}
+
+bool ModelViewer::setCreatureTexture(std::size_t type, std::string const& filename)
+{
+  if ((_context != Noggit::NoggitRenderContext::NPC_BROWSER
+       && _context != Noggit::NoggitRenderContext::NPC_SPAWN_CACHE
+       && _context != Noggit::NoggitRenderContext::NPC_CREATOR)
+      || _model_instances.empty() || filename.empty())
+    return false;
+
+  Model* model = _model_instances.front().model.get();
+  if (!model || std::find(model->_specialTextures.begin(), model->_specialTextures.end(),
+                          static_cast<int>(type)) == model->_specialTextures.end())
+    return false;
+
+  if (_context == Noggit::NoggitRenderContext::NPC_SPAWN_CACHE)
+  {
+    blp_texture* const texture = prefetchCreatureTexture(filename);
+    if (!texture) return false;
+    if (!texture->finishedLoading())
+    {
+      _creature_assets_pending = true;
+      return false;
+    }
+    if (texture->loading_failed()) return false;
+  }
+
+  RestoreCurrentContext const restore_context(true);
+  if (_offscreen_mode)
+  {
+    if (!offscreenContext().makeCurrent(&offscreenSurface())) return false;
+  }
+  else makeCurrent();
+  OpenGL::context::scoped_setter const context_set(
+    ::gl, _offscreen_mode ? &offscreenContext() : context());
+  model->_replaceTextures.insert_or_assign(
+      type, scoped_blp_texture_reference(filename, _context));
+  update();
+  return true;
+}
+
+void ModelViewer::setCreatureGeosets(std::map<unsigned, unsigned> const& variants,
+                                    bool character_model, bool show_scalp)
+{
+  if ((_context != Noggit::NoggitRenderContext::NPC_BROWSER
+       && _context != Noggit::NoggitRenderContext::NPC_SPAWN_CACHE
+       && _context != Noggit::NoggitRenderContext::NPC_CREATOR)
+      || _model_instances.empty())
+    return;
+
+  Model* model = _model_instances.front().model.get();
+  if (!model) return;
+
+  // CreatureDisplayInfoExtra supplies character customization and equipment
+  // geosets. Ordinary creature models do not use this character layout; keep
+  // their model defaults instead of treating empty packed fields as "hide".
+  if (!character_model) return;
+
+  // Default character geosets from Noggit RED's initCreatureData. In
+  // particular, 100/200/300 and several higher-numbered groups use variant
+  // zero, while the head, torso, feet, and hand groups default to variant one.
+  static constexpr std::array<unsigned, 29> defaults = {
+    0, 0, 0, 0, 1, 1, 0, 2, 1, 1,
+    1, 1, 1, 1, 0, 1, 0, 0, 1, 0,
+    1, 1, 1, 1, 0, 0, 0, 1, 1
+  };
+  auto const& ids = model->geosetIds();
+  auto const robe = variants.find(13);
+  bool const wearing_robe = robe != variants.end() && robe->second > defaults[13]
+    && std::find(ids.begin(), ids.end(), 1300 + robe->second) != ids.end();
+  for (std::size_t i = 0; i < ids.size() && i < model->showGeosets.size(); ++i)
+  {
+    unsigned const id = ids[i];
+    if (id == 0) // The character body is not a hair variant.
+    {
+      model->showGeosets[i] = true;
+      continue;
+    }
+    unsigned const group = id / 100;
+    unsigned const variant = id % 100;
+    if (group >= defaults.size()) continue;
+
+    // A robe replaces the leg silhouette. Knee, trouser, and boot meshes can
+    // otherwise protrude through its skirt, even with the correct robe geoset.
+    if (wearing_robe && (group == 5 || group == 9 || group == 11))
+    {
+      model->showGeosets[i] = false;
+      continue;
+    }
+
+    // A bald hairstyle can request geoset 0 (no hair) while CharHairGeosets'
+    // Showscalp flag requires geoset 1 to cover the top of the head.
+    if (group == 0 && variant == 1 && show_scalp)
+    {
+      model->showGeosets[i] = true;
+      continue;
+    }
+
+    unsigned desired = defaults[group];
+    if (auto const selected = variants.find(group); selected != variants.end())
+      desired = selected->second;
+
+    bool const exact_exists = std::find(ids.begin(), ids.end(), group * 100 + desired) != ids.end();
+    if (!exact_exists)
+    {
+      // Some client variants are absent on particular races. Use that
+      // group's reference default when it exists, never an unrelated shape.
+      desired = defaults[group];
+    }
+    model->showGeosets[i] = variant == desired;
+  }
+  update();
+}
+
+bool ModelViewer::setCreatureAttachment(unsigned attachment_id,
+                                        std::string const& model_path,
+                                        std::string const& texture_path,
+                                        unsigned render_attachment_id)
+{
+  if (!render_attachment_id)
+    render_attachment_id = attachment_id == 12 ? 1 : attachment_id;
+  if ((_context != Noggit::NoggitRenderContext::NPC_BROWSER
+       && _context != Noggit::NoggitRenderContext::NPC_SPAWN_CACHE
+       && _context != Noggit::NoggitRenderContext::NPC_CREATOR)
+      || _model_instances.empty() || !_model_instances.front().model.get()
+      || model_path.empty()
+      || !_model_instances.front().model->hasAttachment(render_attachment_id))
+    return false;
+
+  if (_context == Noggit::NoggitRenderContext::NPC_SPAWN_CACHE)
+  {
+    blp_texture* const texture = prefetchCreatureTexture(
+      texture_path.empty() ? "tileset/generic/black.blp" : texture_path);
+    bool const texture_pending = texture && !texture->finishedLoading();
+    auto found = _deferred_attachment_models.find(model_path);
+    if (found == _deferred_attachment_models.end())
+    {
+      if (_deferred_attachment_models.size() >= 128)
+      {
+        auto const ready = std::find_if(_deferred_attachment_models.begin(),
+          _deferred_attachment_models.end(), [](auto const& entry)
+          {
+            return entry.second->get()->finishedLoading();
+          });
+        if (ready != _deferred_attachment_models.end())
+          _deferred_attachment_models.erase(ready);
+      }
+      found = _deferred_attachment_models.emplace(model_path,
+        std::make_unique<scoped_model_reference>(
+          BlizzardArchive::Listfile::FileKey(model_path), _context)).first;
+    }
+    Model* const prefetched = found->second->get();
+    if (!prefetched->finishedLoading() || texture_pending)
+    {
+      _creature_assets_pending = true;
+      return false;
+    }
+    if (prefetched->loading_failed() || prefetched->skin_load_failed())
+      return false;
+  }
+
+  RestoreCurrentContext const restore_context(true);
+  if (_offscreen_mode)
+  {
+    if (!offscreenContext().makeCurrent(&offscreenSurface())) return false;
+  }
+  else makeCurrent();
+  OpenGL::context::scoped_setter const context_set(
+    ::gl, _offscreen_mode ? &offscreenContext() : context());
+  auto& attachment = _model_instances.emplace_back(model_path, _context);
+  try
+  {
+    attachment.model->wait_until_loaded();
+    if (attachment.model->loading_failed() || attachment.model->skin_load_failed())
+    {
+      _model_instances.pop_back();
+      return false;
+    }
+    if (std::find(attachment.model->_specialTextures.begin(), attachment.model->_specialTextures.end(), 2)
+        != attachment.model->_specialTextures.end())
+      attachment.model->_replaceTextures.insert_or_assign(
+          2, scoped_blp_texture_reference(
+              texture_path.empty() ? "tileset/generic/black.blp" : texture_path, _context));
+  }
+  catch (...)
+  {
+    _model_instances.pop_back();
+    return false;
+  }
+  _npc_attachment_ids.push_back(attachment_id);
+  _npc_attachment_render_ids.push_back(render_attachment_id);
+  update();
+  return true;
+}
+
+void ModelViewer::clearCreatureAttachments()
+{
+  if ((_context != Noggit::NoggitRenderContext::NPC_BROWSER
+       && _context != Noggit::NoggitRenderContext::NPC_SPAWN_CACHE
+       && _context != Noggit::NoggitRenderContext::NPC_CREATOR)
+      || _model_instances.size() <= 1)
+    return;
+
+  RestoreCurrentContext const restore_context(true);
+  if (_offscreen_mode)
+  {
+    if (!offscreenContext().makeCurrent(&offscreenSurface())) return;
+  }
+  else makeCurrent();
+  OpenGL::context::scoped_setter const context_set(
+    ::gl, _offscreen_mode ? &offscreenContext() : context());
+  _model_instances.erase(_model_instances.begin() + 1, _model_instances.end());
+  _npc_attachment_ids.clear();
+  _npc_attachment_render_ids.clear();
+  update();
+}
+
+std::optional<Noggit::NpcAppearance> ModelViewer::creatureAppearance() const
+{
+  if ((_context != Noggit::NoggitRenderContext::NPC_BROWSER
+       && _context != Noggit::NoggitRenderContext::NPC_SPAWN_CACHE)
+      || _model_instances.empty())
+    return {};
+
+  auto snapshot_model = [](ModelInstance const& instance)
+  {
+    Noggit::NpcModelAppearance appearance;
+    Model* model = instance.model.get();
+    if (!model) return appearance;
+    appearance.model_path = model->file_key().stringRepr();
+    appearance.geosets = model->showGeosets;
+    for (auto const& replacement : model->_replaceTextures)
+      if (replacement.second.get())
+        appearance.replacement_textures.emplace(
+          replacement.first, replacement.second->file_key().stringRepr());
+    return appearance;
+  };
+
+  Noggit::NpcAppearance appearance;
+  appearance.body = snapshot_model(_model_instances.front());
+  for (std::size_t index = 1;
+       index < _model_instances.size() && index - 1 < _npc_attachment_ids.size(); ++index)
+  {
+    Noggit::NpcAttachmentAppearance attachment;
+    attachment.attachment_id = _npc_attachment_ids[index - 1];
+    attachment.render_attachment_id = _npc_attachment_render_ids[index - 1];
+    attachment.model = snapshot_model(_model_instances[index]);
+    if (!attachment.model.model_path.empty())
+      appearance.attachments.push_back(std::move(attachment));
+  }
+  return appearance.body.model_path.empty()
+    ? std::optional<Noggit::NpcAppearance>{} : std::move(appearance);
+}
+
+std::optional<glm::mat4x4> ModelViewer::modelInstanceTransform(std::size_t index) const
+{
+  if ((_context == Noggit::NoggitRenderContext::NPC_BROWSER
+        || _context == Noggit::NoggitRenderContext::NPC_SPAWN_CACHE
+       || _context == Noggit::NoggitRenderContext::NPC_CREATOR)
+      && index > 0
+      && index - 1 < _npc_attachment_render_ids.size())
+  {
+    auto const& character = _model_instances.front();
+    return character.model->attachmentTransform(
+        _npc_attachment_render_ids[index - 1], character.transformMatrix());
+  }
+  return PreviewRenderer::modelInstanceTransform(index);
 }
 
 void Noggit::Ui::Tools::AssetBrowser::ModelViewer::setMoveSensitivity(float s)
@@ -133,8 +505,21 @@ void ModelViewer::mouseMoveEvent(QMouseEvent* event)
 
   if (look)
   {
-    _camera.add_to_yaw(math::degrees(relative_movement.dx() / 20.0f));
-    _camera.add_to_pitch(math::degrees(mousedir * relative_movement.dy() / 20.0f));
+    float const speed = _context == Noggit::NoggitRenderContext::NPC_BROWSER
+      ? _move_sensitivity / 0.5f : 1.0f;
+    glm::vec3 orbit_center{};
+    float orbit_distance = 0.0f;
+    if (_context == Noggit::NoggitRenderContext::NPC_CREATOR
+        && !_model_instances.empty())
+    {
+      auto const bounds = calcSceneExtents();
+      orbit_center = (bounds[0] + bounds[1]) * 0.5f;
+      orbit_distance = glm::distance(_camera.position, orbit_center);
+    }
+    _camera.add_to_yaw(math::degrees(relative_movement.dx() * speed / 20.0f));
+    _camera.add_to_pitch(math::degrees(mousedir * relative_movement.dy() * speed / 20.0f));
+    if (orbit_distance > 0.0f)
+      _camera.position = orbit_center - _camera.direction() * orbit_distance;
   }
 
   _last_mouse_pos = event->pos();
@@ -142,18 +527,61 @@ void ModelViewer::mouseMoveEvent(QMouseEvent* event)
 
 void ModelViewer::mousePressEvent(QMouseEvent* event)
 {
-  if (event->button() == Qt::RightButton)
+  if (event->button() == Qt::RightButton
+      || (_context == Noggit::NoggitRenderContext::NPC_CREATOR
+          && event->button() == Qt::LeftButton))
+  {
+    _last_mouse_pos = event->pos();
     look = true;
+  }
 }
 
 void ModelViewer::mouseReleaseEvent(QMouseEvent* event)
 {
-  if (event->button() == Qt::RightButton)
+  if (event->button() == Qt::RightButton
+      || (_context == Noggit::NoggitRenderContext::NPC_CREATOR
+          && event->button() == Qt::LeftButton))
     look = false;
 }
 
 void ModelViewer::wheelEvent(QWheelEvent* event)
 {
+  if (_context == Noggit::NoggitRenderContext::NPC_CREATOR)
+  {
+    if (!_model_instances.empty() && event->angleDelta().y() != 0)
+    {
+      auto const bounds = calcSceneExtents();
+      glm::vec3 const center = (bounds[0] + bounds[1]) * 0.5f;
+      float const radius = std::max(glm::distance(center, bounds[0]), 0.1f);
+      float const distance = glm::distance(_camera.position, center);
+      float const next = std::clamp(
+        distance - std::copysign(radius * 0.2f, float(event->angleDelta().y())),
+        radius * 0.6f, radius * 10.0f);
+      _camera.position = center - _camera.direction() * next;
+    }
+    update();
+    event->accept();
+    return;
+  }
+  if (_context == Noggit::NoggitRenderContext::NPC_BROWSER)
+  {
+    int const steps = event->angleDelta().y();
+    if (steps == 0) { event->accept(); return; }
+    _move_sensitivity = std::clamp(
+        _move_sensitivity * std::pow(1.2f, steps / 120.0f), 0.025f, 2.0f);
+    auto rescale = [this](float& input)
+    {
+      if (input != 0.0f) input = std::copysign(_move_sensitivity, input);
+    };
+    rescale(moving);
+    rescale(strafing);
+    rescale(updown);
+    rescale(lookat);
+    rescale(turn);
+    emit sensitivity_changed();
+    event->accept();
+    return;
+  }
   if (event->angleDelta().y() > 0)
   {
     _move_sensitivity = std::min(_move_sensitivity + 0.5f / 30.0f, 1.0f);

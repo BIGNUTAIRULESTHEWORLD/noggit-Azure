@@ -275,7 +275,7 @@ private:
   float _glow = 0.5f;
   // bool _highlight_sky = false; // since it's a bool and it can't be blended, just get from highest prio sky
 
-  float _fog_rate = 1.5f;
+  float _fog_rate = 1.0f;
 
   // float params
   float _fog_distance = 6500.0f;
@@ -295,7 +295,7 @@ public:
   // };
   bool using_fallback_global = false; // if map doesn't have a global
 
-  SkyParamsNames active_param;
+  SkyParamsNames active_param = SKY_PARAM_CLEAR;
 
   std::vector<Sky> skies;
   std::array<glm::vec3, NUM_SkyColorNames> color_set = { glm::vec3(1.f, 1.f, 1.f) };

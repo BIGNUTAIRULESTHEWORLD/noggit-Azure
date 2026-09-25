@@ -12,6 +12,8 @@
 #include <vector>
 #include <utility>
 
+class QTabBar;
+
 namespace Noggit
 {
   class Tool;
@@ -28,8 +30,12 @@ namespace Noggit
       void setCurrentTool(editing_mode mode);
       void registerTool(Tool* tool, QWidget* widget);
 
+    signals:
+      void objectModeRequested(editing_mode mode);
+
     private:
       ::Ui::toolPanel _ui;
+      QTabBar* _object_modes = nullptr;
       std::vector<std::pair<Tool*, QWidget*>> _tools;
 
     };

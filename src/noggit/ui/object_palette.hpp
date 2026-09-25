@@ -5,18 +5,13 @@
 
 #include <noggit/ui/widget.hpp>
 
-#include <QtWidgets/QListWidget>
+#include <QJsonArray>
+#include <QPointer>
 
-#include <string>
-#include <unordered_set>
+#include <memory>
 
-class QGridLayout;
 class QPushButton;
-class QDropEvent;
-class QDragEnterEvent;
-class QMouseEvent;
-class QListWidget;
-class QPoint;
+class QDialog;
 class MapView;
 
 namespace Noggit::Project
@@ -28,25 +23,6 @@ namespace Noggit
 {
   namespace Ui
   {
-    namespace Tools
-    {
-      class PreviewRenderer;
-    }
-
-    class current_texture;
-
-    class ObjectList : public QListWidget
-    {
-    public:
-      ObjectList(QWidget* parent);
-      void mouseMoveEvent(QMouseEvent* event) override;
-      void mousePressEvent(QMouseEvent* event) override;
-
-    private:
-      QPoint _start_pos;
-
-    };
-
     class ObjectPalette : public widget
     {
       Q_OBJECT
@@ -54,35 +30,18 @@ namespace Noggit
     public:
       ObjectPalette(MapView* map_view, std::shared_ptr<Noggit::Project::NoggitProject> Project, QWidget* parent);
 
-      ~ObjectPalette();
-
-      void addObjectFromAssetBrowser();
-      void addObjectByFilename(QString const& filename, bool save_palette = true);
-      void LoadSavedPalette();
-
-      void SavePalette();
-
-      void removeObject(QString filename);
-
-      void removeSelectedTexture();
-
-      void dragEnterEvent(QDragEnterEvent* event) override;
-      void dropEvent(QDropEvent* event) override;
+      void saveSelectedGroup();
+      void browseSavedGroups();
 
     signals:
-      void selected(std::string);
+      void savedGroupSelected(QJsonArray const& objects, bool keep_grouped);
 
     private:
-
-      QGridLayout* layout;
-
-      ObjectList* _object_list;
-      QPushButton* _add_button;
-      QPushButton* _remove_button;
-      std::unordered_set<std::string> _object_paths;
+      QPushButton* _save_group_button;
+      QPushButton* _browse_groups_button;
       MapView* _map_view;
-      Noggit::Ui::Tools::PreviewRenderer* _preview_renderer;
       std::shared_ptr<Noggit::Project::NoggitProject> _project;
+      QPointer<QDialog> _saved_groups_dialog;
 
     };
   }

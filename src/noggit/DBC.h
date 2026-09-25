@@ -379,6 +379,45 @@ public:
     static const size_t ObjectEffectPackageID = 18;        // int
 };
 
+// Client weather visuals selected by SMSG_WEATHER.  Wrath sends both one of
+// these record IDs and a separate 0..1 intensity grade.
+class WeatherDB : public DBCFile
+{
+public:
+  WeatherDB() : DBCFile("DBFilesClient\\Weather.dbc") { }
+
+  static const size_t ID = 0;
+  static const size_t AmbienceID = 1;
+  static const size_t EffectType = 2;
+  static const size_t TransitionSkyBox = 3;
+  static const size_t EffectColorR = 4;
+  static const size_t EffectColorG = 5;
+  static const size_t EffectColorB = 6;
+  static const size_t EffectTexture = 7;
+};
+
+class FactionDB : public DBCFile
+{
+public:
+    FactionDB() : DBCFile("DBFilesClient\\Faction.dbc") { }
+
+    static const size_t ID = 0;
+    static const size_t Name = 23;
+};
+
+class FactionTemplateDB : public DBCFile
+{
+public:
+    FactionTemplateDB() : DBCFile("DBFilesClient\\FactionTemplate.dbc") { }
+
+    static const size_t ID = 0;
+    static const size_t Faction = 1;
+    static const size_t Flags = 2;
+    static const size_t FactionGroup = 3;
+    static const size_t FriendGroup = 4;
+    static const size_t EnemyGroup = 5;
+};
+
 void OpenDBs(std::shared_ptr<BlizzardArchive::ClientData> clientData);
 
 const char * getGroundEffectDoodad(unsigned int effectID, int DoodadNum);
@@ -390,6 +429,7 @@ extern LoadingScreensDB gLoadingScreensDB;
 extern LightDB gLightDB;
 extern LightParamsDB gLightParamsDB;
 extern LightSkyboxDB gLightSkyboxDB;
+extern WeatherDB gWeatherDB;
 extern LightIntBandDB gLightIntBandDB;
 extern LightFloatBandDB gLightFloatBandDB;
 extern GroundEffectDoodadDB gGroundEffectDoodadDB;
@@ -403,3 +443,5 @@ extern ZoneIntroMusicTableDB gZoneIntroMusicTableDB;
 extern SoundEntriesDB gSoundEntriesDB;
 extern WMOAreaTableDB gWMOAreaTableDB;
 extern GameObjectDisplayInfoDB gGameObjectDisplayInfoDB;
+extern FactionDB gFactionDB;
+extern FactionTemplateDB gFactionTemplateDB;

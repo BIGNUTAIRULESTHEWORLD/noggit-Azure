@@ -106,6 +106,7 @@ void AsyncLoader::process()
       }
     
       _currently_loading.remove(object);
+      _state_changed.notify_all();
     }
     catch (...)
     {
@@ -121,6 +122,7 @@ void AsyncLoader::process()
       }
 
       _currently_loading.remove(object);
+      _state_changed.notify_all();
     }
   }
 }

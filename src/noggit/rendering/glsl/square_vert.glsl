@@ -3,6 +3,7 @@
 in vec4 position;
 
 out vec3 f_pos;
+out vec3 world_pos_;
 
 uniform mat4 model_view_projection;
 uniform vec3 origin;
@@ -25,4 +26,5 @@ void main()
     gl_Position = model_view_projection * pos;
 
     f_pos = position.xyz;
+    world_pos_ = pos.xyz;
 }

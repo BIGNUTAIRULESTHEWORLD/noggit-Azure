@@ -352,6 +352,9 @@ void Sphere::setup_buffers(int longitude, int latitude)
                  , math::radians inclination
                  , math::radians orientation
                  , glm::vec4  const& color
+                 , bool water_grid_preview
+                 , float inner_radius_ratio
+                 , int brush_falloff
                  )
 {
   if (!_buffers_are_setup)
@@ -367,6 +370,9 @@ void Sphere::setup_buffers(int longitude, int latitude)
   sphere_shader.uniform("inclination", inclination._);
   sphere_shader.uniform("orientation", orientation._);
   sphere_shader.uniform("color", color);
+  sphere_shader.uniform("water_grid_preview", water_grid_preview);
+  sphere_shader.uniform("inner_cursor_ratio", inner_radius_ratio);
+  sphere_shader.uniform("liquid_brush_falloff", brush_falloff);
 
   OpenGL::Scoped::vao_binder const _ (_vao[0]);
   gl.drawElements(GL_TRIANGLES, _indices_vbo, 6, GL_UNSIGNED_SHORT, nullptr);

@@ -15,6 +15,7 @@
 #include <noggit/ui/windows/about/About.h>
 #include <noggit/ui/windows/adtPorter/AdtPorterDialog.hpp>
 #include <noggit/ui/windows/noggitWindow/components/BuildMapListComponent.hpp>
+#include <noggit/ui/windows/noggitWindow/MapSelectionStyle.hpp>
 #include <noggit/ui/windows/noggitWindow/NoggitWindow.hpp>
 #include <noggit/ui/windows/noggitWindow/widgets/MapBookmarkListItem.hpp>
 #include <noggit/ui/windows/noggitWindow/widgets/MapListItem.hpp>
@@ -33,15 +34,19 @@
 #include <QDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPainter>
 #include <QProcess>
+#include <QPixmap>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QStackedWidget>
 #include <QTimer>
 #include <QtGui/QCloseEvent>
 #include <QtWidgets/QComboBox>
@@ -56,6 +61,7 @@
 #include <QtCore/QSettings>
 
 #include <chrono>
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <sstream>
@@ -68,6 +74,53 @@
 
 namespace Noggit::Ui::Windows
 {
+  class MapEmptyArtworkFrame final : public QFrame
+  {
+  public:
+    using QFrame::QFrame;
+
+  protected:
+    void paintEvent(QPaintEvent* event) override
+    {
+      QFrame::paintEvent(event);
+
+      static const QPixmap artwork(":/map-selection-coast");
+      if (artwork.isNull())
+        return;
+
+      QRectF target(rect());
+      target.adjust(1.0, 1.0, -1.0, -1.0);
+      if (target.isEmpty())
+        return;
+
+      // The 1600x1200 source has black bars and branding outside this clean landscape band.
+      QRectF const clean_band(0.0, 246.0, 1600.0, 667.0);
+      qreal const scale = std::max(target.width() / clean_band.width(),
+                                   target.height() / clean_band.height());
+      qreal const visible_width = target.width() / scale;
+      qreal const visible_height = target.height() / scale;
+      QRectF const source(clean_band.left() + (clean_band.width() - visible_width) / 2.0,
+                          clean_band.top() + (clean_band.height() - visible_height) * 0.46,
+                          visible_width, visible_height);
+
+      QPainter painter(this);
+      painter.setRenderHint(QPainter::SmoothPixmapTransform);
+      painter.drawPixmap(target, artwork, source);
+
+      QLinearGradient left_shade(target.topLeft(),
+                                  QPointF(target.left() + target.width() * 0.65, target.top()));
+      left_shade.setColorAt(0.0, QColor(5, 12, 25, 130));
+      left_shade.setColorAt(1.0, QColor(5, 12, 25, 0));
+      painter.fillRect(target, left_shade);
+
+      QLinearGradient bottom_shade(target.bottomLeft(),
+                                    QPointF(target.left(), target.top() + target.height() * 0.56));
+      bottom_shade.setColorAt(0.0, QColor(5, 12, 25, 225));
+      bottom_shade.setColorAt(1.0, QColor(5, 12, 25, 0));
+      painter.fillRect(target, bottom_shade);
+    }
+  };
+
   NoggitWindow::NoggitWindow(std::shared_ptr<Noggit::Application::NoggitApplicationConfiguration> application,
                              std::shared_ptr<Noggit::Project::NoggitProject> project)
       : QMainWindow(nullptr)
@@ -290,6 +343,7 @@ namespace Noggit::Ui::Windows
 
   void NoggitWindow::applyFilterSearch(const QString &name, int type, int expansion, bool wmo_maps)
   {
+      int visible_count = 0;
       for (int i = 0; i < _continents_table->count(); ++i)
       {
           auto item_widget = _continents_table->item(i);
@@ -300,7 +354,8 @@ namespace Noggit::Ui::Windows
 
           item_widget->setHidden(false);
 
-          if (!widget->name().contains(name, Qt::CaseInsensitive))
+          if (!widget->name().contains(name, Qt::CaseInsensitive)
+              && !QString::number(widget->id()).contains(name))
           {
               item_widget->setHidden(true);
               continue;
@@ -321,7 +376,11 @@ namespace Noggit::Ui::Windows
           {
               item_widget->setHidden(true);
           }
+          if (!item_widget->isHidden())
+            ++visible_count;
       }
+      if (auto count_label = findChild<QLabel*>("mapListCount"))
+        count_label->setText(tr("%1 shown").arg(visible_count));
   }
 
   void NoggitWindow::loadMap(int map_id)
@@ -342,6 +401,8 @@ namespace Noggit::Ui::Windows
     */
 
     _minimap->world(getWorld());
+    if (_map_preview_stack && getWorld())
+      _map_preview_stack->setCurrentIndex(1);
 
     //_project->ClientDatabase->UnloadTable("Map");
   }
@@ -354,12 +415,57 @@ namespace Noggit::Ui::Windows
     setCentralWidget(_stack_widget);
 
     auto widget(new QWidget(_stack_widget));
+    widget->setObjectName("mapSelectionPage");
     _stack_widget->addWidget(widget);
 
-    auto layout(new QHBoxLayout(widget));
-    layout->setAlignment(Qt::AlignLeft);
+    auto root_layout = new QVBoxLayout(widget);
+    root_layout->setContentsMargins(0, 0, 0, 0);
+    root_layout->setSpacing(0);
+
+    auto header = new QFrame(widget);
+    header->setObjectName("mapSelectionHeader");
+    header->setFixedHeight(64);
+    auto header_layout = new QHBoxLayout(header);
+    header_layout->setContentsMargins(22, 0, 22, 0);
+    header_layout->setSpacing(11);
+    auto brand_mark = new QLabel(QStringLiteral("N"), header);
+    brand_mark->setObjectName("mapBrandMark");
+    brand_mark->setAlignment(Qt::AlignCenter);
+    brand_mark->setFixedSize(34, 34);
+    auto brand_name = new QLabel(QStringLiteral("Noggit Azure"), header);
+    brand_name->setObjectName("mapBrandName");
+    auto brand_section = new QLabel(QStringLiteral("MAP SELECTION"), header);
+    brand_section->setObjectName("mapBrandSection");
+    auto brand_layout = new QVBoxLayout();
+    brand_layout->setContentsMargins(0, 0, 0, 0);
+    brand_layout->setSpacing(1);
+    brand_layout->addWidget(brand_name);
+    brand_layout->addWidget(brand_section);
+    header_layout->addWidget(brand_mark);
+    header_layout->addLayout(brand_layout);
+    header_layout->addStretch();
+    auto project_label = new QLabel(QString::fromStdString(_project->ProjectName), header);
+    project_label->setObjectName("mapProjectName");
+    header_layout->addWidget(project_label);
+    auto header_settings = new QPushButton(QStringLiteral("Settings"), header);
+    header_settings->setObjectName("mapHeaderSettings");
+    header_layout->addWidget(header_settings);
+    QObject::connect(header_settings, &QPushButton::clicked, this,
+                     [this]() { _settings->show(); });
+    root_layout->addWidget(header);
+
+    auto content = new QWidget(widget);
+    content->setObjectName("mapSelectionContent");
+    auto layout = new QHBoxLayout(content);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    root_layout->addWidget(content, 1);
     QListWidget* bookmarks_table(new QListWidget(widget));
+    bookmarks_table->setObjectName("bookmarksList");
     _continents_table = new QListWidget(widget);
+    _continents_table->setObjectName("mapList");
+    _continents_table->setSpacing(3);
+    _continents_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     _continents_table->setSelectionMode(QAbstractItemView::SelectionMode::SingleSelection);
     _continents_table->setSelectionBehavior(QAbstractItemView::SelectItems);
 
@@ -378,22 +484,34 @@ namespace Noggit::Ui::Windows
 
 
     QTabWidget* entry_points_tabs(new QTabWidget(widget));
+    entry_points_tabs->setObjectName("mapBrowserTabs");
     //entry_points_tabs->addTab(_continents_table, "Maps");
 
      auto add_btn = new QPushButton("Add New Map", this);
+     add_btn->setObjectName("addMapButton");
      add_btn->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::plus));
      add_btn->setAccessibleName("map_wizard_add_button");
 
     /* set-up widget for seaching etc... through _continents_table */
     {
-        QWidget* _first_tab = new QWidget(this);
-        QVBoxLayout* _first_tab_layout = new QVBoxLayout();
-        _first_tab->setLayout(_first_tab_layout);
+        QWidget* _first_tab = new QWidget(entry_points_tabs);
+        _first_tab->setObjectName("mapsBrowserPage");
+        QVBoxLayout* _first_tab_layout = new QVBoxLayout(_first_tab);
+        _first_tab_layout->setContentsMargins(14, 14, 14, 14);
+        _first_tab_layout->setSpacing(8);
 
-        QGroupBox* _group_search = new QGroupBox(tr("Search"), this);
+        auto search_panel = new QWidget(_first_tab);
+        search_panel->setObjectName("mapSearchPanel");
+        auto search_layout = new QVBoxLayout(search_panel);
+        search_layout->setContentsMargins(0, 0, 0, 0);
+        search_layout->setSpacing(9);
 
-        QLineEdit* _line_edit_search = new QLineEdit(this);
-        QComboBox* _combo_search = new QComboBox(this);
+        QLineEdit* _line_edit_search = new QLineEdit(search_panel);
+        _line_edit_search->setObjectName("mapSearchInput");
+        _line_edit_search->setPlaceholderText(tr("Search maps or map ID"));
+        _line_edit_search->setClearButtonEnabled(true);
+        QComboBox* _combo_search = new QComboBox(search_panel);
+        _combo_search->setObjectName("mapTypeFilter");
         _combo_search->addItems(QStringList() <<
                                 tr("All") <<
                                 tr("Unknown") <<
@@ -406,7 +524,8 @@ namespace Noggit::Ui::Windows
         QSettings settings;
         _combo_search->setCurrentIndex(settings.value("mapComboSearch", 2).toInt());
 
-        QComboBox* _combo_exp_search = new QComboBox(this);
+        QComboBox* _combo_exp_search = new QComboBox(search_panel);
+        _combo_exp_search->setObjectName("mapExpansionFilter");
         _combo_exp_search->addItem(tr("All"));
         _combo_exp_search->addItem(QIcon(":/icon-classic"), tr("Classic"));
         _combo_exp_search->addItem(QIcon(":/icon-burning"), tr("Burning Cursade"));
@@ -419,7 +538,8 @@ namespace Noggit::Ui::Windows
         _combo_exp_search->addItem(QIcon(":/icon-shadow"), tr("Shadowlands"));
         _combo_exp_search->setCurrentIndex(0);
 
-        QCheckBox* _wmo_maps_search = new QCheckBox("Display WMO maps (No terrain)", this);
+        QCheckBox* _wmo_maps_search = new QCheckBox(tr("WMO maps only (no terrain)"), search_panel);
+        _wmo_maps_search->setObjectName("mapWmoFilter");
 
         QObject::connect(_line_edit_search, QOverload<const QString&>::of(&QLineEdit::textChanged), [this, _combo_search, _combo_exp_search, _wmo_maps_search](const QString &name)
                          {
@@ -444,22 +564,45 @@ namespace Noggit::Ui::Windows
                              applyFilterSearch(_line_edit_search->text(), _combo_search->currentIndex(), _combo_exp_search->currentIndex(), b);
                          });
 
-        QFormLayout* _group_layout = new QFormLayout();
-        _group_layout->addRow(tr("Name : "), _line_edit_search);
-        _group_layout->addRow(tr("Type : "), _combo_search);
-        _group_layout->addRow(tr("Expansion : "), _combo_exp_search);
-        _group_layout->addRow( _wmo_maps_search);
-        _group_search->setLayout(_group_layout);
+        auto filter_row = new QHBoxLayout();
+        filter_row->setContentsMargins(0, 0, 0, 0);
+        filter_row->setSpacing(8);
+        auto type_column = new QVBoxLayout();
+        type_column->setSpacing(4);
+        auto type_label = new QLabel(tr("TYPE"), search_panel);
+        type_label->setObjectName("mapFilterLabel");
+        type_column->addWidget(type_label);
+        type_column->addWidget(_combo_search);
+        auto expansion_column = new QVBoxLayout();
+        expansion_column->setSpacing(4);
+        auto expansion_label = new QLabel(tr("EXPANSION"), search_panel);
+        expansion_label->setObjectName("mapFilterLabel");
+        expansion_column->addWidget(expansion_label);
+        expansion_column->addWidget(_combo_exp_search);
+        filter_row->addLayout(type_column, 1);
+        filter_row->addLayout(expansion_column, 1);
+        search_layout->addWidget(_line_edit_search);
+        search_layout->addLayout(filter_row);
+        search_layout->addWidget(_wmo_maps_search);
 
-        _first_tab_layout->addWidget(_group_search);
-        _first_tab_layout->addSpacing(5);
-        _first_tab_layout->addWidget(_continents_table);
+        auto list_heading = new QLabel(tr("MAPS"), _first_tab);
+        list_heading->setObjectName("mapListHeading");
+        auto list_count = new QLabel(_first_tab);
+        list_count->setObjectName("mapListCount");
+        auto list_heading_row = new QHBoxLayout();
+        list_heading_row->setContentsMargins(0, 0, 0, 0);
+        list_heading_row->addWidget(list_heading);
+        list_heading_row->addStretch();
+        list_heading_row->addWidget(list_count);
+        _first_tab_layout->addWidget(search_panel);
+        _first_tab_layout->addLayout(list_heading_row);
+        _first_tab_layout->addWidget(_continents_table, 1);
         _first_tab_layout->addWidget(add_btn);
 
         entry_points_tabs->addTab(_first_tab, tr("Maps"));
 
         entry_points_tabs->addTab(bookmarks_table, "Bookmarks");
-        entry_points_tabs->setFixedWidth(310);
+        entry_points_tabs->setFixedWidth(330);
         layout->addWidget(entry_points_tabs);
 
         _buildMapListComponent->buildMapList(this);
@@ -521,12 +664,16 @@ namespace Noggit::Ui::Windows
     );
 
     _right_side = new QTabWidget(this);
+    _right_side->setObjectName("mapModeTabs");
 
     auto enter_map_tab = new QWidget(_right_side);
+    enter_map_tab->setObjectName("enterMapPage");
     auto enter_map_layout = new QVBoxLayout(enter_map_tab);
-    enter_map_layout->setContentsMargins(6, 6, 6, 6);
+    enter_map_layout->setContentsMargins(18, 8, 18, 18);
+    enter_map_layout->setSpacing(9);
 
     auto show_grid_toggle = new QCheckBox(tr("Show ADT grid"), enter_map_tab);
+    show_grid_toggle->setObjectName("mapGridToggle");
     show_grid_toggle->setChecked(show_adt_grid);
     show_grid_toggle->setAccessibleName("main_menu_show_adt_grid");
     QObject::connect(show_grid_toggle, &QCheckBox::toggled, [this](bool checked)
@@ -541,6 +688,7 @@ namespace Noggit::Ui::Windows
     preview_controls->addStretch(1);
 
     auto appearance_button = new QPushButton(tr("Heightmap appearance..."), enter_map_tab);
+    appearance_button->setObjectName("mapAppearanceButton");
     appearance_button->setAccessibleName("main_menu_heightmap_appearance");
     preview_controls->addWidget(appearance_button);
     enter_map_layout->addLayout(preview_controls);
@@ -690,11 +838,74 @@ namespace Noggit::Ui::Windows
         appearance_dialog->activateWindow();
       });
 
-    auto minimap_holder = new QScrollArea(enter_map_tab);
+    _map_preview_stack = new QStackedWidget(enter_map_tab);
+    _map_preview_stack->setObjectName("mapPreviewStack");
+
+    auto empty_preview = new MapEmptyArtworkFrame(_map_preview_stack);
+    empty_preview->setObjectName("mapEmptyPreview");
+    auto empty_layout = new QVBoxLayout(empty_preview);
+    empty_layout->setContentsMargins(38, 22, 38, 42);
+    empty_layout->addStretch(1);
+    auto empty_kicker = new QLabel(tr("YOUR WORLDS"), empty_preview);
+    empty_kicker->setObjectName("mapEmptyKicker");
+    empty_layout->addWidget(empty_kicker);
+    auto empty_title = new QLabel(tr("Choose a map"), empty_preview);
+    empty_title->setObjectName("mapEmptyTitle");
+    empty_layout->addWidget(empty_title);
+    auto empty_hint = new QLabel(tr("Select a map on the left to see its terrain and choose where to enter."),
+                                 empty_preview);
+    empty_hint->setObjectName("mapEmptyHint");
+    empty_hint->setWordWrap(true);
+    empty_layout->addWidget(empty_hint);
+    _map_preview_stack->addWidget(empty_preview);
+
+    auto selected_preview = new QFrame(_map_preview_stack);
+    selected_preview->setObjectName("mapSelectedPreview");
+    auto selected_layout = new QVBoxLayout(selected_preview);
+    selected_layout->setContentsMargins(18, 18, 18, 12);
+    selected_layout->setSpacing(10);
+    auto selected_header = new QHBoxLayout();
+    auto selected_heading = new QVBoxLayout();
+    selected_heading->setSpacing(3);
+    auto selected_kicker = new QLabel(tr("MAP PREVIEW"), selected_preview);
+    selected_kicker->setObjectName("mapPreviewKicker");
+    auto selected_name = new QLabel(tr("Map preview"), selected_preview);
+    selected_name->setObjectName("mapPreviewName");
+    selected_heading->addWidget(selected_kicker);
+    selected_heading->addWidget(selected_name);
+    selected_header->addLayout(selected_heading);
+    selected_header->addStretch(1);
+    auto selected_id = new QLabel(selected_preview);
+    selected_id->setObjectName("mapPreviewId");
+    selected_header->addWidget(selected_id, 0, Qt::AlignBottom);
+    selected_layout->addLayout(selected_header);
+
+    auto minimap_holder = new QScrollArea(selected_preview);
+    minimap_holder->setObjectName("mapMinimapHolder");
     minimap_holder->setWidgetResizable(true);
     minimap_holder->setAlignment(Qt::AlignCenter);
     minimap_holder->setWidget(_minimap);
-    enter_map_layout->addWidget(minimap_holder, 1);
+    selected_layout->addWidget(minimap_holder, 1);
+    auto selected_hint = new QLabel(tr("Click a terrain tile to enter the world."), selected_preview);
+    selected_hint->setObjectName("mapPreviewHint");
+    selected_layout->addWidget(selected_hint);
+    _map_preview_stack->addWidget(selected_preview);
+    _map_preview_stack->setCurrentIndex(0);
+    enter_map_layout->addWidget(_map_preview_stack, 1);
+    QObject::connect(this, &NoggitWindow::mapSelected, selected_preview,
+                     [this, selected_name, selected_id](int map_id)
+                     {
+                       QString map_name = tr("Map %1").arg(map_id);
+                       QListWidgetItem* item = _continents_table->currentItem();
+                       if (item && item->data(Qt::UserRole).toInt() == map_id)
+                       {
+                         auto map_item = qobject_cast<Widget::MapListItem*>(_continents_table->itemWidget(item));
+                         if (map_item)
+                           map_name = map_item->name();
+                       }
+                       selected_name->setText(map_name);
+                       selected_id->setText(tr("Map %1").arg(map_id));
+                     });
 
     _right_side->addTab(enter_map_tab, "Enter map");
     minimap_holder->setAccessibleName("main_menu_minimap_holder");
@@ -734,8 +945,7 @@ namespace Noggit::Ui::Windows
             _map_creation_wizard->addNewMap();
         });
 
-    //setCentralWidget (_stack_widget);
-
+    widget->setStyleSheet(mapSelectionStyle());
     _minimap->adjustSize();
   }
 
@@ -802,6 +1012,13 @@ namespace Noggit::Ui::Windows
         delete _map_view;
         _map_view = nullptr;
         _minimap->world(nullptr);
+        if (_map_preview_stack)
+          _map_preview_stack->setCurrentIndex(0);
+        {
+          QSignalBlocker const blocker(_continents_table);
+          _continents_table->clearSelection();
+          _continents_table->setCurrentRow(-1);
+        }
 
         map_loaded = false;
         break;

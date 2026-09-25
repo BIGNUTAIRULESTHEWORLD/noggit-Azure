@@ -125,8 +125,9 @@ namespace Noggit
       shape_buttons->addWidget(circle_shape);
       shape_buttons->addWidget(square_shape);
       shape_layout->addLayout(shape_buttons);
+      shape_layout->addWidget(new QLabel("Preview opacity:", shape_group));
       _brush_opacity_slider = new Noggit::Ui::Tools::UiCommon::ExtendedSlider(shape_group);
-      _brush_opacity_slider->setPrefix("Opacity:");
+      _brush_opacity_slider->setPrefix("");
       _brush_opacity_slider->setRange(0, 100);
       _brush_opacity_slider->setDecimals(0);
       _brush_opacity_slider->setValue(100);

@@ -18,10 +18,13 @@
 #include <noggit/uid_storage.hpp>
 #include <noggit/ui/CurrentTexture.h>
 #include <noggit/ui/DetailInfos.h> // detailInfos
+#include <noggit/ui/DuplicateObjectAudit.hpp>
 #include <noggit/ui/FlattenTool.hpp>
 #include <noggit/ui/Help.h>
 #include <noggit/ui/HelperModels.h>
 #include <noggit/ui/ModelImport.h>
+#include <noggit/ui/NpcTemplateBrowser.hpp>
+#include <noggit/NpcSpawnOverlay.hpp>
 #include <noggit/ui/ObjectEditor.h>
 #include <noggit/ui/RotationEditor.h>
 #include <noggit/ui/TexturePicker.h>
@@ -85,6 +88,8 @@
 #include <noggit/database/SqlDatabaseManager.h>
 
 #include <QtCore/QSettings>
+#include <QtCore/QFile>
+#include <QtCore/QTextStream>
 
 #include <noggit/scripting/scripting_tool.hpp>
 #include <noggit/scripting/script_settings.hpp>
@@ -100,6 +105,7 @@
 
 #include <QtCore/QTimer>
 #include <QtGui/QMouseEvent>
+#include <QtGui/QImage>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QActionGroup>
 #include <QtWidgets/QCheckBox>
@@ -112,6 +118,7 @@
 #include <QtWidgets/QOpenGLWidget>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QStatusBar>
+#include <QtWidgets/QToolBar>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QTreeWidget>
@@ -120,6 +127,7 @@
 #include <QSurfaceFormat>
 #include <QMessageBox>
 #include <QAbstractScrollArea>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QDateTime>
 #include <QCursor>
@@ -1244,13 +1252,15 @@ void MapView::set_editing_mode(editing_mode mode)
   auto previous_mode = _left_sec_toolbar->getCurrentMode();
 
   _left_sec_toolbar->setCurrentMode(this, mode);
+  if (_npc_workspace_active)
+    _viewport_overlay_ui->leftSecondaryToolbarHolder->hide();
 
   // hack to hide empty tools
   if (mode == editing_mode::impass)
   {
     _tool_panel_dock->hide();
   }
-  else
+  else if (!_npc_workspace_active)
   {
     _tool_panel_dock->show();
   }
@@ -1283,15 +1293,12 @@ void MapView::set_editing_mode(editing_mode mode)
 
   terrainMode = mode;
   _toolbar->check_tool (mode);
-  if (std::size_t const menu_index = static_cast<std::size_t>(mode);
-      menu_index < _tool_menu_actions.size() && _tool_menu_actions[menu_index])
-  {
-    _tool_menu_actions[menu_index]->setChecked(true);
-  }
   this->activateWindow();
 
   _tool_panel_dock->setWindowTitle(
-    QString("Tool Settings - %1").arg(activeTool()->name()));
+    terrainMode == editing_mode::object || terrainMode == editing_mode::fence
+      ? "Tool Settings - Objects"
+      : QString("Tool Settings - %1").arg(activeTool()->name()));
 
   _world->renderer()->markTerrainParamsUniformBlockDirty();
 }
@@ -1309,8 +1316,9 @@ void MapView::setToolPropertyWidgetVisibility(editing_mode mode)
   {
 
   case editing_mode::object:
-    _asset_browser_dock->setVisible(!ui_hidden && _settings->value("map_view/asset_browser", false).toBool());
-    _viewport_overlay_ui->gizmoBar->setVisible(!ui_hidden);
+    _asset_browser_dock->setVisible(!ui_hidden && !_npc_workspace_active
+                                    && _settings->value("map_view/asset_browser", false).toBool());
+    _viewport_overlay_ui->gizmoBar->setVisible(!ui_hidden && !_npc_workspace_active);
     break;
   default:
     break;
@@ -1409,6 +1417,17 @@ void MapView::setupViewportOverlay()
   _overlay_widget = new QWidget(this);
   _viewport_overlay_ui = new ::Ui::MapViewOverlay();
   _viewport_overlay_ui->setupUi(_overlay_widget);
+  _viewport_overlay_ui->gizmoBar->setStyleSheet(R"(
+    QWidget#gizmoBar { background: #0c192d; }
+    QPushButton {
+      background: #14233e; color: #6fa9df;
+      border: 1px solid #405c7c;
+    }
+    QPushButton:hover { background: #294565; border-color: #6fa9df; }
+    QPushButton:checked, QPushButton:pressed {
+      background: #294565; border-color: #d6b777;
+    }
+  )");
   _overlay_widget->setAttribute(Qt::WA_TranslucentBackground);
   _overlay_widget->setMouseTracking(true);
   _overlay_widget->setGeometry(0,0, width(), height());
@@ -1467,6 +1486,10 @@ void MapView::setupViewportOverlay()
 
 void MapView::updateGizmoOverlay(ImGuizmo::OPERATION operation)
 {
+  if (operation == ImGuizmo::OPERATION::SCALE && _world
+      && _world->selectedNpcSpawnOverlay())
+    operation = ImGuizmo::OPERATION::TRANSLATE;
+
   if (operation == ImGuizmo::OPERATION::TRANSLATE)
   {
     _viewport_overlay_ui->gizmoRotateButton->setChecked(false);
@@ -1510,7 +1533,7 @@ void MapView::setupNodeEditor()
                                  | QDockWidget::DockWidgetFloatable
                                  | QDockWidget::DockWidgetClosable);
 
-  _node_editor_dock->setVisible(_settings->value ("map_view/node_editor", false).toBool());
+  _node_editor_dock->hide();
 
   connect(_node_editor_dock, &QDockWidget::visibilityChanged,
           [=](bool visible)
@@ -1565,6 +1588,102 @@ void MapView::setupAssetBrowser()
           });;
 
   connect(this, &QObject::destroyed, _asset_browser_dock, &QObject::deleteLater);
+}
+
+void MapView::setupNpcBrowser()
+{
+  _npc_browser_dock = new QDockWidget("NPC Browser", this);
+  _npc_browser_dock->setObjectName("mapViewNpcBrowserDock");
+  _npc_browser_dock->setFeatures(QDockWidget::DockWidgetMovable
+                                 | QDockWidget::DockWidgetFloatable
+                                 | QDockWidget::DockWidgetClosable);
+  _npc_browser_dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+  auto* npc_browser = new Noggit::Ui::NpcTemplateBrowser(
+    _project->ClientData, this, _npc_browser_dock);
+  _npc_browser_dock->setWidget(npc_browser);
+
+  _npc_properties_dock = new QDockWidget("NPC Properties", this);
+  _npc_properties_dock->setObjectName("mapViewNpcPropertiesDock");
+  _npc_properties_dock->setFeatures(QDockWidget::DockWidgetMovable
+                                    | QDockWidget::DockWidgetFloatable
+                                    | QDockWidget::DockWidgetClosable);
+  _npc_properties_dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+  auto* npc_properties_scroll = new QScrollArea(_npc_properties_dock);
+  npc_properties_scroll->setWidgetResizable(true);
+  npc_properties_scroll->setFrameShape(QFrame::NoFrame);
+  npc_properties_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  npc_properties_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  npc_properties_scroll->setWidget(npc_browser->propertiesPanel());
+  _npc_properties_dock->setWidget(npc_properties_scroll);
+
+  _main_window->addDockWidget(Qt::RightDockWidgetArea, _npc_properties_dock);
+  // Add the controller-bearing browser dock last so it is destroyed before
+  // the sibling properties panel during main-window teardown.
+  _main_window->addDockWidget(Qt::LeftDockWidgetArea, _npc_browser_dock);
+  _main_window->resizeDocks({_npc_browser_dock}, {270}, Qt::Horizontal);
+  _main_window->resizeDocks({_npc_properties_dock}, {320}, Qt::Horizontal);
+  _npc_browser_dock->hide();
+  _npc_properties_dock->hide();
+  connect(this, &QObject::destroyed, _npc_browser_dock, &QObject::deleteLater);
+  connect(this, &QObject::destroyed, _npc_properties_dock, &QObject::deleteLater);
+}
+
+void MapView::setNpcWorkspaceActive(bool active)
+{
+  if (_destroying)
+    return;
+
+  if (active)
+  {
+    QTimer::singleShot(0, this, [this]
+    {
+      if (!_npc_workspace_active)
+        return;
+      if (_npc_browser_dock->isVisible())
+        _main_window->resizeDocks({_npc_browser_dock}, {270}, Qt::Horizontal);
+      if (_npc_properties_dock->isVisible())
+        _main_window->resizeDocks({_npc_properties_dock}, {350}, Qt::Horizontal);
+    });
+  }
+
+  if (_npc_workspace_active == active)
+    return;
+
+  _npc_workspace_active = active;
+  if (active)
+  {
+    _npc_restore_chrome_on_ui_show = false;
+    _npc_mode_before = terrainMode;
+    _npc_tool_panel_was_visible = _tool_panel_dock->isVisible();
+    _npc_toolbar_was_visible = _toolbar->isVisible();
+    _npc_left_secondary_was_visible =
+      _viewport_overlay_ui->leftSecondaryToolbarHolder->isVisible();
+    _npc_gizmo_bar_was_visible = _viewport_overlay_ui->gizmoBar->isVisible();
+    _tool_panel_dock->hide();
+    _toolbar->hide();
+    _viewport_overlay_ui->leftSecondaryToolbarHolder->hide();
+    _viewport_overlay_ui->gizmoBar->hide();
+    if (_npc_browser_visible && !_npc_properties_dock->isVisible())
+    {
+      QSignalBlocker const blocker(_npc_properties_dock);
+      _npc_properties_shown_with_browser = true;
+      _npc_properties_dock->show();
+    }
+    return;
+  }
+
+  _npc_restore_chrome_on_ui_show = ui_hidden;
+  if (!ui_hidden)
+  {
+    _toolbar->setVisible(_npc_toolbar_was_visible);
+    _left_sec_toolbar->setCurrentMode(this, terrainMode);
+    if (terrainMode == _npc_mode_before && !_npc_left_secondary_was_visible)
+      _viewport_overlay_ui->leftSecondaryToolbarHolder->hide();
+    _viewport_overlay_ui->gizmoBar->setVisible(_npc_gizmo_bar_was_visible
+                                               && terrainMode == editing_mode::object);
+    _tool_panel_dock->setVisible(_npc_tool_panel_was_visible
+                                 && terrainMode != editing_mode::impass);
+  }
 }
 
 void MapView::setupDetailInfos()
@@ -1674,7 +1793,7 @@ void MapView::setupMissingObjects()
 
   _missing_objects_dock->setWidget(container);
   _main_window->addDockWidget(Qt::BottomDockWidgetArea, _missing_objects_dock);
-  _missing_objects_dock->setVisible(_settings->value("map_view/missing_objects", false).toBool());
+  _missing_objects_dock->hide();
   connect(this, &QObject::destroyed, _missing_objects_dock, &QObject::deleteLater);
 
   auto focus_current = [this]()
@@ -1839,13 +1958,17 @@ void MapView::setupFloatingObjectAudit()
   _floating_objects_search->setPlaceholderText("Search asset path or UID...");
   _floating_objects_search->setClearButtonEnabled(true);
   auto* selected_asset_button = new QPushButton("Use Selected Asset", container);
+  auto* select_all_button = new QPushButton("Select All", container);
   auto* select_results_button = new QPushButton("Select Safe Results", container);
   selected_asset_button->setToolTip(
       "Filter the audit to placements using the same asset as the currently selected M2 or WMO.");
+  select_all_button->setToolTip(
+      "Select every result currently visible after applying the asset path or UID search.");
   select_results_button->setToolTip(
       "Select every visible result except WMO-protected below-terrain placements.");
   search_layout->addWidget(_floating_objects_search, 1);
   search_layout->addWidget(selected_asset_button);
+  search_layout->addWidget(select_all_button);
   search_layout->addWidget(select_results_button);
   layout->addLayout(search_layout);
 
@@ -1866,25 +1989,20 @@ void MapView::setupFloatingObjectAudit()
   auto* previous_button = new QPushButton("Previous", container);
   auto* focus_button = new QPushButton("Go To", container);
   auto* next_button = new QPushButton("Next", container);
-  auto* lower_button = new QPushButton("Lower Selected to Terrain", container);
-  auto* raise_button = new QPushButton("Raise Selected to Terrain", container);
+  auto* fix_button = new QPushButton("Fix to Terrain", container);
   auto* delete_button = new QPushButton("Delete Selected", container);
   auto* scan_button = new QPushButton("Scan Loaded ADTs", container);
-  lower_button->setEnabled(false);
-  raise_button->setEnabled(false);
+  fix_button->setEnabled(false);
   delete_button->setEnabled(false);
-  lower_button->setToolTip(
-      "Lower selected M2 origins or confirmed floating WMO undersides to terrain. "
-      "This can be undone as one action.");
-  raise_button->setToolTip(
-      "Raise selected below-terrain M2 origins to terrain. WMO-protected placements require confirmation.");
+  fix_button->setToolTip(
+      "Move selected above- and below-terrain placements to terrain. "
+      "WMO-protected placements require confirmation. This can be undone as one action.");
   delete_button->setToolTip(
       "Delete the selected visible M2 and WMO placements. This can be undone as one action.");
   buttons->addWidget(previous_button);
   buttons->addWidget(focus_button);
   buttons->addWidget(next_button);
-  buttons->addWidget(lower_button);
-  buttons->addWidget(raise_button);
+  buttons->addWidget(fix_button);
   buttons->addWidget(delete_button);
   buttons->addStretch();
   buttons->addWidget(scan_button);
@@ -1892,8 +2010,7 @@ void MapView::setupFloatingObjectAudit()
 
   _floating_objects_dock->setWidget(container);
   _main_window->addDockWidget(Qt::BottomDockWidgetArea, _floating_objects_dock);
-  _floating_objects_dock->setVisible(
-      _settings->value("map_view/floating_objects", false).toBool());
+  _floating_objects_dock->hide();
   connect(this, &QObject::destroyed, _floating_objects_dock, &QObject::deleteLater);
 
   auto focus_current = [this]()
@@ -1904,18 +2021,15 @@ void MapView::setupFloatingObjectAudit()
   connect(_floating_objects_tree, &QTreeWidget::itemDoubleClicked,
           this, [focus_current](QTreeWidgetItem*, int) { focus_current(); });
   connect(focus_button, &QPushButton::clicked, this, focus_current);
-  connect(lower_button, &QPushButton::clicked,
-          this, &MapView::lowerSelectedFloatingObjectsToTerrain);
-  connect(raise_button, &QPushButton::clicked,
-          this, &MapView::raiseSelectedUndergroundObjectsToTerrain);
+  connect(fix_button, &QPushButton::clicked,
+          this, &MapView::fixSelectedFloatingObjectsToTerrain);
   connect(delete_button, &QPushButton::clicked,
           this, &MapView::deleteSelectedFloatingObjects);
   connect(_floating_objects_tree, &QTreeWidget::itemSelectionChanged, this,
-          [this, lower_button, raise_button, delete_button]()
+          [this, fix_button, delete_button]()
           {
             bool const has_selection = !_floating_objects_tree->selectedItems().isEmpty();
-            lower_button->setEnabled(has_selection);
-            raise_button->setEnabled(has_selection);
+            fix_button->setEnabled(has_selection);
             delete_button->setEnabled(has_selection);
           });
   connect(this, &MapView::selectionUpdated, this,
@@ -1939,6 +2053,32 @@ void MapView::setupFloatingObjectAudit()
             SceneObject* object = std::get<selected_object_type>(*selected);
             _floating_objects_search->setText(
                 QString::fromStdString(object->instance_model()->file_key().stringRepr()));
+          });
+  connect(select_all_button, &QPushButton::clicked, this,
+          [this]()
+          {
+            _floating_objects_tree->clearSelection();
+            QTreeWidgetItem* first_match = nullptr;
+            int const count = _floating_objects_tree->topLevelItemCount();
+            for (int row = 0; row < count; ++row)
+            {
+              QTreeWidgetItem* item = _floating_objects_tree->topLevelItem(row);
+              if (item->isHidden())
+                continue;
+
+              if (!first_match)
+              {
+                first_match = item;
+                _floating_objects_tree->setCurrentItem(item);
+              }
+              item->setSelected(true);
+            }
+
+            if (first_match)
+              _floating_objects_tree->scrollToItem(first_match);
+            else
+              _main_window->statusBar()->showMessage(
+                  "No floating objects match this search.", 5000);
           });
   connect(select_results_button, &QPushButton::clicked, this,
           [this]()
@@ -2031,6 +2171,22 @@ void MapView::setupFloatingObjectAudit()
 
   if (_floating_objects_dock->isVisible())
     scanFloatingObjects();
+}
+
+void MapView::setupDuplicateObjectAudit()
+{
+  _duplicate_objects_dock = new QDockWidget("Duplicate Object Audit", this);
+  _duplicate_objects_dock->setObjectName("mapViewDuplicateObjectAuditDock");
+  _duplicate_objects_dock->setFeatures(QDockWidget::DockWidgetMovable
+                                       | QDockWidget::DockWidgetFloatable
+                                       | QDockWidget::DockWidgetClosable);
+  _duplicate_objects_dock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea
+                                           | Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+  _duplicate_objects_dock->setWidget(
+      new Noggit::Ui::DuplicateObjectAudit(this, _duplicate_objects_dock));
+  _main_window->addDockWidget(Qt::BottomDockWidgetArea, _duplicate_objects_dock);
+  _duplicate_objects_dock->hide();
+  connect(this, &QObject::destroyed, _duplicate_objects_dock, &QObject::deleteLater);
 }
 
 void MapView::scanFloatingObjects()
@@ -2350,7 +2506,7 @@ void MapView::syncFloatingObjectSelection(std::vector<selection_type> const& sel
   }
 }
 
-void MapView::lowerSelectedFloatingObjectsToTerrain()
+void MapView::fixSelectedFloatingObjectsToTerrain()
 {
   if (!_floating_objects_tree)
     return;
@@ -2358,132 +2514,16 @@ void MapView::lowerSelectedFloatingObjectsToTerrain()
   QList<QTreeWidgetItem*> const selected_items = _floating_objects_tree->selectedItems();
   if (selected_items.isEmpty())
   {
-    _main_window->statusBar()->showMessage("Select one or more floating objects first.", 5000);
-    return;
-  }
-
-  struct LowerTarget
-  {
-    selection_type entry;
-    glm::vec3 position;
-  };
-
-  std::vector<LowerTarget> targets;
-  targets.reserve(selected_items.size());
-
-  float const minimum_gap = static_cast<float>(_floating_objects_min_gap->value());
-  int unavailable = 0;
-  int no_longer_floating = 0;
-
-  for (QTreeWidgetItem* item : selected_items)
-  {
-    if (item->isHidden())
-      continue;
-
-    std::uint32_t const uid = item->data(0, Qt::UserRole).toUInt();
-    auto instance = _world->getModelInstanceStorage().get_instance(uid);
-    if (!instance || instance->index() != eEntry_Object)
-    {
-      ++unavailable;
-      continue;
-    }
-
-    SceneObject* object = std::get<selected_object_type>(*instance);
-    if (object->chunk_mover_preview || !object->finishedLoading()
-        || object->instance_model()->loading_failed())
-    {
-      ++unavailable;
-      continue;
-    }
-
-    glm::vec3 new_position = object->pos;
-    float current_gap = 0.0f;
-    if (object->which() == eWMO)
-    {
-      auto const& bounds = object->getExtents();
-      std::optional<WmoTerrainClearance> const clearance =
-          sampleWmoTerrainClearance(_world.get(), bounds, object->pos);
-      if (!clearance)
-      {
-        ++unavailable;
-        continue;
-      }
-      current_gap = clearance->gap;
-      new_position.y -= current_gap;
-    }
-    else
-    {
-      std::optional<glm::vec3> const ground = _world->try_get_ground_height(object->pos);
-      if (!ground)
-      {
-        ++unavailable;
-        continue;
-      }
-      current_gap = object->pos.y - ground->y;
-      new_position.y = ground->y;
-    }
-
-    if (current_gap < minimum_gap)
-    {
-      ++no_longer_floating;
-      continue;
-    }
-
-    targets.push_back({*instance, new_position});
-  }
-
-  if (targets.empty())
-  {
-    scanFloatingObjects();
     _main_window->statusBar()->showMessage(
-        QString("No objects were lowered (%1 unavailable, %2 no longer above the current threshold).")
-          .arg(unavailable)
-          .arg(no_longer_floating),
-        7000);
+        "Select one or more above- or below-terrain objects first.", 5000);
     return;
   }
 
-  NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
-  for (LowerTarget const& target : targets)
-    _world->set_model_pos(target.entry, target.position, false);
-  NOGGIT_ACTION_MGR->endAction();
-
-  _world->reset_selection();
-  for (LowerTarget const& target : targets)
-    _world->add_to_selection(target.entry, true, false);
-  _world->update_selection_pivot();
-  _world->update_selected_model_groups();
-
-  int const lowered = static_cast<int>(targets.size());
-  scanFloatingObjects();
-
-  _main_window->statusBar()->showMessage(
-      QString("Lowered %1 object(s) to terrain%2%3. Undo restores their previous heights.")
-        .arg(lowered)
-        .arg(unavailable ? QString("; %1 unavailable").arg(unavailable) : QString())
-        .arg(no_longer_floating
-               ? QString("; %1 no longer above the current threshold").arg(no_longer_floating)
-               : QString()),
-      8000);
-  invalidate();
-}
-
-void MapView::raiseSelectedUndergroundObjectsToTerrain()
-{
-  if (!_floating_objects_tree)
-    return;
-
-  QList<QTreeWidgetItem*> const selected_items = _floating_objects_tree->selectedItems();
-  if (selected_items.isEmpty())
-  {
-    _main_window->statusBar()->showMessage("Select one or more below-terrain M2s first.", 5000);
-    return;
-  }
-
-  struct RaiseTarget
+  struct FixTarget
   {
     selection_type entry;
     glm::vec3 position;
+    bool raised;
   };
 
   auto finite = [](glm::vec3 const& value)
@@ -2519,15 +2559,15 @@ void MapView::raiseSelectedUndergroundObjectsToTerrain()
       });
   };
 
-  std::vector<RaiseTarget> safe_targets;
-  std::vector<RaiseTarget> protected_targets;
+  std::vector<FixTarget> safe_targets;
+  std::vector<FixTarget> protected_targets;
   safe_targets.reserve(selected_items.size());
   protected_targets.reserve(selected_items.size());
 
+  float const minimum_gap = static_cast<float>(_floating_objects_min_gap->value());
   float const minimum_depth = static_cast<float>(_floating_objects_min_depth->value());
   int unavailable = 0;
-  int no_longer_below = 0;
-  int non_m2 = 0;
+  int no_longer_needs_fix = 0;
 
   for (QTreeWidgetItem* item : selected_items)
   {
@@ -2543,15 +2583,33 @@ void MapView::raiseSelectedUndergroundObjectsToTerrain()
     }
 
     SceneObject* object = std::get<selected_object_type>(*instance);
-    if (object->which() != eMODEL)
-    {
-      ++non_m2;
-      continue;
-    }
     if (object->chunk_mover_preview || !object->finishedLoading()
         || object->instance_model()->loading_failed())
     {
       ++unavailable;
+      continue;
+    }
+
+    glm::vec3 new_position = object->pos;
+    if (object->which() == eWMO)
+    {
+      auto const& bounds = object->getExtents();
+      std::optional<WmoTerrainClearance> const clearance =
+          sampleWmoTerrainClearance(_world.get(), bounds, object->pos);
+      if (!clearance)
+      {
+        ++unavailable;
+        continue;
+      }
+
+      if (clearance->gap < minimum_gap)
+      {
+        ++no_longer_needs_fix;
+        continue;
+      }
+
+      new_position.y -= clearance->gap;
+      safe_targets.push_back({*instance, new_position, false});
       continue;
     }
 
@@ -2562,17 +2620,17 @@ void MapView::raiseSelectedUndergroundObjectsToTerrain()
       continue;
     }
 
-    float const current_depth = ground->y - object->pos.y;
-    if (current_depth < minimum_depth || ground->y <= object->pos.y)
+    float const signed_offset = object->pos.y - ground->y;
+    bool const raised = signed_offset <= -minimum_depth;
+    if (!raised && signed_offset < minimum_gap)
     {
-      ++no_longer_below;
+      ++no_longer_needs_fix;
       continue;
     }
 
-    glm::vec3 new_position = object->pos;
     new_position.y = ground->y;
-    RaiseTarget target{*instance, new_position};
-    if (is_protected_by_wmo(object->pos))
+    FixTarget target{*instance, new_position, raised};
+    if (raised && is_protected_by_wmo(object->pos))
       protected_targets.push_back(target);
     else
       safe_targets.push_back(target);
@@ -2594,7 +2652,7 @@ void MapView::raiseSelectedUndergroundObjectsToTerrain()
         "Include Protected", QMessageBox::DestructiveRole);
     QPushButton* safe_only_button = safe_targets.empty()
       ? nullptr
-      : confirmation.addButton("Raise Safe Only", QMessageBox::AcceptRole);
+      : confirmation.addButton("Fix Safe Only", QMessageBox::AcceptRole);
     QPushButton* cancel_button = confirmation.addButton(QMessageBox::Cancel);
     confirmation.setDefaultButton(safe_only_button ? safe_only_button : cancel_button);
     confirmation.exec();
@@ -2604,7 +2662,7 @@ void MapView::raiseSelectedUndergroundObjectsToTerrain()
     include_protected = confirmation.clickedButton() == include_button;
   }
 
-  std::vector<RaiseTarget> targets = std::move(safe_targets);
+  std::vector<FixTarget> targets = std::move(safe_targets);
   if (include_protected)
   {
     targets.insert(targets.end(), protected_targets.begin(), protected_targets.end());
@@ -2614,39 +2672,44 @@ void MapView::raiseSelectedUndergroundObjectsToTerrain()
   {
     scanFloatingObjects();
     _main_window->statusBar()->showMessage(
-        QString("No objects were raised (%1 unavailable, %2 no longer below the current threshold, "
-                "%3 non-M2, %4 WMO-protected).")
+        QString("No objects were fixed (%1 unavailable, %2 no longer outside the current thresholds, "
+                "%3 WMO-protected).")
           .arg(unavailable)
-          .arg(no_longer_below)
-          .arg(non_m2)
+          .arg(no_longer_needs_fix)
           .arg(protected_targets.size()),
         8000);
     return;
   }
 
   NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eOBJECTS_TRANSFORMED);
-  for (RaiseTarget const& target : targets)
+  for (FixTarget const& target : targets)
     _world->set_model_pos(target.entry, target.position, false);
   NOGGIT_ACTION_MGR->endAction();
 
   _world->reset_selection();
-  for (RaiseTarget const& target : targets)
+  for (FixTarget const& target : targets)
     _world->add_to_selection(target.entry, true, false);
   _world->update_selection_pivot();
   _world->update_selected_model_groups();
 
-  int const raised = static_cast<int>(targets.size());
+  int const raised = static_cast<int>(std::count_if(
+      targets.begin(), targets.end(), [](FixTarget const& target) { return target.raised; }));
+  int const lowered = static_cast<int>(targets.size()) - raised;
   int const protected_skipped = include_protected ? 0 : static_cast<int>(protected_targets.size());
   scanFloatingObjects();
+
   _main_window->statusBar()->showMessage(
-      QString("Raised %1 M2 placement(s) to terrain%2%3%4. Undo restores their previous heights.")
+      QString("Fixed %1 object(s) to terrain (%2 lowered, %3 raised)%4%5%6. "
+              "Undo restores their previous heights.")
+        .arg(targets.size())
+        .arg(lowered)
         .arg(raised)
         .arg(protected_skipped
                ? QString("; %1 WMO-protected skipped").arg(protected_skipped)
                : QString())
         .arg(unavailable ? QString("; %1 unavailable").arg(unavailable) : QString())
-        .arg(no_longer_below
-               ? QString("; %1 no longer below the current threshold").arg(no_longer_below)
+        .arg(no_longer_needs_fix
+               ? QString("; %1 no longer outside the current thresholds").arg(no_longer_needs_fix)
                : QString()),
       9000);
   invalidate();
@@ -3468,8 +3531,37 @@ void MapView::updateDetailInfos()
 
 void MapView::setupToolbars()
 {
-  _toolbar = new Noggit::Ui::toolbar(_tools, [this] (editing_mode mode) { set_editing_mode (mode); });
+  _toolbar = new Noggit::Ui::toolbar(_tools,
+    [this] (editing_mode mode) { set_editing_mode(mode); }, _settings);
   _toolbar->setOrientation(Qt::Vertical);
+  auto* npc_browser = static_cast<Noggit::Ui::NpcTemplateBrowser*>(_npc_browser_dock->widget());
+  _toolbar->add_command("NPCs", "Characters", tr("NPC Browser"),
+    [this] { _npc_browser_dock->toggleViewAction()->trigger(); }, "Panel");
+  _toolbar->add_command("NPCs", "Characters", tr("NPC Editor"),
+    [npc_browser] { npc_browser->openEditorFromToolbar(); }, "Panel");
+
+  _toolbar->add_command("Diagnostics", "Inspect", tr("Duplicate Object Audit"),
+    [this] { _duplicate_objects_dock->toggleViewAction()->trigger(); }, "Panel");
+  _toolbar->add_command("Diagnostics", "Inspect", tr("4-layer borders (magenta)"),
+    [this] { _draw_texture_conflict_seams.toggle(); }, "Overlay",
+    [this] { return _draw_texture_conflict_seams.get(); });
+  _toolbar->add_command("Diagnostics", "Inspect", tr("Texture seams (orange)"),
+    [this] { _draw_texture_discontinuity_seams.toggle(); }, "Overlay",
+    [this] { return _draw_texture_discontinuity_seams.get(); });
+  _toolbar->add_command("Diagnostics", "Repair", tr("Fix terrain gaps"),
+    [this]
+    {
+      makeCurrent();
+      OpenGL::context::scoped_setter const _(::gl, context());
+      NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eCHUNKS_TERRAIN);
+      _world->fixAllGaps();
+      NOGGIT_ACTION_MGR->endAction();
+    }, "Repair");
+  _toolbar->add_command("Diagnostics", "Repair", tr("Repair texture seams"),
+    [this] { repairTextureSeamsInCurrentTile(); }, "Repair");
+  _toolbar->add_command("Diagnostics", "Repair", tr("Missing texture paths..."),
+    [this] { _missing_objects_dock->show(); }, "Panel");
+
   auto left_toolbar_layout = new QVBoxLayout(_viewport_overlay_ui->leftToolbarHolder);
   left_toolbar_layout->addWidget( _toolbar);
   left_toolbar_layout->setDirection(QBoxLayout::LeftToRight);
@@ -3497,86 +3589,29 @@ void MapView::setupToolbars()
 
   top_toolbar_layout->addWidget( _view_toolbar);
   sec_toolbar_layout->addWidget( _secondary_toolbar);
-}
 
-void MapView::setupMainToolbar()
-{
-    _main_window->_app_toolbar = new QToolBar("Client Toolbar", this); // this or mainwindow as parent?
-    _main_window->_app_toolbar->setObjectName("mapViewClientToolbar");
-    connect(this, &QObject::destroyed, _main_window->_app_toolbar, &QObject::deleteLater);
-
-    _main_window->_app_toolbar->setOrientation(Qt::Horizontal);
-    _main_window->addToolBar(_main_window->_app_toolbar);
-    _main_window->_app_toolbar->setVisible(_settings->value("map_view/app_toolbar", false).toBool()); // hide by default.
-
-    connect(_main_window->_app_toolbar, &QToolBar::visibilityChanged,
-        [=](bool visible)
-        {
-            if (ui_hidden)
-                return;
-
-            _settings->setValue("map_view/app_toolbar", visible);
-            _settings->sync();
-        });
-
-    // TODO
-    /*
-    auto save_changed_btn = new QPushButton(this);
-    save_changed_btn->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::save));
-    save_changed_btn->setToolTip("Save Changed");
-    // save_changed_btn->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_S));
-    _main_window->_app_toolbar->addWidget(save_changed_btn);
-
-    auto undo_btn = new QPushButton(this);
-    undo_btn->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::undo));
-    undo_btn->setToolTip("Undo");
-    // undo_btn->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Z));
-    _main_window->_app_toolbar->addWidget(undo_btn);
-
-    auto redo_btn = new QPushButton(this);
-    redo_btn->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::redo));
-    redo_btn->setToolTip("Undo");
-    // redo_btn->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z));
-    _main_window->_app_toolbar->addWidget(redo_btn);
-
-    _main_window->_app_toolbar->addSeparator();
-
-    QAction* start_server_action = _main_window->_app_toolbar->addAction("Start Server");
-    start_server_action->setToolTip("Start World and Auth servers.");
-    start_server_action->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::server));
-    
-    QAction* extract_server_map_action = _main_window->_app_toolbar->addAction("Extract Server Map");
-    extract_server_map_action->setToolTip("Start server extractors for this map.");
-    // TODO idea : detect modified tiles and only extract those.
-    extract_server_map_action->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::map));
-*/
-
-    auto build_data_btn = new QPushButton(this); 
-    _main_window->_app_toolbar->addWidget(build_data_btn);
-    build_data_btn->setToolTip("Save content of project folder as MPQ patch in the client.");
-    build_data_btn->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::filearchive));
-    connect(build_data_btn, &QPushButton::clicked
-        , [=]()
-        {
-            _main_window->patchWowClient(); // code to open dialog
-
-        });
-
-    auto start_wow_btn = new QPushButton(this);
-    start_wow_btn->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::play));
-    start_wow_btn->setToolTip("Launch the client");
-    _main_window->_app_toolbar->addWidget(start_wow_btn);
-
-    connect(start_wow_btn, &QPushButton::clicked
-        , [=]()
-        {
-            _main_window->startWowClient();
-        });
-
-
-    // TODO : restart button while WoW is running?
-
-  // IDEAs : various client utils like synchronize client view with noggit, reload, patch WoW.exe with community patches like unlock md5 check, set WoW client version
+  QString const toolbar_colors = R"(
+    QToolBar { background: #0c192d; color: #e9edf4; }
+    QToolBar::separator { background: #405c7c; }
+    QToolBar::handle:horizontal, QToolBar::handle:vertical {
+      background: #0c192d; border-color: #405c7c;
+    }
+    QToolBar QWidget { background: #14233e; color: #e9edf4; }
+    QToolBar QToolButton, QToolBar QPushButton {
+      background: #14233e; color: #6fa9df; border-color: #405c7c;
+    }
+    QToolBar QToolButton:hover, QToolBar QPushButton:hover {
+      background: #294565; border-color: #6fa9df;
+    }
+    QToolBar QToolButton:pressed, QToolBar QToolButton:checked,
+    QToolBar QPushButton:pressed {
+      background: #294565; border-color: #d6b777;
+    }
+  )";
+  for (QToolBar* strip : {static_cast<QToolBar*>(_view_toolbar),
+                          static_cast<QToolBar*>(_secondary_toolbar),
+                          static_cast<QToolBar*>(_left_sec_toolbar)})
+    strip->setStyleSheet(toolbar_colors);
 }
 
 std::unique_ptr<Noggit::Tool>& MapView::activeTool()
@@ -3807,20 +3842,15 @@ void MapView::setupAssistMenu()
   connect (this, &QObject::destroyed, assist_menu, &QObject::deleteLater);
 
   auto validation_menu = assist_menu->addMenu("Validation");
-  validation_menu->addAction(_missing_objects_dock->toggleViewAction());
-  validation_menu->addAction(_floating_objects_dock->toggleViewAction());
-  validation_menu->addSeparator();
   ADD_ACTION_NS(validation_menu, "Repair highlighted texture seams in current ADT...",
                 [this]
                 {
                   repairTextureSeamsInCurrentTile();
                 });
 
-  assist_menu->addSeparator();
-  assist_menu->addAction(createTextSeparator("Current ADT"));
-  assist_menu->addSeparator();
+  auto current_adt_menu = assist_menu->addMenu("Current ADT");
 
-  ADD_ACTION_NS ( assist_menu
+  ADD_ACTION_NS ( current_adt_menu
   , "Ensure 4 texture layers"
   , [=]
     {
@@ -3834,7 +3864,7 @@ void MapView::setupAssistMenu()
     }
   );
 
-  auto cleanup_menu (assist_menu->addMenu ("Clean up"));
+  auto cleanup_menu (current_adt_menu->addMenu ("Clean up"));
 
   ADD_ACTION_NS ( cleanup_menu
   , "Clear height map"
@@ -3916,7 +3946,7 @@ void MapView::setupAssistMenu()
                   }
   );
 
-  auto cur_adt_export_menu(assist_menu->addMenu("Export"));
+  auto cur_adt_export_menu(current_adt_menu->addMenu("Export"));
   ADD_ACTION_NS ( cur_adt_export_menu
   , "Export alphamaps"
   , [this]
@@ -4062,7 +4092,7 @@ void MapView::setupAssistMenu()
       }
   );
 
-  auto cur_adt_import_menu(assist_menu->addMenu("Import"));
+  auto cur_adt_import_menu(current_adt_menu->addMenu("Import"));
 
   // alphamaps import
   auto const alphamap_image_format = "Required Image format :\n1024x1024 and 8bit color channel.";
@@ -4401,10 +4431,8 @@ void MapView::setupAssistMenu()
   );
 
 
-  assist_menu->addSeparator();
-  assist_menu->addAction(createTextSeparator("Loaded ADTs"));
-  assist_menu->addSeparator();
-  ADD_ACTION_NS ( assist_menu
+  auto loaded_adts_menu = assist_menu->addMenu("Loaded ADTs");
+  ADD_ACTION_NS ( loaded_adts_menu
   , "Fix terrain gaps between chunks"
   , [this]
       {
@@ -4416,7 +4444,7 @@ void MapView::setupAssistMenu()
       }
   );
 
-  ADD_ACTION_NS(assist_menu
+  ADD_ACTION_NS(loaded_adts_menu
       , "Cleanup empty texture chunks"
       , [this]
       {
@@ -4428,10 +4456,8 @@ void MapView::setupAssistMenu()
       }
   );
 
-  assist_menu->addSeparator();
-  assist_menu->addAction(createTextSeparator("Global"));
-  assist_menu->addSeparator();
-  ADD_ACTION_NS ( assist_menu
+  auto whole_map_menu = assist_menu->addMenu("Whole Map");
+  ADD_ACTION_NS ( whole_map_menu
   , "Convert Map to 8bits alphamaps"
   , [this]
     {
@@ -4457,7 +4483,7 @@ void MapView::setupAssistMenu()
     }
   );
 
-  ADD_ACTION_NS ( assist_menu
+  ADD_ACTION_NS ( whole_map_menu
   , "Convert Map to 4bits alphamaps (old format)"
   , [this]
     {
@@ -4483,7 +4509,7 @@ void MapView::setupAssistMenu()
   );
 
 
-  ADD_ACTION_NS ( assist_menu
+  ADD_ACTION_NS ( whole_map_menu
   , "Ensure 4 texture layers"
   , [=]
       {
@@ -4497,7 +4523,7 @@ void MapView::setupAssistMenu()
       }
   );
 
-  auto all_adts_export_menu(assist_menu->addMenu("Export"));
+  auto all_adts_export_menu(whole_map_menu->addMenu("Export"));
 
   ADD_ACTION_NS ( all_adts_export_menu
   , "Export alphamaps"
@@ -4557,7 +4583,7 @@ void MapView::setupAssistMenu()
     }
   );
 
-  auto all_adts_import_menu(assist_menu->addMenu("Import"));
+  auto all_adts_import_menu(whole_map_menu->addMenu("Import"));
 
   ADD_ACTION_NS ( all_adts_import_menu
   , "Import alphamaps"
@@ -4658,135 +4684,459 @@ void MapView::setupAssistMenu()
 
 }
 
+void MapView::setGamePreviewEnabled(bool enabled)
+{
+  auto* renderer = _world->renderer();
+
+  if (enabled)
+  {
+    if (!_game_preview_restore.valid)
+    {
+      _game_preview_restore = {
+        true,
+        _draw_fog.get(),
+        _draw_terrain.get(),
+        _draw_wmo.get(),
+        _draw_water.get(),
+        _draw_wmo_doodads.get(),
+        _draw_wmo_exterior.get(),
+        _draw_models.get(),
+        _draw_sky.get(),
+        _draw_skybox.get(),
+        _draw_model_animations.get(),
+        _draw_vertex_color.get(),
+        _draw_baked_shadows.get(),
+        _draw_ground_effects.get(),
+        _draw_wireframe.get(),
+        _draw_contour.get(),
+        _draw_climb.get(),
+        _draw_hole_lines.get(),
+        _draw_models_with_box.get(),
+        _draw_hidden_models.get(),
+        _draw_occlusion_boxes.get(),
+        renderer->directional_lightning,
+        renderer->local_lightning,
+        renderer->_draw_detail_doodads,
+        renderer->skies()->active_param
+      };
+    }
+
+    _draw_fog.set(true);
+    _draw_terrain.set(true);
+    _draw_wmo.set(true);
+    _draw_water.set(true);
+    _draw_wmo_doodads.set(true);
+    _draw_wmo_exterior.set(true);
+    _draw_models.set(true);
+    _draw_sky.set(true);
+    _draw_skybox.set(true);
+    _draw_model_animations.set(true);
+    _draw_vertex_color.set(true);
+    _draw_baked_shadows.set(true);
+    _draw_ground_effects.set(true);
+    _draw_wireframe.set(false);
+    _draw_contour.set(false);
+    _draw_climb.set(false);
+    _draw_hole_lines.set(false);
+    _draw_models_with_box.set(false);
+    _draw_hidden_models.set(false);
+    _draw_occlusion_boxes.set(false);
+    renderer->directional_lightning = true;
+    renderer->local_lightning = true;
+    renderer->_draw_detail_doodads = true;
+
+    setGamePreviewState(_game_preview_state);
+    renderer->setWeatherPreview(_game_preview_weather_state,
+                                _game_preview_weather_intensity);
+  }
+  else if (_game_preview_restore.valid)
+  {
+    _draw_fog.set(_game_preview_restore.draw_fog);
+    _draw_terrain.set(_game_preview_restore.draw_terrain);
+    _draw_wmo.set(_game_preview_restore.draw_wmo);
+    _draw_water.set(_game_preview_restore.draw_water);
+    _draw_wmo_doodads.set(_game_preview_restore.draw_wmo_doodads);
+    _draw_wmo_exterior.set(_game_preview_restore.draw_wmo_exterior);
+    _draw_models.set(_game_preview_restore.draw_models);
+    _draw_sky.set(_game_preview_restore.draw_sky);
+    _draw_skybox.set(_game_preview_restore.draw_skybox);
+    _draw_model_animations.set(_game_preview_restore.draw_model_animations);
+    _draw_vertex_color.set(_game_preview_restore.draw_vertex_color);
+    _draw_baked_shadows.set(_game_preview_restore.draw_baked_shadows);
+    _draw_ground_effects.set(_game_preview_restore.draw_ground_effects);
+    _draw_wireframe.set(_game_preview_restore.draw_wireframe);
+    _draw_contour.set(_game_preview_restore.draw_contour);
+    _draw_climb.set(_game_preview_restore.draw_climb);
+    _draw_hole_lines.set(_game_preview_restore.draw_hole_lines);
+    _draw_models_with_box.set(_game_preview_restore.draw_models_with_box);
+    _draw_hidden_models.set(_game_preview_restore.draw_hidden_models);
+    _draw_occlusion_boxes.set(_game_preview_restore.draw_occlusion_boxes);
+    renderer->directional_lightning = _game_preview_restore.directional_lighting;
+    renderer->local_lightning = _game_preview_restore.local_lighting;
+    renderer->_draw_detail_doodads = _game_preview_restore.detail_doodads;
+    renderer->skies()->setCurrentParam(
+      static_cast<int>(_game_preview_restore.preview_state));
+    renderer->setWeatherPreview(0, 0.0f, true);
+    _game_preview_restore.valid = false;
+  }
+
+  renderer->skies()->force_update();
+  invalidate();
+  _main_window->statusBar()->showMessage(
+    enabled ? "Game Preview enabled" : "Game Preview disabled", 2500);
+}
+
+void MapView::setGamePreviewWeather(int weather_state, float intensity, bool force_storm)
+{
+  _game_preview_weather_state = weather_state;
+  _game_preview_weather_intensity = weather_state == 0
+    ? 0.0f : std::clamp(intensity, 0.0f, 0.9999f);
+
+  if (weather_state != 0 && !_game_preview.get())
+    _game_preview.set(true);
+
+  bool transition_sky = force_storm;
+  if (weather_state != 0)
+  {
+    try
+    {
+      transition_sky = transition_sky
+        || gWeatherDB.getByID(weather_state).getUInt(WeatherDB::TransitionSkyBox) != 0;
+    }
+    catch (DBCFile::NotFound const&)
+    {
+    }
+  }
+  // Weather selects a temporary sky profile. Keep the manually selected
+  // preview profile intact so clearing the weather restores it.
+  _world->renderer()->skies()->setCurrentParam(
+    transition_sky ? SKY_PARAM_TORM : static_cast<int>(_game_preview_state));
+
+  _world->renderer()->setWeatherPreview(weather_state,
+                                        _game_preview_weather_intensity);
+  _main_window->statusBar()->showMessage(
+    QString("Game Preview weather: %1 (%2%)")
+      .arg(gamePreviewWeatherName())
+      .arg(qRound(_game_preview_weather_intensity * 100.0f)),
+    2500);
+  invalidate();
+}
+
+QString MapView::gamePreviewWeatherName() const
+{
+  switch (_game_preview_weather_state)
+  {
+    case 2: return "Drizzle";
+    case 3: return _game_preview_weather_intensity < 0.2f ? "Drizzle" : "Light Rain";
+    case 4: return "Medium Rain";
+    case 5: return "Heavy Rain";
+    case 6: return "Light Snow";
+    case 7: return "Medium Snow";
+    case 8: return _game_preview_weather_intensity >= 0.9f ? "Blizzard" : "Heavy Snow";
+    case 22: return "Light Sandstorm";
+    case 41: return "Medium Sandstorm";
+    case 42: return "Heavy Sandstorm";
+    default: return "Off";
+  }
+}
+
+void MapView::setGamePreviewState(SkyParamsNames state)
+{
+  _game_preview_state = state;
+
+  // Enable preview before applying the requested profile so the original sky
+  // profile is captured and can be restored when Game Preview is disabled.
+  if (!_game_preview.get())
+    _game_preview.set(true);
+
+  _world->renderer()->skies()->setCurrentParam(static_cast<int>(state));
+
+  static constexpr std::array<char const*, NUM_SkyParamsNames> names = {
+    "Clear", "Underwater", "Storm", "Storm Underwater", "Death",
+    "Unknown 1", "Unknown 2", "Unknown 3"
+  };
+  _main_window->statusBar()->showMessage(
+    QString("Game Preview: %1").arg(names[static_cast<std::size_t>(state)]),
+    2500);
+  invalidate();
+}
+
+QString MapView::gamePreviewReference() const
+{
+  QString const state_name = [&]
+  {
+    switch (_game_preview_state)
+    {
+      case SKY_PARAM_CLEAR: return QString("Clear");
+      case SKY_PARAM_CLEAR_UNDERWATER: return QString("Underwater");
+      case SKY_PARAM_TORM: return QString("Storm");
+      case SKY_PARAM_STORM_UNDERWATER: return QString("Storm Underwater");
+      case SKY_PARAM_DEATH: return QString("Death");
+      default: return QString("Unknown");
+    }
+  }();
+
+  glm::vec3 const& p = _camera.position;
+  float const server_x = ZEROPOINT - p.z;
+  float const server_y = ZEROPOINT - p.x;
+  QByteArray const state_utf8 = state_name.toUtf8();
+  QString const reference = QString::asprintf(
+    "Map %u | Client position %.3f, %.3f, %.3f | Server position %.3f, %.3f, %.3f | Time %.0f | Yaw %.3f | Pitch %.3f | Preview %s | Weather %s %.2f",
+    _world->getMapID(), p.x, p.y, p.z, server_x, server_y, p.y, _world->time,
+    _camera.yaw()._, _camera.pitch()._, state_utf8.constData(),
+    gamePreviewWeatherName().toUtf8().constData(), _game_preview_weather_intensity);
+  return reference;
+}
+
+void MapView::copyGamePreviewReference() const
+{
+  QApplication::clipboard()->setText(gamePreviewReference());
+}
+
+void MapView::saveGamePreviewScreenshot()
+{
+  QString default_name = QString("noggit-map%1-time%2-%3.png")
+    .arg(_world->getMapID())
+    .arg(static_cast<int>(_world->time))
+    .arg(QDateTime::currentDateTime().toString("yyyyMMdd-hhmmss"));
+  QString path = QFileDialog::getSaveFileName(
+    this, "Save Game Preview Screenshot", default_name, "PNG image (*.png)");
+  if (path.isEmpty())
+    return;
+  if (!path.endsWith(".png", Qt::CaseInsensitive))
+    path += ".png";
+
+  QImage const screenshot = grabFramebuffer();
+  if (!screenshot.save(path, "PNG"))
+  {
+    QMessageBox::warning(this, "Game Preview",
+                         "Noggit could not save the preview screenshot.");
+    return;
+  }
+
+  QFile metadata(path + ".txt");
+  if (metadata.open(QIODevice::WriteOnly | QIODevice::Text))
+  {
+    QTextStream stream(&metadata);
+    stream << gamePreviewReference() << '\n';
+    stream << "In-game teleport: .go XYZ "
+           << QString::number(ZEROPOINT - _camera.position.z, 'f', 3) << ' '
+           << QString::number(ZEROPOINT - _camera.position.x, 'f', 3) << ' '
+           << QString::number(_camera.position.y, 'f', 3) << ' '
+           << _world->getMapID() << '\n';
+  }
+
+  _main_window->statusBar()->showMessage(
+    QString("Saved Game Preview comparison: %1").arg(path), 5000);
+}
+
+void MapView::setExactGamePreviewTime()
+{
+  bool accepted = false;
+  int const current_time = std::clamp(static_cast<int>(_world->time), 0, 2879);
+  int const preview_time = QInputDialog::getInt(
+    this, "Set Exact Game Preview Time",
+    "Game time (0-2879; 0 = midnight, 1440 = noon):",
+    current_time, 0, 2879, 1, &accepted);
+  if (!accepted)
+    return;
+
+  _world->time = static_cast<float>(preview_time);
+  mTimespeed = 0.0f;
+  _world->renderer()->skies()->force_update();
+  invalidate();
+  _main_window->statusBar()->showMessage(
+    QString("Game Preview time fixed at %1").arg(preview_time), 2500);
+}
+
 void MapView::setupViewMenu()
 {
   auto view_menu (_main_window->_menuBar->addMenu ("View"));
   connect (this, &QObject::destroyed, view_menu, &QObject::deleteLater);
 
-  auto rendering_menu = view_menu->addMenu("Rendering");
-  auto overlays_menu = view_menu->addMenu("Overlays");
   auto environment_menu = view_menu->addMenu("Environment");
   auto camera_menu = view_menu->addMenu("Camera");
-  auto navigator_menu = view_menu->addMenu("Map Navigator");
+  auto navigator_menu = view_menu->addMenu("Navigator overlays");
 
-  ADD_TOGGLE (rendering_menu, "Doodads",     Qt::Key_F1, _draw_models);
-  ADD_TOGGLE (rendering_menu, "WMO doodads", Qt::Key_F2, _draw_wmo_doodads);
-  ADD_TOGGLE (rendering_menu, "Terrain",     Qt::Key_F3, _draw_terrain);
-  ADD_TOGGLE (rendering_menu, "Water",       Qt::Key_F4, _draw_water);
-  ADD_TOGGLE (rendering_menu, "Ground Effects", Qt::Key_F5, _draw_ground_effects);
-  ADD_TOGGLE (rendering_menu, "WMOs",        Qt::Key_F6, _draw_wmo);
+  // Visibility lives in the viewport toolbar. Keep its shortcuts independent
+  // of that toolbar so they also work while focus is in another dock.
+  auto register_view_shortcut = [this](QString const& label, QKeySequence shortcut,
+                                      Noggit::BoolToggleProperty& state,
+                                      Qt::ShortcutContext context = Qt::WindowShortcut)
+  {
+    auto* action = new QAction(label, this);
+    action->setShortcut(shortcut);
+    action->setShortcutContext(context);
+    addAction(action);
+    auto* state_ptr = &state;
+    connect(action, &QAction::triggered, this, [state_ptr] { state_ptr->toggle(); });
+  };
 
-  ADD_GLOBAL_TOGGLE_POST (overlays_menu, "ADT / chunk borders", Qt::Key_F7, _draw_lines,
-                   [=]
-                   {
-                     _world->renderer()->getTerrainParamsUniformBlock()->draw_lines = _draw_lines.get();
-                     _world->renderer()->markTerrainParamsUniformBlockDirty();
-                     _main_window->statusBar()->showMessage(
-                       _draw_lines.get() ? "ADT/chunk borders enabled (F7)" : "ADT/chunk borders disabled (F7)",
-                       2000);
-                   });
+  register_view_shortcut("Doodads", Qt::Key_F1, _draw_models);
+  register_view_shortcut("WMO doodads", Qt::Key_F2, _draw_wmo_doodads);
+  register_view_shortcut("Terrain", Qt::Key_F3, _draw_terrain);
+  register_view_shortcut("Water", Qt::Key_F4, _draw_water);
+  register_view_shortcut("Ground Effects", Qt::Key_F5, _draw_ground_effects);
+  register_view_shortcut("WMOs", Qt::Key_F6, _draw_wmo);
+  register_view_shortcut("ADT / chunk borders", Qt::Key_F7, _draw_lines,
+                         Qt::ApplicationShortcut);
+  register_view_shortcut("Contours", Qt::Key_F9, _draw_contour);
+  register_view_shortcut("Wireframe", Qt::Key_F10, _draw_wireframe);
+  register_view_shortcut("Model animations", Qt::Key_F11, _draw_model_animations);
+  register_view_shortcut("Fog", Qt::Key_F12, _draw_fog);
+  register_view_shortcut("Hole lines", QKeySequence(Qt::SHIFT | Qt::Key_F1), _draw_hole_lines);
+  register_view_shortcut("Climb", QKeySequence(Qt::SHIFT | Qt::Key_F2), _draw_climb);
+  register_view_shortcut("Vertex Color", QKeySequence(Qt::SHIFT | Qt::Key_F3), _draw_vertex_color);
+  register_view_shortcut("Baked Shadows", QKeySequence(Qt::SHIFT | Qt::Key_F4), _draw_baked_shadows);
 
-  ADD_TOGGLE_POST(overlays_menu, "4-layer border constraints (magenta)", QKeySequence(),
-                  _draw_texture_conflict_seams,
-                  [=]
-                  {
-                    _texture_conflict_seam_refresh_timer.invalidate();
-                    _texture_conflict_seams_initialized = false;
-                    if (!_draw_texture_conflict_seams.get()
-                        && !_draw_texture_discontinuity_seams.get())
-                    {
-                      _texture_conflict_seam_cache.clear();
-                      _texture_conflict_seam_segments.clear();
-                      _texture_discontinuity_seam_segments.clear();
-                    }
-                    invalidate();
-                    _main_window->statusBar()->showMessage(
-                      _draw_texture_conflict_seams.get()
-                        ? "4-layer border constraint highlighting enabled (magenta; this is not a visible-seam test)"
-                        : "4-layer border constraint highlighting disabled",
-                      3000);
-                  });
+  connect(&_draw_lines, &Noggit::BoolToggleProperty::changed, this, [this]
+  {
+    _world->renderer()->getTerrainParamsUniformBlock()->draw_lines = _draw_lines.get();
+    _world->renderer()->markTerrainParamsUniformBlockDirty();
+    _main_window->statusBar()->showMessage(
+      _draw_lines.get() ? "ADT/chunk borders enabled (F7)" : "ADT/chunk borders disabled (F7)",
+      2000);
+  });
 
-  ADD_TOGGLE_POST(overlays_menu, "Texture alpha discontinuities (orange)", QKeySequence(),
-                  _draw_texture_discontinuity_seams,
-                  [=]
-                  {
-                    _texture_conflict_seam_refresh_timer.invalidate();
-                    _texture_conflict_seams_initialized = false;
-                    if (!_draw_texture_conflict_seams.get()
-                        && !_draw_texture_discontinuity_seams.get())
-                    {
-                      _texture_conflict_seam_cache.clear();
-                      _texture_conflict_seam_segments.clear();
-                      _texture_discontinuity_seam_segments.clear();
-                    }
-                    invalidate();
-                    _main_window->statusBar()->showMessage(
-                      _draw_texture_discontinuity_seams.get()
-                        ? "Texture alpha discontinuity highlighting enabled (orange)"
-                        : "Texture alpha discontinuity highlighting disabled",
-                      2000);
-                  });
+  auto refresh_texture_seam_overlays = [this]
+  {
+    _texture_conflict_seam_refresh_timer.invalidate();
+    _texture_conflict_seams_initialized = false;
+    if (!_draw_texture_conflict_seams.get() && !_draw_texture_discontinuity_seams.get())
+    {
+      _texture_conflict_seam_cache.clear();
+      _texture_conflict_seam_segments.clear();
+      _texture_discontinuity_seam_segments.clear();
+    }
+    invalidate();
+  };
+  connect(&_draw_texture_conflict_seams, &Noggit::BoolToggleProperty::changed, this,
+          [this, refresh_texture_seam_overlays]
+  {
+    refresh_texture_seam_overlays();
+    _main_window->statusBar()->showMessage(
+      _draw_texture_conflict_seams.get()
+        ? "4-layer border constraint highlighting enabled (magenta; this is not a visible-seam test)"
+        : "4-layer border constraint highlighting disabled",
+      3000);
+  });
+  connect(&_draw_texture_discontinuity_seams, &Noggit::BoolToggleProperty::changed, this,
+          [this, refresh_texture_seam_overlays]
+  {
+    refresh_texture_seam_overlays();
+    _main_window->statusBar()->showMessage(
+      _draw_texture_discontinuity_seams.get()
+        ? "Texture alpha discontinuity highlighting enabled (orange)"
+        : "Texture alpha discontinuity highlighting disabled",
+      2000);
+  });
 
-  ADD_TOGGLE_POST (overlays_menu, "Contours", Qt::Key_F9, _draw_contour,
-                   [=]
-                   {
-                     _world->renderer()->getTerrainParamsUniformBlock()->draw_terrain_height_contour = _draw_contour.get();
-                     _world->renderer()->markTerrainParamsUniformBlockDirty();
-                   });
-
-  ADD_TOGGLE_POST (overlays_menu, "Wireframe", Qt::Key_F10, _draw_wireframe,
-                   [=]
-                   {
-                     _world->renderer()->getTerrainParamsUniformBlock()->draw_wireframe = _draw_wireframe.get();
-                     _world->renderer()->markTerrainParamsUniformBlockDirty();
-                   });
-
-  ADD_TOGGLE (environment_menu, "Model animations", Qt::Key_F11, _draw_model_animations);
-  ADD_TOGGLE (environment_menu, "Fog", Qt::Key_F12, _draw_fog);
-
-  ADD_TOGGLE_POST (overlays_menu, "Hole lines", Qt::SHIFT | Qt::Key_F1, _draw_hole_lines,
-                   [=]
-                   {
-                     _world->renderer()->getTerrainParamsUniformBlock()->draw_hole_lines = _draw_hole_lines.get();
-                     _world->renderer()->markTerrainParamsUniformBlockDirty();
-                   });
-
-  ADD_TOGGLE_POST(overlays_menu, "Climb", Qt::SHIFT | Qt::Key_F2, _draw_climb,
-                  [=]
-                  {
-                      _world->renderer()->getTerrainParamsUniformBlock()->draw_impassible_climb = _draw_climb.get();
-                      _world->renderer()->markTerrainParamsUniformBlockDirty();
-                  });
-
-  ADD_TOGGLE_POST(overlays_menu, "Vertex Color", Qt::SHIFT | Qt::Key_F3, _draw_vertex_color,
-      [=]
-      {
-          _world->renderer()->getTerrainParamsUniformBlock()->draw_vertex_color = _draw_vertex_color.get();
-          _world->renderer()->markTerrainParamsUniformBlockDirty();
-      });
-
-  ADD_TOGGLE_POST(overlays_menu, "Baked Shadows", Qt::SHIFT | Qt::Key_F4, _draw_baked_shadows,
-      [=]
-      {
-          _world->renderer()->getTerrainParamsUniformBlock()->draw_shadows = _draw_baked_shadows.get();
-          _world->renderer()->markTerrainParamsUniformBlockDirty();
-      });
-
-  ADD_TOGGLE_NS (overlays_menu, "Flight Bounds", _draw_mfbo);
-
-  ADD_TOGGLE_NS (overlays_menu, "Models with box", _draw_models_with_box);
-  //! \todo space+h in object mode
-  ADD_TOGGLE_NS (overlays_menu, "Hidden models", _draw_hidden_models);
-
-  ADD_TOGGLE_NS(environment_menu, "Sky", _draw_sky);
-  ADD_TOGGLE_NS(environment_menu, "Skybox", _draw_skybox);
-
-  auto debug_menu (overlays_menu->addMenu ("Debug"));
-  ADD_TOGGLE_NS (debug_menu, "Occlusion boxes", _draw_occlusion_boxes);
+  connect(&_draw_contour, &Noggit::BoolToggleProperty::changed, this, [this]
+  {
+    _world->renderer()->getTerrainParamsUniformBlock()->draw_terrain_height_contour = _draw_contour.get();
+    _world->renderer()->markTerrainParamsUniformBlockDirty();
+  });
+  connect(&_draw_wireframe, &Noggit::BoolToggleProperty::changed, this, [this]
+  {
+    _world->renderer()->getTerrainParamsUniformBlock()->draw_wireframe = _draw_wireframe.get();
+    _world->renderer()->markTerrainParamsUniformBlockDirty();
+  });
+  connect(&_draw_hole_lines, &Noggit::BoolToggleProperty::changed, this, [this]
+  {
+    _world->renderer()->getTerrainParamsUniformBlock()->draw_hole_lines = _draw_hole_lines.get();
+    _world->renderer()->markTerrainParamsUniformBlockDirty();
+  });
+  connect(&_draw_climb, &Noggit::BoolToggleProperty::changed, this, [this]
+  {
+    _world->renderer()->getTerrainParamsUniformBlock()->draw_impassible_climb = _draw_climb.get();
+    _world->renderer()->markTerrainParamsUniformBlockDirty();
+  });
+  connect(&_draw_vertex_color, &Noggit::BoolToggleProperty::changed, this, [this]
+  {
+    _world->renderer()->getTerrainParamsUniformBlock()->draw_vertex_color = _draw_vertex_color.get();
+    _world->renderer()->markTerrainParamsUniformBlockDirty();
+  });
+  connect(&_draw_baked_shadows, &Noggit::BoolToggleProperty::changed, this, [this]
+  {
+    _world->renderer()->getTerrainParamsUniformBlock()->draw_shadows = _draw_baked_shadows.get();
+    _world->renderer()->markTerrainParamsUniformBlockDirty();
+  });
 
   ADD_TOGGLE_NS(navigator_menu, "ADT borders", _show_minimap_borders);
   ADD_TOGGLE_NS(navigator_menu, "Light zones", _show_minimap_skies);
+
+  environment_menu->addSeparator();
+  ADD_TOGGLE_NS(environment_menu, "Game Preview", _game_preview);
+  connect(&_game_preview, &Noggit::BoolToggleProperty::changed,
+          this, &MapView::setGamePreviewEnabled);
+
+  auto preview_state_menu = environment_menu->addMenu("Game Preview State");
+  auto preview_state_group = new QActionGroup(this);
+  preview_state_group->setExclusive(true);
+  auto add_preview_state = [=](QString const& label, SkyParamsNames state)
+  {
+    QAction* action = preview_state_menu->addAction(label);
+    action->setCheckable(true);
+    action->setChecked(state == _game_preview_state);
+    preview_state_group->addAction(action);
+    connect(action, &QAction::triggered, this,
+            [this, state] { setGamePreviewState(state); });
+  };
+  add_preview_state("Clear", SKY_PARAM_CLEAR);
+  add_preview_state("Storm", SKY_PARAM_TORM);
+  add_preview_state("Underwater", SKY_PARAM_CLEAR_UNDERWATER);
+  add_preview_state("Storm Underwater", SKY_PARAM_STORM_UNDERWATER);
+  add_preview_state("Death", SKY_PARAM_DEATH);
+
+  auto weather_menu = environment_menu->addMenu("Game Preview Weather");
+  auto weather_group = new QActionGroup(this);
+  weather_group->setExclusive(true);
+  auto add_weather = [=](QMenu* menu, QString const& label, int state,
+                         float intensity, bool force_storm = false)
+  {
+    QAction* action = menu->addAction(label);
+    action->setCheckable(true);
+    action->setChecked(state == _game_preview_weather_state
+                       && std::abs(intensity - _game_preview_weather_intensity) < 0.01f);
+    weather_group->addAction(action);
+    connect(action, &QAction::triggered, this,
+            [this, state, intensity, force_storm]
+            {
+              setGamePreviewWeather(state, intensity, force_storm);
+            });
+  };
+
+  add_weather(weather_menu, "Off", 0, 0.0f);
+  weather_menu->addSeparator();
+  add_weather(weather_menu, "Drizzle", 3, 0.15f);
+
+  auto rain_menu = weather_menu->addMenu("Rain");
+  add_weather(rain_menu, "Light", 3, 0.33f);
+  add_weather(rain_menu, "Medium", 4, 0.55f);
+  add_weather(rain_menu, "Heavy", 5, 0.85f, true);
+
+  auto snow_menu = weather_menu->addMenu("Snow");
+  add_weather(snow_menu, "Light", 6, 0.33f);
+  add_weather(snow_menu, "Medium", 7, 0.55f);
+  add_weather(snow_menu, "Heavy", 8, 0.85f, true);
+  add_weather(snow_menu, "Blizzard", 8, 0.98f, true);
+
+  auto sandstorm_menu = weather_menu->addMenu("Sandstorm");
+  add_weather(sandstorm_menu, "Light", 22, 0.33f);
+  add_weather(sandstorm_menu, "Medium", 41, 0.55f);
+  add_weather(sandstorm_menu, "Heavy", 42, 0.85f, true);
+
+  ADD_ACTION_NS(environment_menu, "Copy Game Preview Reference",
+                [this]
+                {
+                  copyGamePreviewReference();
+                  _main_window->statusBar()->showMessage(
+                    "Game Preview position, time, and camera copied", 2500);
+                });
+  ADD_ACTION_NS(environment_menu, "Save Game Preview Screenshot...",
+                [this] { saveGamePreviewScreenshot(); });
+  ADD_ACTION_NS(environment_menu, "Set Exact Game Preview Time...",
+                [this] { setExactGamePreviewTime(); });
 
   auto hide_widgets = [=]
   {
@@ -4797,14 +5147,15 @@ void MapView::setupViewMenu()
         _keybindings,
         _minimap_dock,
         _asset_browser_dock,
+        _main_window->findChild<QDockWidget*>("mapViewStampAssetBrowserDock"),
         _node_editor_dock,
         _missing_objects_dock,
         _floating_objects_dock,
+        _duplicate_objects_dock,
         _main_window->findChild<QDockWidget*>("mapViewObjectPaletteDock"),
         _main_window->findChild<QDockWidget*>("mapViewTextureBrowserDock"),
         _main_window->findChild<QDockWidget*>("mapViewTexturePaletteDock"),
         _main_window->findChild<QDockWidget*>("mapViewTexturePickerDock"),
-        _main_window->_app_toolbar,
         _overlay_widget,
         _tool_panel_dock
 
@@ -4830,12 +5181,24 @@ void MapView::setupViewMenu()
 
 
     _main_window->statusBar()->setVisible(ui_hidden);
-    _toolbar->setVisible(ui_hidden);
+    _toolbar->setVisible(ui_hidden && !_npc_workspace_active);
     _view_toolbar->setVisible(ui_hidden);
 
     ui_hidden = !ui_hidden;
 
     setToolPropertyWidgetVisibility(terrainMode);
+    if (!ui_hidden && !_npc_workspace_active && _npc_restore_chrome_on_ui_show)
+    {
+      _toolbar->setVisible(_npc_toolbar_was_visible);
+      _left_sec_toolbar->setCurrentMode(this, terrainMode);
+      if (terrainMode == _npc_mode_before && !_npc_left_secondary_was_visible)
+        _viewport_overlay_ui->leftSecondaryToolbarHolder->hide();
+      _viewport_overlay_ui->gizmoBar->setVisible(_npc_gizmo_bar_was_visible
+                                                 && terrainMode == editing_mode::object);
+      _tool_panel_dock->setVisible(_npc_tool_panel_was_visible
+                                   && terrainMode != editing_mode::impass);
+      _npc_restore_chrome_on_ui_show = false;
+    }
 
   };
 
@@ -4916,57 +5279,6 @@ void MapView::setupViewMenu()
 
 }
 
-void MapView::setupToolsMenu()
-{
-  auto menu(_main_window->_menuBar->addMenu("Tools"));
-  connect(this, &QObject::destroyed, menu, &QObject::deleteLater);
-
-  auto terrain_menu = menu->addMenu("Terrain");
-  auto placement_menu = menu->addMenu("Placement");
-  auto advanced_menu = menu->addMenu("Advanced");
-  auto tool_group = new QActionGroup(menu);
-  tool_group->setExclusive(true);
-
-  for (auto&& tool : _tools)
-  {
-    QMenu* category = advanced_menu;
-    switch (tool->editingMode())
-    {
-      case editing_mode::ground:
-      case editing_mode::flatten_blur:
-      case editing_mode::paint:
-      case editing_mode::holes:
-      case editing_mode::areaid:
-      case editing_mode::impass:
-      case editing_mode::water:
-      case editing_mode::mccv:
-        category = terrain_menu;
-        break;
-      case editing_mode::object:
-      case editing_mode::area_trigger:
-      case editing_mode::fence:
-        category = placement_menu;
-        break;
-      default:
-        break;
-    }
-
-    auto action = category->addAction(
-      Noggit::Ui::FontNoggitIcon{tool->icon()}, tr(tool->name()));
-    action->setActionGroup(tool_group);
-    action->setCheckable(true);
-    std::size_t const index = static_cast<std::size_t>(tool->editingMode());
-    if (index < _tool_menu_actions.size())
-      _tool_menu_actions[index] = action;
-    connect(action, &QAction::triggered, this,
-            [this, mode = tool->editingMode()] { set_editing_mode(mode); });
-  }
-
-  auto tool_actions_menu = menu->addMenu("Tool Actions");
-  for (auto&& tool : _tools)
-    tool->registerMenuItems(tool_actions_menu);
-}
-
 void MapView::setupWindowMenu()
 {
   auto menu = _main_window->_menuBar->addMenu("Window");
@@ -4990,8 +5302,11 @@ void MapView::setupWindowMenu()
   auto library_menu = menu->addMenu("Library");
   add_dock_action(library_menu, _asset_browser_dock, "Asset Browser");
   add_dock_action(library_menu,
+                  _main_window->findChild<QDockWidget*>("mapViewStampAssetBrowserDock"),
+                  "Stamp Asset Browser");
+  add_dock_action(library_menu,
                   _main_window->findChild<QDockWidget*>("mapViewObjectPaletteDock"),
-                  "Object Palette");
+                  "Object Group Browser");
   add_dock_action(library_menu,
                   _main_window->findChild<QDockWidget*>("mapViewTextureBrowserDock"),
                   "Texture Browser");
@@ -5002,24 +5317,25 @@ void MapView::setupWindowMenu()
                   _main_window->findChild<QDockWidget*>("mapViewTexturePickerDock"),
                   "Texture Picker");
 
+  add_dock_action(menu, _npc_properties_dock, "NPC Properties");
+
   auto workspace_menu = menu->addMenu("Workspace Panels");
   add_dock_action(workspace_menu, _node_editor_dock, "Node Editor", QKeySequence("Shift+N"));
   add_dock_action(workspace_menu, _missing_objects_dock, "Missing Objects");
   add_dock_action(workspace_menu, _floating_objects_dock, "Floating Objects");
+  add_dock_action(workspace_menu, _duplicate_objects_dock, "Duplicate Object Audit");
 
-  menu->addSeparator();
-  menu->addAction(_main_window->_app_toolbar->toggleViewAction());
   menu->addSeparator();
   ADD_ACTION_NS(menu, "Reset Workspace Layout",
                 [this]
                 {
                   _settings->remove("map_view/workspace_state");
-                  applyDefaultWorkspaceLayout(true);
+                  applyDefaultWorkspaceLayout();
                   _main_window->statusBar()->showMessage("Workspace layout reset.", 3000);
                 });
 }
 
-void MapView::applyDefaultWorkspaceLayout(bool reset_visibility)
+void MapView::applyDefaultWorkspaceLayout()
 {
   auto place_dock = [this](Qt::DockWidgetArea area, QDockWidget* dock)
   {
@@ -5034,10 +5350,16 @@ void MapView::applyDefaultWorkspaceLayout(bool reset_visibility)
   _main_window->splitDockWidget(_tool_panel_dock, _detail_infos_dock, Qt::Vertical);
 
   place_dock(Qt::LeftDockWidgetArea, _asset_browser_dock);
+  place_dock(Qt::LeftDockWidgetArea, _npc_browser_dock);
+  _main_window->tabifyDockWidget(_asset_browser_dock, _npc_browser_dock);
   place_dock(Qt::LeftDockWidgetArea, _minimap_dock);
 
-  std::array<char const*, 4> const library_dock_names{
+  place_dock(Qt::RightDockWidgetArea, _npc_properties_dock);
+  _main_window->splitDockWidget(_tool_panel_dock, _npc_properties_dock, Qt::Horizontal);
+
+  std::array<char const*, 5> const library_dock_names{
     "mapViewObjectPaletteDock",
+    "mapViewStampAssetBrowserDock",
     "mapViewTextureBrowserDock",
     "mapViewTexturePaletteDock",
     "mapViewTexturePickerDock"
@@ -5054,41 +5376,28 @@ void MapView::applyDefaultWorkspaceLayout(bool reset_visibility)
   place_dock(Qt::BottomDockWidgetArea, _node_editor_dock);
   place_dock(Qt::BottomDockWidgetArea, _missing_objects_dock);
   place_dock(Qt::BottomDockWidgetArea, _floating_objects_dock);
+  place_dock(Qt::BottomDockWidgetArea, _duplicate_objects_dock);
   _main_window->tabifyDockWidget(_node_editor_dock, _missing_objects_dock);
   _main_window->tabifyDockWidget(_missing_objects_dock, _floating_objects_dock);
+  _main_window->tabifyDockWidget(_floating_objects_dock, _duplicate_objects_dock);
 
-  _main_window->resizeDocks({_tool_panel_dock}, {340}, Qt::Horizontal);
-
-  if (!reset_visibility)
-    return;
+  _main_window->resizeDocks({_tool_panel_dock}, {280}, Qt::Horizontal);
 
   _tool_panel_dock->show();
   _detail_infos_dock->hide();
   _asset_browser_dock->hide();
+  _npc_browser_dock->hide();
+  _npc_properties_dock->hide();
   _minimap_dock->hide();
   _node_editor_dock->hide();
   _missing_objects_dock->hide();
   _floating_objects_dock->hide();
-  _main_window->_app_toolbar->hide();
+  _duplicate_objects_dock->hide();
   for (char const* name : library_dock_names)
   {
     if (auto dock = _main_window->findChild<QDockWidget*>(name))
       dock->hide();
   }
-}
-
-void MapView::restoreWorkspaceLayout()
-{
-  applyDefaultWorkspaceLayout(false);
-  QByteArray const state = _settings->value("map_view/workspace_state").toByteArray();
-  if (!state.isEmpty() && !_main_window->restoreState(state, 1))
-    _settings->remove("map_view/workspace_state");
-}
-
-void MapView::saveWorkspaceLayout()
-{
-  _settings->setValue("map_view/workspace_state", _main_window->saveState(1));
-  _settings->sync();
 }
 
 void MapView::setupHelpMenu()
@@ -5416,6 +5725,9 @@ void MapView::setupMinimap()
                                | QDockWidget::DockWidgetClosable
   );
   auto minimap_scroll_area = new QScrollArea(_minimap_dock);
+  // Fit the whole map to the dock when it opens; the 512px size hint otherwise
+  // leaves most of the map clipped in a narrow sidebar.
+  minimap_scroll_area->setWidgetResizable(true);
   minimap_scroll_area->setWidget(_minimap);
   minimap_scroll_area->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
 
@@ -5439,6 +5751,22 @@ void MapView::setupMinimap()
   connect ( _minimap_dock, &QDockWidget::visibilityChanged
     , &_show_minimap_window, &Noggit::BoolToggleProperty::set
   );
+
+  connect(_minimap_dock, &QDockWidget::visibilityChanged, this,
+          [this, first_show = true](bool visible) mutable
+          {
+            if (!visible || !first_show)
+              return;
+            first_show = false;
+            QTimer::singleShot(0, this, [this]
+            {
+              if (!_minimap_dock->isVisible() || _minimap_dock->isFloating())
+                return;
+              auto const area = _main_window->dockWidgetArea(_minimap_dock);
+              if (area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea)
+                _main_window->resizeDocks({_minimap_dock}, {540}, Qt::Horizontal);
+            });
+          });
 
   connect ( &_show_minimap_borders, &Noggit::BoolToggleProperty::changed
     , [this]
@@ -5469,8 +5797,11 @@ void MapView::createGUI()
 
   connect(this, &QObject::destroyed, _tool_panel_dock, &QObject::deleteLater);
   _main_window->addDockWidget(Qt::RightDockWidgetArea, _tool_panel_dock);
+  connect(_tool_panel_dock, &Noggit::Ui::Tools::ToolPanel::objectModeRequested,
+          this, &MapView::set_editing_mode);
 
   setupAssetBrowser();
+  setupNpcBrowser();
 
   _tools.emplace_back(std::make_unique<Noggit::RaiseLowerTool>(this))->setupUi(_tool_panel_dock);
   _tools.emplace_back(std::make_unique<Noggit::FlattenBlurTool>(this))->setupUi(_tool_panel_dock);
@@ -5497,20 +5828,117 @@ void MapView::createGUI()
   setupDetailInfos();
   setupMissingObjects();
   setupFloatingObjectAudit();
+  setupDuplicateObjectAudit();
   setupToolbars();
   setupKeybindingsGui();
 
   setupMinimap();
-  setupMainToolbar();
   setupFileMenu();
   setupEditMenu();
   setupViewMenu();
-  setupToolsMenu();
   setupAssistMenu();
   setupClientMenu();
   setupWindowMenu();
   setupHelpMenu();
   setupHotkeys();
+
+  // Keep every editor dock on the same palette, including tool-owned docks
+  // created by Object/Texture/Stamp tools and the NPC workspace panels.
+  QString const previous_editor_style = _main_window->styleSheet();
+  _main_window->setStyleSheet(previous_editor_style + R"(
+    QMainWindow::separator { background: #405c7c; }
+    QTabBar::tab { background: #182943; border-color: #405c7c; }
+    QTabBar::tab:hover { background: #294565; }
+    QTabBar::tab:selected {
+      background: #294565; border-top-color: #d6b777;
+    }
+    QMenu { background: #14233e; color: #e9edf4; }
+    QMenu::item:selected { background: #294565; color: #f4dfb1; }
+    QMenu::separator { background: #405c7c; }
+    QDockWidget { background: #0c192d; color: #e9edf4; }
+    QDockWidget::title { background: #14233e; color: #e9edf4; }
+    QDockWidget::close-button, QDockWidget::float-button {
+      background: #14233e;
+    }
+    QDockWidget::close-button:hover, QDockWidget::float-button:hover {
+      background: #294565;
+    }
+    QDockWidget QWidget { background: #14233e; color: #e9edf4; }
+    QDockWidget QAbstractItemView {
+      background: #0c192d; color: #e9edf4;
+      selection-background-color: #294565;
+      selection-color: #f4dfb1;
+    }
+    QDockWidget QGroupBox {
+      background: #182943; border-color: #405c7c; color: #d6b777;
+    }
+    QDockWidget QGroupBox::title {
+      color: #d6b777; border-top-color: #405c7c;
+      border-bottom-color: #d6b777;
+    }
+    QDockWidget QTabWidget::pane {
+      background: #14233e; border: 1px solid #405c7c;
+    }
+    QDockWidget QTabBar::tab {
+      background: #182943; border-color: #405c7c;
+    }
+    QDockWidget QTabBar::tab:hover { background: #294565; }
+    QDockWidget QTabBar::tab:selected {
+      background: #294565; border-top-color: #d6b777;
+    }
+    QDockWidget QLineEdit, QDockWidget QAbstractSpinBox,
+    QDockWidget QTextEdit, QDockWidget QPlainTextEdit,
+    QDockWidget QComboBox:editable {
+      background: #0c192d; color: #e9edf4;
+      selection-background-color: #315f96;
+    }
+    QDockWidget QComboBox:!editable {
+      background: #223958; color: #e9edf4;
+    }
+    QDockWidget QComboBox QAbstractItemView {
+      background: #14233e; color: #e9edf4;
+      selection-background-color: #294565;
+    }
+    QDockWidget QPushButton, QDockWidget QToolButton {
+      background: #223958; color: #e9edf4; border-color: #405c7c;
+    }
+    QDockWidget QPushButton:hover, QDockWidget QToolButton:hover {
+      background: #294565; border-color: #6fa9df;
+    }
+    QDockWidget QPushButton:pressed, QDockWidget QToolButton:pressed,
+    QDockWidget QToolButton:checked {
+      background: #294565; border-color: #d6b777;
+    }
+    QDockWidget QScrollBar { background: #0c192d; }
+    QDockWidget QScrollBar::handle { background: #405c7c; }
+  )");
+  connect(this, &QObject::destroyed, _main_window,
+          [window = _main_window, previous_editor_style]
+          { window->setStyleSheet(previous_editor_style); });
+
+  auto* menu_bar = _main_window->_menuBar;
+  QString const previous_menu_style = menu_bar->styleSheet();
+  menu_bar->setStyleSheet(R"(
+    QMenuBar { background: #0c192d; color: #e9edf4; }
+    QMenuBar::item:selected, QMenuBar::item:pressed {
+      background: #294565; color: #f4dfb1;
+    }
+    QMenu { background: #14233e; color: #e9edf4; }
+    QMenu::item:selected { background: #294565; color: #f4dfb1; }
+    QMenu::separator { background: #405c7c; }
+  )");
+  connect(this, &QObject::destroyed, menu_bar,
+          [menu_bar, previous_menu_style] { menu_bar->setStyleSheet(previous_menu_style); });
+
+  auto* status_bar = _main_window->statusBar();
+  QString const previous_status_style = status_bar->styleSheet();
+  status_bar->setStyleSheet(R"(
+    QStatusBar { background: #0c192d; color: #aabbd0; }
+    QStatusBar::item { border-color: #405c7c; }
+    QStatusBar QLabel { background: transparent; color: #aabbd0; }
+  )");
+  connect(this, &QObject::destroyed, status_bar,
+          [status_bar, previous_status_style] { status_bar->setStyleSheet(previous_status_style); });
 
   for (auto&& tool : _tools)
   {
@@ -5520,7 +5948,32 @@ void MapView::createGUI()
   connect(_main_window, &Noggit::Ui::Windows::NoggitWindow::exitPromptOpened, this, &MapView::on_exit_prompt);
 
   set_editing_mode (editing_mode::ground);
-  restoreWorkspaceLayout();
+  _settings->remove("map_view/workspace_state");
+  applyDefaultWorkspaceLayout();
+  connect(_npc_browser_dock, &QDockWidget::visibilityChanged, this,
+          [this](bool visible)
+  {
+    if (_destroying)
+      return;
+    _npc_browser_visible = visible;
+    if (!visible && _npc_properties_shown_with_browser)
+    {
+      QSignalBlocker const blocker(_npc_properties_dock);
+      _npc_properties_shown_with_browser = false;
+      _npc_properties_dock->hide();
+    }
+    setNpcWorkspaceActive(_npc_browser_visible || _npc_properties_visible);
+  });
+  connect(_npc_properties_dock, &QDockWidget::visibilityChanged, this,
+          [this](bool visible)
+  {
+    if (_destroying)
+      return;
+    if (visible)
+      _npc_properties_shown_with_browser = false;
+    _npc_properties_visible = visible;
+    setNpcWorkspaceActive(_npc_browser_visible || _npc_properties_visible);
+  });
 
   // do we need to do this every tick ?
   if (_settings->value("project/mysql/enabled").toBool())
@@ -5892,7 +6345,8 @@ void MapView::paintGL()
 
   _last_update = now;
 
-  if (_gizmo_on.get() && _world->has_selection())
+  Noggit::NpcSpawnOverlay* const selected_npc = _world->selectedNpcSpawnOverlay();
+  if (_gizmo_on.get() && (_world->has_selection() || selected_npc))
   {
     ImGui::SetCurrentContext(_imgui_context);
     QtImGui::newFrame();
@@ -5908,18 +6362,30 @@ void MapView::paintGL()
 
     _transform_gizmo.setCurrentGizmoOperation(_gizmo_operation);
     _transform_gizmo.setCurrentGizmoMode(_gizmo_mode);
-    _transform_gizmo.setUseMultiselectionPivot(activeTool()->useMultiselectionPivot());
-    _transform_gizmo.setScaleMultiselectionAroundPivot(activeTool()->scaleMultiselectionAroundPivot());
+    if (selected_npc)
+    {
+      if (_transform_gizmo.handleNpcTransformGizmo(*selected_npc, _model_view, _projection))
+      {
+        glm::vec3 const& position = selected_npc->anchorPosition();
+        emit npcSpawnTransformed(static_cast<qulonglong>(selected_npc->guid()),
+                                 position.x, position.y, position.z,
+                                 selected_npc->anchorYaw());
+      }
+    }
+    else
+    {
+      _transform_gizmo.setUseMultiselectionPivot(activeTool()->useMultiselectionPivot());
+      _transform_gizmo.setScaleMultiselectionAroundPivot(activeTool()->scaleMultiselectionAroundPivot());
 
-    auto pivot = _world->multi_select_pivot().has_value() ?
-        _world->multi_select_pivot().value() : glm::vec3(0.f, 0.f, 0.f);
+      auto pivot = _world->multi_select_pivot().has_value() ?
+          _world->multi_select_pivot().value() : glm::vec3(0.f, 0.f, 0.f);
 
-    _transform_gizmo.setMultiselectionPivot(pivot);
+      _transform_gizmo.setMultiselectionPivot(pivot);
+      _transform_gizmo.handleTransformGizmo(this, _world->current_selection(), _model_view, _projection);
 
-    _transform_gizmo.handleTransformGizmo(this, _world->current_selection(), _model_view, _projection);
-
-    // _world->update_selection_pivot();
-    activeTool()->renderImGui(_gizmo_mode, _gizmo_operation);
+      // _world->update_selection_pivot();
+      activeTool()->renderImGui(_gizmo_mode, _gizmo_operation);
+    }
 
     ImGui::End();
 
@@ -6011,8 +6477,6 @@ MapView::~MapView()
 
   _destroying = true;
 
-  saveWorkspaceLayout();
-  _main_window->removeToolBar(_main_window->_app_toolbar);
 
   if (_force_uid_check && _world)
   {
@@ -6038,6 +6502,9 @@ MapView::~MapView()
       {
         _tools[static_cast<int>(editing_mode::paint)]->unload();
       }
+
+      if (_tools[static_cast<int>(editing_mode::object)])
+        _tools[static_cast<int>(editing_mode::object)]->unload();
 
       // ChunkClipboard owns viewport-only terrain and object previews and its
       // destructor removes them through World. Destroy it while both the World
@@ -6479,7 +6946,8 @@ selection_result MapView::intersect_result(QPointF const& mouse_position, bool t
 
 void MapView::doSelection (bool selectTerrainOnly, bool mouseMove)
 {
-  if (_world->get_selected_model_count() && _gizmo_on.get() && (_transform_gizmo.isUsing() || _transform_gizmo.isOver()))
+  if ((_world->get_selected_model_count() || _world->selectedNpcSpawnOverlay())
+      && _gizmo_on.get() && (_transform_gizmo.isUsing() || _transform_gizmo.isOver()))
     return;
 
   selection_result results(intersect_result(selectTerrainOnly));
@@ -6710,9 +7178,10 @@ void MapView::draw_map()
   WorldRenderParams renderParams;
 
   renderParams.cursorRotation = _cursorRotation;
-  renderParams.cursor_type = _cursorType;
+  renderParams.cursor_type = _npc_workspace_active ? CursorType::NONE : _cursorType;
   renderParams.project_cursor_on_water = draw_parameters.project_cursor_on_water;
   renderParams.show_liquid_vertices = draw_parameters.show_liquid_vertices;
+  renderParams.liquid_locked_plane_grid = draw_parameters.liquid_locked_plane_grid;
   renderParams.liquid_attribute_overlay = draw_parameters.liquid_attribute_overlay;
   renderParams.liquid_edit_layer = draw_parameters.liquid_edit_layer;
   renderParams.liquid_surface_token = draw_parameters.liquid_surface_token;
@@ -6765,6 +7234,7 @@ void MapView::draw_map()
   renderParams.road_reference_mask_lines = draw_parameters.road_reference_mask_lines;
   renderParams.show_painted_stamp_selection = draw_parameters.show_painted_stamp_selection;
   renderParams.stamp_height_preview_lines = draw_parameters.stamp_height_preview_lines;
+  renderParams.scatter_selection = draw_parameters.scatter_selection;
 
   if (_floating_objects_dock->isVisible() && _floating_objects_show_highlights->isChecked())
   {
@@ -7545,6 +8015,28 @@ void MapView::enableGizmoBar()
 void MapView::disableGizmoBar()
 {
   _viewport_overlay_ui->gizmoBar->hide();
+}
+
+void MapView::activateNpcTransformGizmo()
+{
+  if (_gizmo_operation == ImGuizmo::OPERATION::SCALE)
+    updateGizmoOverlay(ImGuizmo::OPERATION::TRANSLATE);
+  invalidate();
+  update();
+}
+
+void MapView::activateNpcRotationGizmo()
+{
+  updateGizmoOverlay(ImGuizmo::OPERATION::ROTATE);
+  _gizmo_on.set(true);
+  setFocus();
+  invalidate();
+  update();
+}
+
+bool MapView::transformGizmoCapturesMouse() const
+{
+  return _gizmo_on.get() && (_transform_gizmo.isUsing() || _transform_gizmo.isOver());
 }
 
 void MapView::setDbcDirty(DBCFile* dbc)

@@ -159,29 +159,18 @@ void selection_group::save_json()
 
 void selection_group::remove_member(unsigned int object_uid)
 {
-    if (_members_uid.size() == 1)
+    auto const member = std::find(_members_uid.begin(), _members_uid.end(), object_uid);
+    if (member == _members_uid.end()) return;
+    _members_uid.erase(member);
+    World* const world = _world;
+    if (_members_uid.empty())
     {
-        remove_group();
-        save_json();
-        return;
+        auto& groups = world->_selection_groups;
+        auto const group = std::find_if(groups.begin(), groups.end(),
+                                        [this](selection_group const& candidate) { return &candidate == this; });
+        if (group != groups.end()) groups.erase(group);
     }
-
-    for (auto it = _members_uid.begin(); it != _members_uid.end(); ++it)
-    {
-        auto member_uid = *it;
-        std::optional<selection_type> obj = _world->get_model(member_uid);
-        if (!obj)
-            continue;
-        SceneObject* instance = std::get<SceneObject*>(obj.value());
-
-        if (instance->uid == object_uid)
-        {
-            _members_uid.erase(it);
-            instance->_grouped = false;
-            save_json();
-            return;
-        }
-    }
+    world->saveSelectionGroups();
 }
 
 bool selection_group::contains_object(SceneObject* object)

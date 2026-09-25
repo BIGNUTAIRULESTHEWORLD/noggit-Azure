@@ -1,18 +1,20 @@
 #include <noggit/ui/FontAwesome.hpp>
 #include <noggit/ui/windows/noggitWindow/widgets/MapListItem.hpp>
 
-#include <QGraphicsOpacityEffect>
-#include <QGridLayout>
+#include <QGraphicsColorizeEffect>
+#include <QHBoxLayout>
 #include <QLabel>
-#include <QListWidget>
+#include <QVBoxLayout>
 
 namespace Noggit::Ui::Widget
 {
-  MapListItem::MapListItem(const MapListData& data, QWidget* parent = nullptr)
+  MapListItem::MapListItem(const MapListData& data, QWidget* parent)
     : QWidget(parent)
+    , _map_pinned_label(nullptr)
     , _map_data(data)
   {
-    auto layout = QGridLayout();
+    setAttribute(Qt::WA_StyledBackground, false);
+    setContextMenuPolicy(Qt::CustomContextMenu);
 
     QIcon icon;
     switch (_map_data.expansion_id)
@@ -29,30 +31,19 @@ namespace Noggit::Ui::Widget
       default: break;
     }
 
-    _map_icon = new QLabel("", parent);
+    _map_icon = new QLabel(this);
+    _map_icon->setObjectName("mapListIcon");
+    _map_icon->setFixedSize(34, 34);
+    _map_icon->setAlignment(Qt::AlignCenter);
     _map_icon->setPixmap(icon.pixmap(QSize(32, 32)));
-    _map_icon->setGeometry(0, 0, 32, 32);
-    _map_icon->setObjectName("project-icon-label");
-    _map_icon->setStyleSheet("QLabel#project-icon-label { font-size: 12px; padding: 0px;}");
 
-    auto project_name = toCamelCase(QString(_map_data.map_name));
-    _map_name = new QLabel(project_name, parent);
-    _map_name->setGeometry(32, 0, 300, 20);
-    _map_name->setObjectName("project-title-label");
-    _map_name->setStyleSheet("QLabel#project-title-label { font-size: 12px; }");
+    QString const map_name = toCamelCase(_map_data.map_name);
+    _map_name = new QLabel(map_name, this);
+    _map_name->setObjectName("mapListName");
+    _map_name->setToolTip(map_name);
+    _map_name->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
-    _map_id = new QLabel(QString::number(_map_data.map_id), parent);
-    _map_id->setGeometry(32, 15, 300, 20);
-    _map_id->setObjectName("project-information");
-    _map_id->setStyleSheet("QLabel#project-information { font-size: 10px; }");
-
-    auto directory_effect = new QGraphicsOpacityEffect(this);
-    directory_effect->setOpacity(0.5);
-
-    _map_id->setGraphicsEffect(directory_effect);
-    _map_id->setAutoFillBackground(true);
-
-    auto instance_type = QString("Unknown");
+    QString instance_type;
     switch (_map_data.map_type_id)
     {
       case 0: instance_type = "Continent"; break;
@@ -64,49 +55,48 @@ namespace Noggit::Ui::Widget
       default: instance_type = "Unknown"; break;
     }
 
+    _map_id = new QLabel(QString("Map %1 ·").arg(_map_data.map_id), this);
+    _map_id->setObjectName("mapListMeta");
     _map_instance_type = new QLabel(instance_type, this);
-    _map_instance_type->setGeometry(150, 15, 125, 20);
-    _map_instance_type->setAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
-    _map_instance_type->setObjectName("project-information");
-    _map_instance_type->setStyleSheet("QLabel#project-information { font-size: 10px; }");
+    _map_instance_type->setObjectName("mapListMeta");
 
-    auto last_edited_effect = new QGraphicsOpacityEffect(this);
-    last_edited_effect->setOpacity(0.5);
+    auto meta_layout = new QHBoxLayout();
+    meta_layout->setContentsMargins(0, 0, 0, 0);
+    meta_layout->setSpacing(4);
+    meta_layout->addWidget(_map_id);
+    meta_layout->addWidget(_map_instance_type);
+    meta_layout->addStretch();
 
-    _map_instance_type->setGraphicsEffect(last_edited_effect);
-    _map_instance_type->setAutoFillBackground(true);
+    auto text_layout = new QVBoxLayout();
+    text_layout->setContentsMargins(0, 0, 0, 0);
+    text_layout->setSpacing(2);
+    text_layout->addWidget(_map_name);
+    text_layout->addLayout(meta_layout);
+
+    auto row_layout = new QHBoxLayout(this);
+    row_layout->setContentsMargins(8, 5, 8, 5);
+    row_layout->setSpacing(9);
+    row_layout->addWidget(_map_icon);
+    row_layout->addLayout(text_layout, 1);
 
     if (_map_data.pinned)
     {
-      _map_pinned_label = new QLabel("", this);
-      _map_pinned_label->setPixmap(FontAwesomeIcon(FontAwesome::star).pixmap(QSize(16, 16)));
-      _map_pinned_label->setGeometry(150, 0, 125, 20);
-      _map_pinned_label->setAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
-      _map_pinned_label->setObjectName("project-pinned");
-      _map_pinned_label->setStyleSheet("QLabel#project-pinned { font-size: 10px; }");
-
-      auto colour = new QGraphicsColorizeEffect(this);
-      colour->setColor(QColor(255, 204, 0));
-      colour->setStrength(1.0f);
-
-      _map_pinned_label->setGraphicsEffect(colour);
-      _map_pinned_label->setAutoFillBackground(true);
-
-      layout.addWidget(_map_pinned_label);
+      _map_pinned_label = new QLabel(this);
+      _map_pinned_label->setObjectName("mapListPinned");
+      _map_pinned_label->setPixmap(FontAwesomeIcon(FontAwesome::star).pixmap(QSize(14, 14)));
+      _map_pinned_label->setFixedSize(18, 18);
+      _map_pinned_label->setAlignment(Qt::AlignCenter);
+      auto color = new QGraphicsColorizeEffect(_map_pinned_label);
+      color->setColor(QColor(214, 183, 119));
+      color->setStrength(1.0f);
+      _map_pinned_label->setGraphicsEffect(color);
+      row_layout->addWidget(_map_pinned_label);
     }
-
-    setContextMenuPolicy(Qt::CustomContextMenu);
-
-    layout.addWidget(_map_icon);
-    layout.addWidget(_map_name);
-    layout.addWidget(_map_id);
-    layout.addWidget(_map_instance_type);
-    setLayout(layout.layout());
   }
 
   QSize MapListItem::minimumSizeHint() const
   {
-    return QSize(300, 32);
+    return QSize(280, 52);
   }
 
   const QString MapListItem::name() const

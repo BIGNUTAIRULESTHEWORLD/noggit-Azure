@@ -144,6 +144,8 @@ void ActionHistoryNavigator::pushAction(Noggit::Action* action)
   {
     layout->addWidget(new QLabel(" | Light Removed", widget));
   }
+  if (action->getFlags() & ActionFlags::eNPC_EDIT)
+    layout->addWidget(new QLabel(" | NPC Edit", widget));
 
   layout->addStretch();
   _action_stack->setItemWidget(item, widget);

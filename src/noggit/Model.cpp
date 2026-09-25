@@ -11,9 +11,13 @@
 #include <noggit/TextureManager.h> // TextureManager, Texture
 
 #include <cassert>
+#include <cmath>
+#include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/euler_angles.hpp>
 #include <glm/gtx/quaternion.hpp>
+#include <iomanip>
 #include <map>
+#include <sstream>
 #include <string>
 
 Model::Model(const std::string& filename, Noggit::NoggitRenderContext context)
@@ -192,6 +196,18 @@ uint32_t Model::get_anim_lenght(int16_t anim_id)
   return _animation_length[anim_id];
 }
 
+bool Model::hasAnimation(std::uint16_t animation_id) const
+{
+  auto const found = _animations_seq_per_id.find(animation_id);
+  return found != _animations_seq_per_id.end() && !found->second.empty();
+}
+
+std::uint32_t Model::animationLength(std::uint16_t animation_id) const
+{
+  auto const found = _animation_length.find(static_cast<std::int16_t>(animation_id));
+  return found == _animation_length.end() ? 0u : found->second;
+}
+
 bool Model::isAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& header)
 {
   // see if we have any animated bones
@@ -289,13 +305,32 @@ namespace
 
   inline glm::quat fixCoordSystemQuat(glm::quat v)
   {
-    return glm::quat(-v.x, -v.z, v.y, v.w);
+    // fixCoordSystem maps (x, y, z) to (x, z, -y). Apply the same basis
+    // change to the quaternion's vector part, preserving its scalar part.
+    return glm::quat(v.w, v.x, v.z, -v.y);
   }
 }
 
 
 void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header)
 {
+  if (_context == Noggit::NoggitRenderContext::NPC_BROWSER
+      || _context == Noggit::NoggitRenderContext::NPC_BROWSER_PREVIEW
+      || _context == Noggit::NoggitRenderContext::NPC_SPAWN_CACHE
+      || _context == Noggit::NoggitRenderContext::NPC_CREATOR
+      || _context == Noggit::NoggitRenderContext::MAP_VIEW)
+  {
+    auto const in_bounds = [&f](uint32_t offset, uint32_t count, std::size_t stride)
+    {
+      auto const size = static_cast<std::size_t>(f.getSize());
+      return offset <= size && count <= (size - offset) / stride;
+    };
+    if (in_bounds(header.ofsAttachments, header.nAttachments, sizeof(ModelAttachmentDef)))
+      _attachments = M2Array<ModelAttachmentDef>(f, header.ofsAttachments, header.nAttachments);
+    if (in_bounds(header.ofsAttachLookup, header.nAttachLookup, sizeof(int16_t)))
+      _attachment_lookup = M2Array<int16_t>(f, header.ofsAttachLookup, header.nAttachLookup);
+  }
+
   // vertices, normals, texcoords
   _vertices = M2Array<ModelVertex>(f, header.ofsVertices, header.nVertices);
 
@@ -331,9 +366,12 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
   ModelTextureDef const* texdef = reinterpret_cast<ModelTextureDef const*>(f.getBuffer() + header.ofsTextures);
   _textureFilenames.resize(header.nTextures);
   _specialTextures.resize(header.nTextures);
+  _replaceableTextureTypes.resize(header.nTextures, -1);
 
   for (size_t i = 0; i < header.nTextures; ++i)
   {
+    if (texdef[i].type != 0)
+      _replaceableTextureTypes[i] = texdef[i].type;
     if (texdef[i].type == 0)
     {
       if (texdef[i].nameLen == 0)
@@ -350,6 +388,19 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
     }
     else
     {
+      if (_context == Noggit::NoggitRenderContext::NPC_BROWSER
+          || _context == Noggit::NoggitRenderContext::NPC_BROWSER_PREVIEW
+          || _context == Noggit::NoggitRenderContext::NPC_SPAWN_CACHE
+          || _context == Noggit::NoggitRenderContext::NPC_CREATOR)
+      {
+        // NPC previews resolve these replaceable slots from the selected
+        // CreatureDisplayInfo record. Other render contexts keep their
+        // existing model texture behavior.
+        _specialTextures[i] = texdef[i].type;
+        _textureFilenames[i] = "tileset/generic/black.blp";
+        _replaceTextures.try_emplace(texdef[i].type, _textureFilenames[i], _context);
+        continue;
+      }
 #ifndef NO_REPLACIBLE_TEXTURES_HACK
       _specialTextures[i] = -1;
       _textureFilenames[i] = "tileset/generic/black.blp";
@@ -426,9 +477,11 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
     _texture_animation_lookups = M2Array<int16_t>(f, header.ofsTexAnimLookup, header.nTexAnimLookup);
     _texture_unit_lookup = M2Array<int16_t>(f, header.ofsTexUnitLookup, header.nTexUnitLookup);
 
+    _geoset_ids.resize(view->n_submesh);
     showGeosets.resize (view->n_submesh);
     for (size_t i = 0; i<view->n_submesh; ++i) 
     {
+      _geoset_ids[i] = model_geosets[i].id;
       showGeosets[i] = true;
     }
 
@@ -438,6 +491,36 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
 
     g.close();
   }  
+}
+
+ModelAttachmentDef const* Model::findAttachment(unsigned id) const
+{
+  if (id < _attachment_lookup.size())
+  {
+    int const index = _attachment_lookup[id];
+    if (index >= 0 && static_cast<std::size_t>(index) < _attachments.size())
+      return &_attachments[index];
+  }
+  for (auto const& attachment : _attachments)
+    if (attachment.id >= 0 && static_cast<unsigned>(attachment.id) == id)
+      return &attachment;
+  return nullptr;
+}
+
+bool Model::hasAttachment(unsigned id) const
+{
+  return findAttachment(id) != nullptr;
+}
+
+std::optional<glm::mat4x4> Model::attachmentTransform(unsigned id,
+                                                       glm::mat4x4 const& parent_transform) const
+{
+  auto const* attachment = findAttachment(id);
+  if (!attachment || attachment->bone < 0
+      || static_cast<std::size_t>(attachment->bone) >= bone_matrices.size())
+    return std::nullopt;
+  return parent_transform * bone_matrices[attachment->bone]
+      * glm::translate(glm::mat4x4(1.0f), fixCoordSystem(attachment->pos));
 }
 
 
@@ -474,23 +557,41 @@ void Model::initAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& head
   if (header.nAnimations > 0) 
   {
     std::vector<ModelAnimation> animations(header.nAnimations);
+    animation_files.resize(header.nAnimations);
 
     memcpy(animations.data(), f.getBuffer() + header.ofsAnimations, header.nAnimations * sizeof(ModelAnimation));
 
-    for (auto& anim : animations)
+    for (std::size_t animation_index = 0; animation_index < animations.size(); ++animation_index)
     {
+      auto& anim = animations[animation_index];
       anim.length = std::max(anim.length, 1U);
 
       _animation_length[anim.animID] += anim.length;
       _animations_seq_per_id[anim.animID][anim.subAnimID] = anim;
 
       std::string lodname = _file_key.filepath().substr(0, _file_key.filepath().length() - 3);
-      std::stringstream tempname;
-      tempname << lodname << anim.animID << "-" << anim.subAnimID << ".anim";
-      if (Noggit::Application::NoggitApplication::instance()->clientData()->exists(tempname.str()))
+      std::stringstream padded_name;
+      padded_name << lodname << std::setfill('0')
+                  << std::setw(4) << static_cast<unsigned>(anim.animID) << "-"
+                  << std::setw(2) << static_cast<unsigned>(anim.subAnimID) << ".anim";
+      std::string animation_path = padded_name.str();
+      auto client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+
+      // Standard M2 external animation files use four digits for the animation
+      // ID and two for the variation (for example 0069-00 for Dance). Retain
+      // compatibility with custom archives that used Noggit's older unpadded form.
+      if (!client_data->exists(animation_path))
       {
-        animation_files.push_back(std::make_unique<BlizzardArchive::ClientFile>(tempname.str(),
-            Noggit::Application::NoggitApplication::instance()->clientData()));
+        std::stringstream legacy_name;
+        legacy_name << lodname << anim.animID << "-" << anim.subAnimID << ".anim";
+        if (client_data->exists(legacy_name.str()))
+          animation_path = legacy_name.str();
+      }
+
+      if (client_data->exists(animation_path))
+      {
+        animation_files[animation_index] = std::make_unique<BlizzardArchive::ClientFile>(
+          animation_path, client_data);
       }
     }
   }
@@ -576,38 +677,42 @@ void Model::calcBones(glm::mat4x4 const& model_view
   }
 }
 
-void Model::animate(glm::mat4x4 const& model_view, int anim_id, int anim_time)
+void Model::animate(glm::mat4x4 const& model_view, int anim_id, int anim_time,
+                    bool upload_bones)
 {
-  if (_animations_seq_per_id.empty() || _animations_seq_per_id[anim_id].empty())
+  auto const animation_group = _animations_seq_per_id.find(static_cast<std::uint16_t>(anim_id));
+  if (animation_group == _animations_seq_per_id.end() || animation_group->second.empty())
   {
     return;
   }
 
-  int tmax = _animation_length[anim_id];
-  int t = anim_time % tmax;
-  int current_sub_anim = 0;
-  int time_for_anim = t;
+  auto const length = _animation_length.find(static_cast<std::int16_t>(anim_id));
+  if (length == _animation_length.end() || length->second == 0)
+    return;
 
-  for (auto const& sub_animation : _animations_seq_per_id[anim_id])
+  int const tmax = static_cast<int>(length->second);
+  int const t = anim_time % tmax;
+  int time_for_anim = t;
+  ModelAnimation const* selected_animation = &animation_group->second.begin()->second;
+
+  for (auto const& sub_animation : animation_group->second)
   {
+    selected_animation = &sub_animation.second;
     if (static_cast<int>(sub_animation.second.length) > time_for_anim)
-    {
-      current_sub_anim = sub_animation.first;
       break;
-    }
 
     time_for_anim -= sub_animation.second.length;
   }
 
-  ModelAnimation const& a = _animations_seq_per_id[anim_id][current_sub_anim];
+  ModelAnimation const& a = *selected_animation;
 
   _current_anim_seq = a.Index;//_animations_seq_lookup[anim_id][current_sub_anim];
-  _anim_time = t;
+  _anim_time = time_for_anim;
   _global_animtime = anim_time;
 
   if (animBones) 
   {
-    calcBones(model_view, _current_anim_seq, t, _global_animtime);
+    calcBones(model_view, _current_anim_seq, time_for_anim, _global_animtime);
   }
 
   if (animGeometry || animBones)
@@ -619,7 +724,8 @@ void Model::animate(glm::mat4x4 const& model_view, int anim_id, int anim_time)
       bone_counter++;
     }
 
-    _renderer.updateBoneMatrices();
+    if (upload_bones)
+      _renderer.updateBoneMatrices();
 
 
     // transform vertices
@@ -655,6 +761,60 @@ void Model::animate(glm::mat4x4 const& model_view, int anim_id, int anim_time)
   {
     tex_anim.calc(_current_anim_seq, t, _anim_time);
   }
+}
+
+void Model::animateBlended(glm::mat4x4 const& model_view,
+                           int from_anim_id, int from_anim_time,
+                           int to_anim_id, int to_anim_time, float blend)
+{
+  blend = glm::clamp(blend, 0.0f, 1.0f);
+  if (blend <= 0.0f)
+  {
+    animate(model_view, from_anim_id, from_anim_time);
+    return;
+  }
+  if (blend >= 1.0f || from_anim_id == to_anim_id)
+  {
+    animate(model_view, to_anim_id, to_anim_time);
+    return;
+  }
+
+  animate(model_view, from_anim_id, from_anim_time);
+  std::vector<glm::mat4x4> const from_matrices = bone_matrices;
+
+  // Evaluate the destination second so sequence driven textures, colors, and
+  // lights remain associated with the animation being entered.
+  animate(model_view, to_anim_id, to_anim_time);
+  if (from_matrices.size() != bone_matrices.size() || bone_matrices.empty())
+    return;
+
+  for (std::size_t i = 0; i < bone_matrices.size(); ++i)
+  {
+    glm::vec3 from_scale, to_scale;
+    glm::quat from_rotation, to_rotation;
+    glm::vec3 from_translation, to_translation;
+    glm::vec3 from_skew, to_skew;
+    glm::vec4 from_perspective, to_perspective;
+    bool const decomposed = glm::decompose(from_matrices[i], from_scale, from_rotation,
+                                            from_translation, from_skew, from_perspective)
+      && glm::decompose(bone_matrices[i], to_scale, to_rotation,
+                        to_translation, to_skew, to_perspective);
+    if (!decomposed)
+    {
+      bone_matrices[i] = from_matrices[i] * (1.0f - blend) + bone_matrices[i] * blend;
+      continue;
+    }
+
+    if (glm::dot(from_rotation, to_rotation) < 0.0f)
+      to_rotation = -to_rotation;
+    glm::quat const rotation = glm::normalize(glm::slerp(from_rotation, to_rotation, blend));
+    bone_matrices[i] = glm::translate(glm::mat4x4(1.0f),
+                                      glm::mix(from_translation, to_translation, blend))
+      * glm::mat4_cast(rotation)
+      * glm::scale(glm::mat4x4(1.0f), glm::mix(from_scale, to_scale, blend));
+  }
+
+  _renderer.updateBoneMatrices();
 }
 
 std::vector<ModelVertex> Model::getTransformVertices() const
@@ -880,16 +1040,10 @@ void Bone::calcMatrix(glm::mat4x4 const& model_view
 
     if (rot.uses(anim))
     {
-      glm::quat ref = glm::quat_cast(glm::mat4x4(1));
-      glm::quat q = rot.getValue(anim, time, animtime);
-      glm::vec3 rot_euler = glm::eulerAngles(q);
-
-      glm::vec3 test_rot_vec = glm::vec3(rot_euler[2], 
-        -(rot_euler[1] + glm::radians(180.f)),
-        -(rot_euler[0] + glm::radians(180.f)));
-
-      mr = glm::eulerAngleXYZ(test_rot_vec.x, test_rot_vec.y, test_rot_vec.z);
-
+      glm::quat const q = rot.getValue(anim, time, animtime);
+      float const magnitude_squared = glm::dot(q, q);
+      if (std::isfinite(magnitude_squared) && magnitude_squared > 0.000001f)
+        mr = glm::mat4_cast(q * glm::inversesqrt(magnitude_squared));
       m = m * mr;
     }
 
@@ -900,15 +1054,25 @@ void Bone::calcMatrix(glm::mat4x4 const& model_view
 
     if (flags.billboard)
     {
-        glm::vec3 vRight = model_view[0];
-        glm::vec3 vUp = model_view[1]; 
-    	vRight =  glm::vec3(vRight.x * -1, vRight.y * -1, vRight.z * -1);
-        m[0][2] = vRight.x;
-        m[1][2] = vRight.y;
-        m[2][2] = vRight.z;
-        m[0][1] = vUp.x;
-        m[1][1] = vUp.y;
-        m[2][1] = vUp.z;
+      // M2 billboard geometry faces along its local X axis. Replace the full
+      // rotation basis; changing only two rows can make the matrix singular
+      // and collapse meshes such as DeadmineCannonballStack into thin slivers.
+      glm::mat3 const view_rotation(model_view);
+      if (std::abs(glm::determinant(view_rotation)) > 0.000001f)
+      {
+        glm::mat3 const camera_to_model = glm::inverse(view_rotation);
+        glm::vec3 const right = glm::normalize(camera_to_model[0]);
+        glm::vec3 up = camera_to_model[1];
+        up -= right * glm::dot(up, right);
+        up = glm::normalize(up);
+        glm::vec3 const forward = glm::normalize(glm::cross(up, -right));
+        glm::mat3 const billboard(forward, up, -right);
+        glm::vec3 const bone_scale(glm::length(glm::vec3(m[0])),
+                                   glm::length(glm::vec3(m[1])),
+                                   glm::length(glm::vec3(m[2])));
+        for (int axis = 0; axis < 3; ++axis)
+          m[axis] = glm::vec4(billboard[axis] * bone_scale[axis], m[axis].w);
+      }
     }
 
     m = glm::translate(m, -pivot);

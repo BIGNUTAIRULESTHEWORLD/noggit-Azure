@@ -7,6 +7,7 @@
 #include <noggit/Misc.h>
 #include <noggit/Input.hpp>
 #include <noggit/ui/ObjectEditor.h>
+#include <noggit/ui/TextureScatter.hpp>
 #include <noggit/ui/tools/AssetBrowser/Ui/AssetBrowser.hpp>
 #include <noggit/ui/ModelImport.h>
 #include <noggit/ui/RotationEditor.h>
@@ -17,6 +18,7 @@
 #include <noggit/World.h>
 
 #include <QDateTime>
+#include <QRubberBand>
 #include <QSettings>
 
 #include <fstream>
@@ -90,12 +92,12 @@ namespace Noggit
         /* Area selection */
         _area_selection = new QRubberBand(QRubberBand::Rectangle, mv);
 
-        /* Object Palette */
+        /* Object Group Browser */
         _object_palette = new Noggit::Ui::ObjectPalette(mv, mv->project(), mv);
         _object_palette->hide();
 
         // Dock
-        _object_palette_dock = new QDockWidget("Object Palette", mv);
+        _object_palette_dock = new QDockWidget("Object Group Browser", mv);
         _object_palette_dock->setObjectName("mapViewObjectPaletteDock");
         _object_palette_dock->setFeatures(QDockWidget::DockWidgetMovable
             | QDockWidget::DockWidgetFloatable
@@ -136,13 +138,23 @@ namespace Noggit
             if (_objectEditor->isVisible()) _objectEditor->copy(path);
             });
 
-        QObject::connect(_object_palette, &Ui::ObjectPalette::selected, [=](std::string str) {
-            _objectEditor->copy(str);
+        QObject::connect(_object_palette, &Ui::ObjectPalette::savedGroupSelected,
+            [=](QJsonArray const& objects, bool keep_grouped) {
+                _objectEditor->copy_saved_group(objects, keep_grouped);
             });
     }
 
     ToolDrawParameters ObjectTool::drawParameters() const
     {
+        if (_objectEditor->textureScatter->active())
+        {
+            ToolDrawParameters parameters;
+            parameters.radius = _objectEditor->textureScatter->radius();
+            parameters.cursor_type = _objectEditor->textureScatter->brushShape() == ScatterSelection::Shape::Square
+                ? CursorType::SQUARE : CursorType::CIRCLE;
+            parameters.scatter_selection = &_objectEditor->textureScatter->selection();
+            return parameters;
+        }
         return
         {
             .radius = _objectEditor->brushRadius(),
@@ -151,6 +163,7 @@ namespace Noggit
 
     float ObjectTool::brushRadius() const
     {
+        if (_objectEditor->textureScatter->active()) return _objectEditor->textureScatter->radius();
         return _objectEditor->brushRadius();
     }
 
@@ -180,6 +193,7 @@ namespace Noggit
 
     void ObjectTool::registerContextMenuItems(QMenu* menu)
     {
+        if (_objectEditor->textureScatter->active()) return;
         auto world = mapView()->getWorld();
         addMenuTitle(menu, name());
 
@@ -268,21 +282,6 @@ namespace Noggit
         addMenuItem(menu, "Hide Unselected Objects (NOT IMPLEMENTED)", [] {});
 
         // QAction action_2("Show Hidden", this);
-
-        addMenuItem(menu, "Add Object To Palette", QKeySequence::UnknownKey, world->get_selected_model_count(),
-            [=] {
-                auto last_entry = world->get_last_selected_model();
-                if (last_entry)
-                {
-                    if (!last_entry.value().index() == eEntry_Object)
-                        return;
-
-                    _object_palette_dock->setVisible(true);
-                    auto obj = std::get<selected_object_type>(last_entry.value());
-                    auto model_name = obj->instance_model()->file_key().filepath();
-                    _object_palette->addObjectByFilename(model_name.c_str());
-                }
-            });
 
         addMenuSeperator(menu);
 
@@ -416,6 +415,13 @@ namespace Noggit
 
             addMenuSeperator(menu);
 
+            bool const has_selected_group = std::any_of(world->_selection_groups.begin(),
+                world->_selection_groups.end(), [](selection_group const& group) { return group.isSelected(); });
+            addMenuItem(menu, "Save Selected M2 Group", QKeySequence::UnknownKey,
+                has_selected_group || world->has_multiple_model_selected(),
+                [=] { _object_palette->saveSelectedGroup(); });
+            addMenuItem(menu, "Browse Saved M2 Groups", [=] { _object_palette->browseSavedGroups(); });
+
             bool groupable = false;
             if (world->has_multiple_model_selected())
             {
@@ -493,6 +499,8 @@ namespace Noggit
 
     void ObjectTool::onDeselected()
     {
+      _objectEditor->textureScatter->suspend();
+      _scatterGesture = ScatterGesture::Paint;
       QSignalBlocker blocker{ _object_palette_dock };
       _objectEditor->modelImport->hide();
       _objectEditor->rotationEditor->hide();
@@ -502,6 +510,23 @@ namespace Noggit
 
     void ObjectTool::onTick(float deltaTime, TickParameters const& params)
     {
+        if (_objectEditor->textureScatter->active())
+        {
+            _moveObject = false;
+            _keyx = _keyy = _keyz = _keyr = _keys = _mh = _mv = _rh = _rv = 0;
+            _area_selection->hide();
+            if (params.left_mouse && !params.right_mouse && !params.mod_alt_down && !params.underMap
+                && _scatterGesture == ScatterGesture::Paint && !_objectEditor->textureScatter->pickingTexture())
+            {
+                auto hits = mapView()->intersect_result(true);
+                if (!hits.empty())
+                    _objectEditor->textureScatter->paint(
+                        std::get<selected_chunk_type>(hits.front().second).position, params.mod_ctrl_down);
+                else _objectEditor->textureScatter->endStroke();
+            }
+            else _objectEditor->textureScatter->endStroke();
+            return;
+        }
         unsigned action_modality = 0;
 
         float numpad_moveratio = 0.001f;
@@ -777,6 +802,24 @@ namespace Noggit
 
     void ObjectTool::onMousePress(MousePressParameters const& params)
     {
+        if (_objectEditor->textureScatter->active())
+        {
+            _objectEditor->textureScatter->endStroke();
+            if (params.button == Qt::LeftButton)
+            {
+                bool const pick = _objectEditor->textureScatter->pickingTexture()
+                    || (params.mod_alt_down && params.mod_ctrl_down);
+                _scatterGesture = pick ? ScatterGesture::Pick
+                    : params.mod_alt_down ? ScatterGesture::Resize : ScatterGesture::Paint;
+                if (pick)
+                {
+                    auto hits = mapView()->intersect_result(true);
+                    if (!hits.empty())
+                        _objectEditor->textureScatter->pickTexture(std::get<selected_chunk_type>(hits.front().second).position);
+                }
+            }
+            return;
+        }
         if (params.button == Qt::MouseButton::LeftButton && !params.mod_ctrl_down)
         {
             _area_selection->setGeometry(QRect(_drag_start_pos, QSize()));
@@ -793,6 +836,12 @@ namespace Noggit
 
     void ObjectTool::onMouseRelease(MouseReleaseParameters const& params)
     {
+        if (_objectEditor->textureScatter->active())
+        {
+            _objectEditor->textureScatter->endStroke();
+            if (params.button == Qt::LeftButton) _scatterGesture = ScatterGesture::Paint;
+            return;
+        }
         if (params.button == Qt::MouseButton::MiddleButton)
         {
             _moveObject = false;
@@ -827,6 +876,17 @@ namespace Noggit
 
     void ObjectTool::onMouseMove(MouseMoveParameters const& params)
     {
+        if (_objectEditor->textureScatter->active())
+        {
+            if (params.left_mouse && !params.right_mouse && params.mod_alt_down
+                && !params.mod_ctrl_down && !params.mod_shift_down
+                && _scatterGesture != ScatterGesture::Pick && !_objectEditor->textureScatter->pickingTexture())
+            {
+                _scatterGesture = ScatterGesture::Resize;
+                _objectEditor->textureScatter->changeRadius(params.relative_movement.dx() / XSENS);
+            }
+            return;
+        }
         auto mapView = this->mapView();
         if (_moveObject)
         {
@@ -888,12 +948,28 @@ namespace Noggit
 
     void ObjectTool::onFocusLost()
     {
+        _scatterGesture = ScatterGesture::Paint;
+        if (_objectEditor) _objectEditor->textureScatter->endStroke();
         _keyx = 0;
         _keyz = 0;
         _keyy = 0;
         _keyr = 0;
         _keys = 0;
         _moveObject = false;
+    }
+
+    void ObjectTool::unload()
+    {
+        if (_objectEditor) _objectEditor->textureScatter->unload();
+    }
+
+    void ObjectTool::addHotkey(StringHash name, Hotkey hotkey)
+    {
+        auto condition = hotkey.condition;
+        hotkey.condition = [this, condition] {
+            return (!_objectEditor || !_objectEditor->textureScatter->active()) && condition();
+        };
+        Tool::addHotkey(name, std::move(hotkey));
     }
 
     void ObjectTool::setupHotkeys()
